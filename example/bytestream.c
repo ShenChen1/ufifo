@@ -1,12 +1,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
-#include "kfifo.h"
+#include "ufifo.h"
+
+#define ARRAY_SIZE(ary) (sizeof((ary))/sizeof(*(ary)))
 
 /* fifo size in elements (bytes) */
 #define FIFO_SIZE   32
-
-struct __kfifo test;
 
 static const unsigned char expected_result[FIFO_SIZE] = {
      3,  4,  5,  6,  7,  8,  9,  0,
@@ -15,6 +15,8 @@ static const unsigned char expected_result[FIFO_SIZE] = {
     35, 36, 37, 38, 39, 40, 41, 42,
 };
 
+ufifo_t *test = NULL;
+
 int main()
 {
     unsigned char   buf[6];
@@ -22,45 +24,46 @@ int main()
     unsigned int    ret;
 
     printf("byte stream fifo test start\n");
+    ufifo_open("bytestream",  UFIFO_OPT_ALLOC, FIFO_SIZE, &test);
 
     /* put string into the fifo */
-    kfifo_in(&test, "hello", 5);
+    ufifo_put(test, "hello", 5);
 
     /* put values into the fifo */
     for (i = 0; i != 10; i++)
-        kfifo_put(&test, i);
+        ufifo_put(test, &i, 1);
 
     /* show the number of used elements */
-    printf("fifo len: %u\n", kfifo_len(&test));
+    printf("fifo len: %u\n", ufifo_len(test));
 
     /* get max of 5 bytes from the fifo */
-    i = kfifo_out(&test, buf, 5);
+    i = ufifo_get(test, buf, 5);
     printf("buf: %.*s\n", i, buf);
 
     /* get max of 2 elements from the fifo */
-    ret = kfifo_out(&test, buf, 2);
+    ret = ufifo_get(test, buf, 2);
     printf("ret: %d\n", ret);
-    /* and put it back to the end of the fifo */
-    ret = kfifo_in(&test, buf, ret);
+    /* and put it back to the end of the zfifo */
+    ret = ufifo_put(test, buf, ret);
     printf("ret: %d\n", ret);
 
     /* skip first element of the fifo */
     printf("skip 1st element\n");
-    kfifo_skip(&test);
+    ufifo_skip(test);
 
     /* put values into the fifo until is full */
-    for (i = 20; kfifo_put(&test, i); i++)
+    for (i = 20; ufifo_put(test, &i, 1); i++)
         ;
 
-    printf("queue len: %u\n", kfifo_len(&test));
+    printf("queue len: %u\n", ufifo_len(test));
 
     /* show the first value without removing from the fifo */
-    if (kfifo_peek(&test, &i))
+    if (ufifo_peek(test, &i, 1))
         printf("%d\n", i);
 
     /* check the correctness of all values in the fifo */
     j = 0;
-    while (kfifo_get(&test, &i)) {
+    while (ufifo_get(test, &i, 1)) {
         printf("item = %d\n", i);
         if (i != expected_result[j++]) {
             printf("value mismatch: test failed\n");
@@ -73,5 +76,6 @@ int main()
     }
     printf("test passed\n");
 
+    ufifo_close(test);
     return 0;
 }

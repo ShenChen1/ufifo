@@ -5,16 +5,16 @@
  * round up to nearest power of two
  */
 static inline __attribute__((const))
-unsigned int roundup_pow_of_two(unsigned int v)
+unsigned int roundup_pow_of_two(unsigned int n)
 {
-    v--;
-    v |= v >> 1;
-    v |= v >> 2;
-    v |= v >> 4;
-    v |= v >> 8;
-    v |= v >> 16;
-    v++;
-    return v;
+    n--;
+    n |= n >> 1;
+    n |= n >> 2;
+    n |= n >> 4;
+    n |= n >> 8;
+    n |= n >> 16;
+    n++;
+    return n;
 }
 
 /*
