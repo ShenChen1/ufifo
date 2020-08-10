@@ -183,13 +183,14 @@ unsigned int ufifo_peek(ufifo_t *handle, void *buf, unsigned int size)
 
 unsigned int ufifo_len(ufifo_t *handle)
 {
+    unsigned int len;
     ufifo_t *ufifo = handle;
 
     ufifo_fdlock_acquire(ufifo);
-    unsigned int ret = kfifo_len(ufifo->kfifo);
+    len = ufifo->kfifo->in - ufifo->kfifo->out;
     ufifo_fdlock_release(ufifo);
 
-    return ret;
+    return len;
 }
 
 void ufifo_skip(ufifo_t *handle)
@@ -200,3 +201,4 @@ void ufifo_skip(ufifo_t *handle)
     ufifo->kfifo->out++;
     ufifo_fdlock_release(ufifo);
 }
+
