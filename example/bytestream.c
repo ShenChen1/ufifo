@@ -2,8 +2,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include "ufifo.h"
-
-#define ARRAY_SIZE(ary) (sizeof((ary))/sizeof(*(ary)))
+#include "utils.h"
 
 /* fifo size in elements (bytes) */
 #define FIFO_SIZE   32
@@ -24,7 +23,12 @@ int main()
     unsigned int    ret;
 
     printf("byte stream fifo test start\n");
-    ufifo_open("bytestream",  UFIFO_OPT_ALLOC, FIFO_SIZE, &test);
+
+    ufifo_init_t init = {};
+    init.opt = UFIFO_OPT_ALLOC;
+    init.lock = UFIFO_LOCK_NONE;
+    init.alloc.size = FIFO_SIZE;
+    ufifo_open("bytestream", &init, &test);
 
     /* put string into the fifo */
     ufifo_put(test, "hello", 5);

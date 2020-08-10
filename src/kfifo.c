@@ -6,6 +6,8 @@
 #include "log2.h"
 #include "utils.h"
 
+#define smp_wmb __sync_synchronize
+
 /*
  * internal helper to calculate the unused elements in a fifo
  */
@@ -14,14 +16,12 @@ static inline unsigned int __kfifo_unused(struct __kfifo *fifo)
     return (fifo->mask + 1) - (fifo->in - fifo->out);
 }
 
-int kfifo_init(struct __kfifo *fifo, void *buffer, unsigned int size, size_t esize)
+int kfifo_init(struct __kfifo *fifo, void *buffer, unsigned int size)
 {
-    size /= esize;
     size = rounddown_pow_of_two(size);
 
     fifo->in = 0;
     fifo->out = 0;
-    fifo->esize = esize;
     fifo->data = buffer;
 
     if (size < 2) {
@@ -36,15 +36,9 @@ int kfifo_init(struct __kfifo *fifo, void *buffer, unsigned int size, size_t esi
 static void __kfifo_copy_in(struct __kfifo *fifo, const void *src, unsigned int len, unsigned int off)
 {
     unsigned int size = fifo->mask + 1;
-    unsigned int esize = fifo->esize;
     unsigned int l;
 
     off &= fifo->mask;
-    if (esize != 1) {
-        off *= esize;
-        size *= esize;
-        len *= esize;
-    }
     l = min(len, size - off);
 
     memcpy(fifo->data + off, src, l);
@@ -72,15 +66,9 @@ unsigned int kfifo_in(struct __kfifo *fifo, const void *buf, unsigned int len)
 static void __kfifo_copy_out(struct __kfifo *fifo, void *dst, unsigned int len, unsigned int off)
 {
     unsigned int size = fifo->mask + 1;
-    unsigned int esize = fifo->esize;
     unsigned int l;
 
     off &= fifo->mask;
-    if (esize != 1) {
-        off *= esize;
-        size *= esize;
-        len *= esize;
-    }
     l = min(len, size - off);
 
     memcpy(dst, fifo->data + off, l);

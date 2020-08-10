@@ -7,11 +7,10 @@ struct __kfifo {
     unsigned int in;
     unsigned int out;
     unsigned int mask;
-    unsigned int esize;
     void *data;
 };
 
-int kfifo_init(struct __kfifo *fifo, void *buffer, unsigned int size, size_t esize);
+int kfifo_init(struct __kfifo *fifo, void *buffer, unsigned int size);
 
 unsigned int kfifo_in(struct __kfifo *fifo, const void *buf, unsigned int len);
 unsigned int kfifo_out_peek(struct __kfifo *fifo, void *buf, unsigned int len);

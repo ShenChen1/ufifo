@@ -3,8 +3,6 @@
 
 #define ARRAY_SIZE(ary) (sizeof((ary))/sizeof(*(ary)))
 
-#define smp_wmb __sync_synchronize
-
 #define min(x, y) ({                \
     typeof(x) _min1 = (x);          \
     typeof(y) _min2 = (y);          \
