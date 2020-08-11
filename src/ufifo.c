@@ -195,16 +195,30 @@ int ufifo_close(ufifo_t *handle)
 
 static unsigned int __ufifo_peek_len(ufifo_t *handle)
 {
-    unsigned int len = handle->kfifo->in - handle->kfifo->out > 0 ? 1 : 0;
+    unsigned int len = handle->kfifo->in == handle->kfifo->out ? 0 : 1;
 
-    if (handle->hook.recsize) {
+    if (len && handle->hook.recsize) {
         len = handle->hook.recsize(
-            handle->kfifo->data + handle->kfifo->out,
-            handle->kfifo->out & handle->kfifo->mask,
+            handle->kfifo->data + (handle->kfifo->out & handle->kfifo->mask),
+            handle->kfifo->mask - (handle->kfifo->out & handle->kfifo->mask) + 1,
             handle->kfifo->data);
     }
 
     return len;
+}
+
+static unsigned int __ufifo_peek_tag(ufifo_t *handle)
+{
+    unsigned int ret = 0;
+
+    if (handle->hook.rectag) {
+        ret = handle->hook.rectag(
+            handle->kfifo->data + (handle->kfifo->out & handle->kfifo->mask),
+            handle->kfifo->mask - (handle->kfifo->out & handle->kfifo->mask) + 1,
+            handle->kfifo->data);
+    }
+
+    return ret;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -292,4 +306,44 @@ unsigned int ufifo_peek(ufifo_t *handle, void *buf, unsigned int size)
     ufifo_lock_release(handle);
 
     return len;
+}
+
+void ufifo_oldest(ufifo_t *handle, unsigned int tag)
+{
+    unsigned int len;
+
+    ufifo_lock_acquire(handle);
+    while(1) {
+        len = __ufifo_peek_len(handle);
+        if (!len) {
+            break;
+        }
+        if (__ufifo_peek_tag(handle) == tag) {
+            break;
+        }
+        handle->kfifo->out += len;
+    }
+    ufifo_lock_release(handle);
+}
+
+void ufifo_newest(ufifo_t *handle, unsigned int tag)
+{
+    unsigned int len;
+    unsigned int final = 0, tmp;
+
+    ufifo_lock_acquire(handle);
+    tmp = handle->kfifo->out;
+    while(1) {
+        len = __ufifo_peek_len(handle);
+        if (!len) {
+            handle->kfifo->out = final ? final : tmp;
+            break;
+        }
+        if (__ufifo_peek_tag(handle) == tag) {
+            final = handle->kfifo->out;
+        }
+        handle->kfifo->out += len;
+        tmp = handle->kfifo->out;
+    }
+    ufifo_lock_release(handle);
 }
