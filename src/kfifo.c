@@ -11,12 +11,12 @@
 /*
  * internal helper to calculate the unused elements in a fifo
  */
-static inline unsigned int __kfifo_unused(struct __kfifo *fifo)
+static inline unsigned int __kfifo_unused(kfifo_t *fifo)
 {
     return (fifo->mask + 1) - (fifo->in - fifo->out);
 }
 
-int kfifo_init(struct __kfifo *fifo, void *buffer, unsigned int size)
+int kfifo_init(kfifo_t *fifo, void *buffer, unsigned int size)
 {
     size = rounddown_pow_of_two(size);
 
@@ -33,7 +33,7 @@ int kfifo_init(struct __kfifo *fifo, void *buffer, unsigned int size)
     return 0;
 }
 
-static void __kfifo_copy_in(struct __kfifo *fifo, const void *src, unsigned int len, unsigned int off)
+static void __kfifo_copy_in(kfifo_t *fifo, const void *src, unsigned int len, unsigned int off)
 {
     unsigned int size = fifo->mask + 1;
     unsigned int l;
@@ -50,7 +50,7 @@ static void __kfifo_copy_in(struct __kfifo *fifo, const void *src, unsigned int 
     smp_wmb();
 }
 
-unsigned int kfifo_in(struct __kfifo *fifo, const void *buf, unsigned int len)
+unsigned int kfifo_in(kfifo_t *fifo, const void *buf, unsigned int len)
 {
     unsigned int l;
 
@@ -63,7 +63,7 @@ unsigned int kfifo_in(struct __kfifo *fifo, const void *buf, unsigned int len)
     return len;
 }
 
-static void __kfifo_copy_out(struct __kfifo *fifo, void *dst, unsigned int len, unsigned int off)
+static void __kfifo_copy_out(kfifo_t *fifo, void *dst, unsigned int len, unsigned int off)
 {
     unsigned int size = fifo->mask + 1;
     unsigned int l;
@@ -80,7 +80,7 @@ static void __kfifo_copy_out(struct __kfifo *fifo, void *dst, unsigned int len, 
     smp_wmb();
 }
 
-unsigned int kfifo_out_peek(struct __kfifo *fifo, void *buf, unsigned int len)
+unsigned int kfifo_out_peek(kfifo_t *fifo, void *buf, unsigned int len)
 {
     unsigned int l;
 
@@ -92,7 +92,7 @@ unsigned int kfifo_out_peek(struct __kfifo *fifo, void *buf, unsigned int len)
     return len;
 }
 
-unsigned int kfifo_out(struct __kfifo *fifo, void *buf, unsigned int len)
+unsigned int kfifo_out(kfifo_t *fifo, void *buf, unsigned int len)
 {
     len = kfifo_out_peek(fifo, buf, len);
     fifo->out += len;

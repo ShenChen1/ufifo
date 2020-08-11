@@ -54,7 +54,8 @@ unsigned int ufifo_peek_len(ufifo_t *handle);
 unsigned int ufifo_put(ufifo_t *handle, void *buf, unsigned int size);
 unsigned int ufifo_get(ufifo_t *handle, void *buf, unsigned int size);
 unsigned int ufifo_peek(ufifo_t *handle, void *buf, unsigned int size);
-void ufifo_oldest(ufifo_t *handle, unsigned int tag);
-void ufifo_newest(ufifo_t *handle, unsigned int tag);
+int ufifo_oldest(ufifo_t *handle, unsigned int tag);
+int ufifo_newest(ufifo_t *handle, unsigned int tag);
+unsigned int ufifo_poll_get(ufifo_t *handle, void *buf, unsigned int size)
 
 #endif /* _UFIFO_H_ */

@@ -3,17 +3,16 @@
 
 #include <stdbool.h>
 
-struct __kfifo {
+typedef struct __kfifo {
     unsigned int in;
     unsigned int out;
     unsigned int mask;
     void *data;
-};
+} kfifo_t;
 
-int kfifo_init(struct __kfifo *fifo, void *buffer, unsigned int size);
-
-unsigned int kfifo_in(struct __kfifo *fifo, const void *buf, unsigned int len);
-unsigned int kfifo_out_peek(struct __kfifo *fifo, void *buf, unsigned int len);
-unsigned int kfifo_out(struct __kfifo *fifo, void *buf, unsigned int len);
+int kfifo_init(kfifo_t *fifo, void *buffer, unsigned int size);
+unsigned int kfifo_in(kfifo_t *fifo, const void *buf, unsigned int len);
+unsigned int kfifo_out_peek(kfifo_t *fifo, void *buf, unsigned int len);
+unsigned int kfifo_out(kfifo_t *fifo, void *buf, unsigned int len);
 
 #endif /* _KFIFO_H_ */
