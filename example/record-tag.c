@@ -78,7 +78,7 @@ int main(void)
     printf("record fifo test start\n");
     ufifo_init_t init = {};
     init.opt = UFIFO_OPT_ALLOC;
-    init.lock = UFIFO_LOCK_NONE;
+    init.lock = UFIFO_LOCK_MUTEX;
     init.alloc.size = FIFO_SIZE;
     init.hook.recsize = recsize;
     init.hook.rectag = rectag;
