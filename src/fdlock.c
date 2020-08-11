@@ -10,7 +10,7 @@
 #include <unistd.h>
 #include "fdlock.h"
 
-struct fdlock {
+struct __fdlock {
     int fd;
     char *path;
 };
