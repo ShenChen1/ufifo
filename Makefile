@@ -2,10 +2,10 @@ CROSS_COMPILE ?=
 CC := $(CROSS_COMPILE)-gcc
 AR := $(CROSS_COMPILE)-ar
 LD := $(CROSS_COMPILE)-g++
-CFLAGS := -g -Wall -Werror -Os -Iinc
+CFLAGS := -g -Wall -Os -Werror -Iinc
 LDFLAGS := -lrt -lpthread
 
-TARGET := bytestream record record-tag epoll
+TARGET := pressure pressure-block bytestream nolock record record-tag
 
 all: ufifo $(TARGET)
 
@@ -13,10 +13,7 @@ clean:
 	rm -rf $(TARGET) obj
 
 test: $(TARGET)
-	./bytestream
-	./record
-	./record-tag
-	./epoll
+	@for bin in $(TARGET); do valgrind ./$$bin || exit 1; done
 
 SRC := src/mutex.c src/fdlock.c src/kfifo.c src/ufifo.c
 OBJ := $(addprefix obj/,$(notdir $(patsubst %.c, %.o, $(SRC))))
@@ -29,14 +26,20 @@ ufifo: $(OBJ)
 	$(AR) -src obj/lib$@.a $^
 	$(LD) -shared -fPIC -o obj/lib$@.so $^
 
+pressure: example/pressure.c obj/libufifo.a
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+pressure-block: example/pressure-block.c obj/libufifo.a
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
 bytestream: example/bytestream.c obj/libufifo.a
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+nolock: example/nolock.c obj/libufifo.a
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 record: example/record.c obj/libufifo.a
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 record-tag: example/record-tag.c obj/libufifo.a
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
-
-epoll: example/epoll.c obj/libufifo.a
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)

@@ -49,7 +49,7 @@ static inline int __fdlock_acquire(ufifo_t *ufifo)
 
 static inline int __fdlock_release(ufifo_t *ufifo)
 {
-    return fdlock_release((fdlock_t **)ufifo->lock);
+    return fdlock_release((fdlock_t **)&ufifo->lock);
 }
 
 static inline int __mutex_init(ufifo_t *ufifo)
@@ -179,7 +179,7 @@ int ufifo_open(char *name, ufifo_init_t *init, ufifo_t **handle)
     }
 
     ret |= __ufifo_hook_init(ufifo, &init->hook);
-    ret |= __ufifo_lock_init(ufifo, init->opt);
+    ret |= __ufifo_lock_init(ufifo, init->lock);
     if (ret < 0) {
         goto err1;
     }
@@ -345,8 +345,12 @@ unsigned int ufifo_get(ufifo_t *handle, void *buf, unsigned int size)
 
     __ufifo_lock_acquire(handle);
     len = __ufifo_peek_len(handle, handle->kfifo->out);
-    size = len == 1 ? size : min(size, len);
+    if (len == 0) {
+        goto end;
+    }
+    size = handle->hook.recsize ? min(size, len) : size;
     len = kfifo_out(handle->kfifo, buf, size);
+end:
     __ufifo_lock_release(handle);
 
     return len;
@@ -359,8 +363,12 @@ unsigned int ufifo_peek(ufifo_t *handle, void *buf, unsigned int size)
 
     __ufifo_lock_acquire(handle);
     len = __ufifo_peek_len(handle, handle->kfifo->out);
-    size = len == 1 ? size : min(size, len);
+    if (len == 0) {
+        goto end;
+    }
+    size = handle->hook.recsize ? min(size, len) : size;
     len = kfifo_out_peek(handle->kfifo, buf, size);
+end:
     __ufifo_lock_release(handle);
 
     return len;
