@@ -8,4 +8,4 @@ int mutex_deinit(mutex_t *handle);
 int mutex_acquire(mutex_t *handle);
 int mutex_release(mutex_t *handle);
 
-#endif /* _FDLOCK_H_ */
+#endif /* _MUTEX_H_ */

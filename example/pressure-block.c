@@ -3,11 +3,12 @@
 #include <string.h>
 #include <assert.h>
 #include <pthread.h>
+#include <unistd.h>
 #include "ufifo.h"
 
 #define NUM 100000
 #define FIFO_SIZE 128
-#define PRODUCTSUM 2
+#define PRODUCTSUM 3
 #define CONSUMESUM 2
 
 typedef struct {
@@ -47,14 +48,14 @@ void *product(void *arg)
     while (1) {
         rec->size = sizeof("hello");
         memcpy(rec->buf, "hello", rec->size);
-        ret = ufifo_put(test, rec, rec->size + sizeof(record_t));
+        printf("---------put start\n");
+        ret = ufifo_put_ex(test, rec, rec->size + sizeof(record_t));
+        printf("---------put end: %u\n", ret);
         if (ret) {
             assert(ret == rec->size + sizeof(record_t));
-            if (rec->index == NUM) {
-                break;
-            }
             rec->index++;
         }
+        usleep(CONSUMESUM*100);
     }
 
     return NULL;
@@ -68,13 +69,13 @@ void *consume(void *arg)
 
     while (1) {
         memset(buf, 0, sizeof(buf));
-        ret = ufifo_get(test, rec, sizeof(buf));
+        printf("+++++++++get start\n");
+        ret = ufifo_get_ex(test, rec, sizeof(buf));
+        printf("+++++++++get end: %u\n", ret);
         if (ret != 0) {
             assert(!strcmp("hello", rec->buf));
-            if (rec->index == NUM) {
-                break;
-            }
         }
+        usleep(PRODUCTSUM*100);
     }
 
     return NULL;
@@ -91,7 +92,7 @@ int main()
     init.lock = UFIFO_LOCK_MUTEX;
     init.alloc.size = FIFO_SIZE;
     init.hook.recsize = recsize;
-    ufifo_open("pressure", &init, &test);
+    ufifo_open("pressure-block", &init, &test);
 
     for (i = 0; i < PRODUCTSUM; ++i) {
         pthread_create(&p[i], NULL, product, &i);

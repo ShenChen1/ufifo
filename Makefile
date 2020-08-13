@@ -2,7 +2,7 @@ CROSS_COMPILE ?=
 CC := $(CROSS_COMPILE)-gcc
 AR := $(CROSS_COMPILE)-ar
 LD := $(CROSS_COMPILE)-gcc
-CFLAGS := -g -Wall -Os -Werror -Iinc
+CFLAGS := -g -Wall -O0 -Werror -Iinc
 LDFLAGS := -lrt -lpthread
 
 ifeq ($(SANITIZER), 1)
