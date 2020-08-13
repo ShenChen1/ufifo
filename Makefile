@@ -1,9 +1,14 @@
 CROSS_COMPILE ?=
 CC := $(CROSS_COMPILE)-gcc
 AR := $(CROSS_COMPILE)-ar
-LD := $(CROSS_COMPILE)-g++
+LD := $(CROSS_COMPILE)-gcc
 CFLAGS := -g -Wall -Os -Werror -Iinc
 LDFLAGS := -lrt -lpthread
+
+ifeq ($(SANITIZER), 1)
+CFLAGS += -fsanitize=address -fno-omit-frame-pointer -fno-common
+LDFLAGS += -fsanitize=address
+endif
 
 TARGET := pressure pressure-block bytestream nolock record record-tag
 
@@ -13,7 +18,7 @@ clean:
 	rm -rf $(TARGET) obj
 
 test: $(TARGET)
-	@for bin in $(TARGET); do valgrind ./$$bin || exit 1; done
+	@for bin in $(TARGET); do ./$$bin || exit 1; done
 
 SRC := src/mutex.c src/fdlock.c src/kfifo.c src/ufifo.c
 OBJ := $(addprefix obj/,$(notdir $(patsubst %.c, %.o, $(SRC))))
