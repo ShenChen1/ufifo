@@ -1,4 +1,5 @@
 CROSS_COMPILE ?=
+PREFIX ?=
 CC := $(CROSS_COMPILE)-gcc
 AR := $(CROSS_COMPILE)-ar
 LD := $(CROSS_COMPILE)-gcc
@@ -10,12 +11,19 @@ CFLAGS += -fsanitize=address -fno-omit-frame-pointer -fno-common
 LDFLAGS += -fsanitize=address
 endif
 
+LIB := ufifo
 TARGET := pressure bytestream nolock record record-tag
 
-all: ufifo $(TARGET)
+all: $(LIB) $(TARGET)
 
 clean:
-	rm -rf $(TARGET) obj
+	@rm -vrf $(TARGET) obj
+
+install:
+	@mkdir -p $(PREFIX)/usr/local/include/$(LIB)/
+	@cp -av inc/ufifo.h $(PREFIX)/usr/local/include/$(LIB)/
+	@mkdir -p ${PREFIX}/usr/local/lib/
+	@cp -av obj/libufifo.so $(PREFIX)/usr/local/lib/
 
 test: $(TARGET)
 	@for bin in $(TARGET); do ./$$bin || exit 1; done
@@ -27,7 +35,7 @@ obj/%.o: src/%.c
 	@mkdir -p obj
 	$(CC) -c $(CFLAGS) -fPIC -o $@ $<
 
-ufifo: $(OBJ)
+$(LIB): $(OBJ)
 	$(AR) -src obj/lib$@.a $^
 	$(LD) -shared -fPIC -o obj/lib$@.so $^
 

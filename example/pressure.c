@@ -6,10 +6,10 @@
 #include <unistd.h>
 #include "ufifo.h"
 
-#define NUM 1000000
+#define NUM 100000
 #define FIFO_SIZE 128
-#define PRODUCTSUM 2
-#define CONSUMESUM 5
+#define PRODUCTSUM 5
+#define CONSUMESUM 1
 
 typedef struct {
     unsigned int size;
@@ -60,7 +60,7 @@ void *product(void *arg)
         if (ret) {
             assert(ret == rec->size + sizeof(record_t));
             if (rec->index == NUM) {
-                break;
+                //break;
             }
             rec->index++;
         }
@@ -87,7 +87,7 @@ void *consume(void *arg)
         if (ret != 0) {
             assert(!strcmp("hello", rec->buf));
             if (rec->index == NUM) {
-                break;
+                //break;
             }
         }
     }
