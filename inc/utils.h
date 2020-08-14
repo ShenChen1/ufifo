@@ -3,6 +3,9 @@
 
 #define ARRAY_SIZE(ary) (sizeof((ary))/sizeof(*(ary)))
 
+#define container_of(ptr, type, member) \
+    (type *)((char *)(ptr) - (char *) &((type *)0)->member)
+
 #define min(x, y) ({                \
     typeof(x) _min1 = (x);          \
     typeof(y) _min2 = (y);          \
