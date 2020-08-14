@@ -52,11 +52,11 @@ unsigned int ufifo_len(ufifo_t *handle);
 void ufifo_skip(ufifo_t *handle);
 unsigned int ufifo_peek_len(ufifo_t *handle);
 unsigned int ufifo_put(ufifo_t *handle, void *buf, unsigned int size);
+unsigned int ufifo_put_block(ufifo_t *handle, void *buf, unsigned int size);
 unsigned int ufifo_get(ufifo_t *handle, void *buf, unsigned int size);
+unsigned int ufifo_get_block(ufifo_t *handle, void *buf, unsigned int size);
 unsigned int ufifo_peek(ufifo_t *handle, void *buf, unsigned int size);
 int ufifo_oldest(ufifo_t *handle, unsigned int tag);
 int ufifo_newest(ufifo_t *handle, unsigned int tag);
-unsigned int ufifo_put_ex(ufifo_t *handle, void *buf, unsigned int size);
-unsigned int ufifo_get_ex(ufifo_t *handle, void *buf, unsigned int size);
 
 #endif /* _UFIFO_H_ */

@@ -10,7 +10,7 @@ CFLAGS += -fsanitize=address -fno-omit-frame-pointer -fno-common
 LDFLAGS += -fsanitize=address
 endif
 
-TARGET := pressure pressure-block bytestream nolock record record-tag
+TARGET := pressure bytestream nolock record record-tag
 
 all: ufifo $(TARGET)
 
@@ -32,9 +32,6 @@ ufifo: $(OBJ)
 	$(LD) -shared -fPIC -o obj/lib$@.so $^
 
 pressure: example/pressure.c obj/libufifo.a
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
-
-pressure-block: example/pressure-block.c obj/libufifo.a
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 bytestream: example/bytestream.c obj/libufifo.a

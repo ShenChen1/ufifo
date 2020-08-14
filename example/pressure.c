@@ -6,16 +6,18 @@
 #include <unistd.h>
 #include "ufifo.h"
 
-#define NUM 100000
+#define NUM 1000000
 #define FIFO_SIZE 128
-#define PRODUCTSUM 10
-#define CONSUMESUM 10
+#define PRODUCTSUM 2
+#define CONSUMESUM 5
 
 typedef struct {
     unsigned int size;
     unsigned int index;
     char buf[0];
 } record_t;
+
+static int run_mode = 0;
 
 static unsigned int recsize(unsigned char *p1, unsigned int n1, unsigned char *p2)
 {
@@ -48,7 +50,13 @@ void *product(void *arg)
     while (1) {
         rec->size = sizeof("hello");
         memcpy(rec->buf, "hello", rec->size);
-        ret = ufifo_put(test, rec, rec->size + sizeof(record_t));
+        printf("-----[%zu]: put start\n", (size_t)arg);
+        if (run_mode) {
+            ret = ufifo_put(test, rec, rec->size + sizeof(record_t));
+        } else {
+            ret = ufifo_put_block(test, rec, rec->size + sizeof(record_t));
+        }
+        printf("-----[%zu]: put end: %u\n", (size_t)arg, ret);
         if (ret) {
             assert(ret == rec->size + sizeof(record_t));
             if (rec->index == NUM) {
@@ -56,7 +64,6 @@ void *product(void *arg)
             }
             rec->index++;
         }
-        usleep(*(useconds_t *)arg);
     }
 
     return NULL;
@@ -70,24 +77,33 @@ void *consume(void *arg)
 
     while (1) {
         memset(buf, 0, sizeof(buf));
-        ret = ufifo_get(test, rec, sizeof(buf));
+        printf("-----[%zu]: get start\n", (size_t)arg);
+        if (run_mode) {
+            ret = ufifo_get(test, rec, sizeof(buf));
+        } else {
+            ret = ufifo_get_block(test, rec, sizeof(buf));
+        }
+        printf("-----[%zu]: get end: %u\n", (size_t)arg, ret);
         if (ret != 0) {
             assert(!strcmp("hello", rec->buf));
             if (rec->index == NUM) {
                 break;
             }
         }
-        usleep(*(useconds_t *)arg);
     }
 
     return NULL;
 }
 
-int main()
+int main(int argc, char **argv)
 {
+    if (argc > 1) {
+        run_mode = 1;
+    }
+
     pthread_t p[PRODUCTSUM];
     pthread_t c[CONSUMESUM];
-    int i;
+    size_t i;
 
     ufifo_init_t init = {};
     init.opt = UFIFO_OPT_ALLOC;
@@ -97,18 +113,18 @@ int main()
     ufifo_open("pressure", &init, &test);
 
     for (i = 0; i < PRODUCTSUM; ++i) {
-        pthread_create(&p[i], NULL, product, &i);
+        pthread_create(&p[i], NULL, product, (void *)i);
     }
 
-    for(i = 0; i < CONSUMESUM; ++i){
-        pthread_create(&c[i], NULL, consume, &i);
+    for (i = 0; i < CONSUMESUM; ++i){
+        pthread_create(&c[i], NULL, consume, (void *)i);
     }
 
-    for(i = 0; i < PRODUCTSUM; ++i) {
+    for (i = 0; i < PRODUCTSUM; ++i) {
         pthread_join(p[i], NULL);
     }
 
-    for(i = 0; i < CONSUMESUM; ++i) {
+    for (i = 0; i < CONSUMESUM; ++i) {
         pthread_join(c[i], NULL);
     }
 
