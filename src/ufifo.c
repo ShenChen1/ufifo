@@ -15,18 +15,23 @@
 #include "ufifo.h"
 #include "utils.h"
 
-#define UFIFO_DEBUG (1)
+#define UFIFO_DEBUG (0)
 #define UFIFO_MAGIC (0xf1f0f1f0)
 
+#if UFIFO_DEBUG
 #define UFIFO_CHECK_HANDLE_FUNC(handle) \
     assert((handle)); \
     assert((handle)->magic == UFIFO_MAGIC);
+#else
+#define UFIFO_CHECK_HANDLE_FUNC(handle)
+#endif
 
 typedef void * lock_t;
 
 struct ufifo {
+#if UFIFO_DEBUG
     unsigned int    magic;
-
+#endif
     char            name[NAME_MAX];
     kfifo_t        *kfifo;
     ufifo_hook_t    hook;
@@ -249,7 +254,9 @@ int ufifo_open(char *name, ufifo_init_t *init, ufifo_t **handle)
         goto err4;
     }
 
+#if UFIFO_DEBUG
     ufifo->magic = UFIFO_MAGIC;
+#endif
     *handle = ufifo;
     __ufifo_lock_release(&ufifo->lock);
     return 0;
