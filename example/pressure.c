@@ -9,7 +9,7 @@
 #define NUM 100000
 #define FIFO_SIZE 128
 #define PRODUCTSUM 5
-#define CONSUMESUM 1
+#define CONSUMESUM 5
 
 typedef struct {
     unsigned int size;
@@ -38,7 +38,8 @@ static unsigned int recsize(unsigned char *p1, unsigned int n1, unsigned char *p
     return sizeof(record_t) + size;
 }
 
-ufifo_t *test = NULL;
+ufifo_t *test_product = NULL;
+ufifo_t *test_consume = NULL;
 
 void *product(void *arg)
 {
@@ -52,15 +53,15 @@ void *product(void *arg)
         memcpy(rec->buf, "hello", rec->size);
         printf("-----[%zu]: put start\n", (size_t)arg);
         if (run_mode) {
-            ret = ufifo_put(test, rec, rec->size + sizeof(record_t));
+            ret = ufifo_put(test_product, rec, rec->size + sizeof(record_t));
         } else {
-            ret = ufifo_put_block(test, rec, rec->size + sizeof(record_t));
+            ret = ufifo_put_block(test_product, rec, rec->size + sizeof(record_t));
         }
         printf("-----[%zu]: put end: %u\n", (size_t)arg, ret);
         if (ret) {
             assert(ret == rec->size + sizeof(record_t));
             if (rec->index == NUM) {
-                //break;
+                break;
             }
             rec->index++;
         }
@@ -79,15 +80,15 @@ void *consume(void *arg)
         memset(buf, 0, sizeof(buf));
         printf("-----[%zu]: get start\n", (size_t)arg);
         if (run_mode) {
-            ret = ufifo_get(test, rec, sizeof(buf));
+            ret = ufifo_get(test_consume, rec, sizeof(buf));
         } else {
-            ret = ufifo_get_block(test, rec, sizeof(buf));
+            ret = ufifo_get_block(test_consume, rec, sizeof(buf));
         }
         printf("-----[%zu]: get end: %u\n", (size_t)arg, ret);
         if (ret != 0) {
             assert(!strcmp("hello", rec->buf));
             if (rec->index == NUM) {
-                //break;
+                break;
             }
         }
     }
@@ -110,7 +111,11 @@ int main(int argc, char **argv)
     init.lock = UFIFO_LOCK_MUTEX;
     init.alloc.size = FIFO_SIZE;
     init.hook.recsize = recsize;
-    ufifo_open("pressure", &init, &test);
+    ufifo_open("pressure", &init, &test_product);
+    init.opt = UFIFO_OPT_ATTACH;
+    init.lock = UFIFO_LOCK_MUTEX;
+    init.hook.recsize = recsize;
+    ufifo_open("pressure", &init, &test_consume);
 
     for (i = 0; i < PRODUCTSUM; ++i) {
         pthread_create(&p[i], NULL, product, (void *)i);
@@ -128,6 +133,7 @@ int main(int argc, char **argv)
         pthread_join(c[i], NULL);
     }
 
-    ufifo_close(test);
+    ufifo_close(test_product);
+    ufifo_close(test_consume);
     return 0;
 }
