@@ -43,6 +43,7 @@ typedef struct ufifo ufifo_t;
 
 int ufifo_open(char *name, ufifo_init_t *init, ufifo_t **handle);
 int ufifo_close(ufifo_t *handle);
+int ufifo_destroy(ufifo_t *handle);
 unsigned int ufifo_size(ufifo_t *handle);
 void ufifo_reset(ufifo_t *handle);
 unsigned int ufifo_len(ufifo_t *handle);

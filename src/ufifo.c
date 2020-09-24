@@ -273,10 +273,9 @@ err1:
     return ret;
 }
 
-int ufifo_close(ufifo_t *handle)
+static int __ufifo_close(ufifo_t *handle)
 {
     int ret;
-    UFIFO_CHECK_HANDLE_FUNC(handle);
 
     ret = __ufifo_lock_acquire(&handle->lock);
     if (ret < 0) {
@@ -290,8 +289,36 @@ int ufifo_close(ufifo_t *handle)
 
     __ufifo_lock_release(&handle->lock);
     __ufifo_lock_deinit(&handle->lock);
-    free(handle);
 
+    return 0;
+}
+
+int ufifo_close(ufifo_t *handle)
+{
+    int ret;
+    UFIFO_CHECK_HANDLE_FUNC(handle);
+
+    ret = __ufifo_close(handle);
+    if (ret) {
+        return ret;
+    }
+
+    free(handle);
+    return 0;
+}
+
+int ufifo_destroy(ufifo_t *handle)
+{
+    int ret;
+    UFIFO_CHECK_HANDLE_FUNC(handle);
+
+    ret = __ufifo_close(handle);
+    if (ret) {
+        return ret;
+    }
+
+    shm_unlink(handle->name);
+    free(handle);
     return 0;
 }
 

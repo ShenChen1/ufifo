@@ -99,6 +99,6 @@ int main()
     pthread_join(p, NULL);
     pthread_join(c, NULL);
 
-    ufifo_close(test);
+    ufifo_destroy(test);
     return 0;
 }

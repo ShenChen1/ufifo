@@ -133,7 +133,7 @@ int main(int argc, char **argv)
         pthread_join(c[i], NULL);
     }
 
-    ufifo_close(test_product);
     ufifo_close(test_consume);
+    ufifo_destroy(test_product);
     return 0;
 }

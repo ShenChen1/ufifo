@@ -105,6 +105,6 @@ int main(void)
     }
     printf("test passed\n");
 
-    ufifo_close(test);
+    ufifo_destroy(test);
     return 0;
 }
