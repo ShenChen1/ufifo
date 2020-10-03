@@ -284,7 +284,7 @@ static int __ufifo_close(ufifo_t *handle)
 
     __ufifo_bsem_deinit(handle->bsem_wr);
     __ufifo_bsem_deinit(handle->bsem_rd);
-    munmap(handle->shm_mem, handle->shm_size);
+    munmap(handle->shm_mem, handle->shm_size + (sizeof(kfifo_t) + 2 * sizeof(sem_t)));
     close(handle->shm_fd);
 
     __ufifo_lock_release(&handle->lock);
