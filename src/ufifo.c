@@ -273,7 +273,7 @@ err1:
     return ret;
 }
 
-static int __ufifo_close(ufifo_t *handle)
+static int __ufifo_close(ufifo_t *handle, int destroy)
 {
     int ret;
 
@@ -282,44 +282,33 @@ static int __ufifo_close(ufifo_t *handle)
         return ret;
     }
 
-    __ufifo_bsem_deinit(handle->bsem_wr);
-    __ufifo_bsem_deinit(handle->bsem_rd);
+    if (destroy) {
+        __ufifo_bsem_deinit(handle->bsem_wr);
+        __ufifo_bsem_deinit(handle->bsem_rd);
+    }
     munmap(handle->shm_mem, handle->shm_size + (sizeof(kfifo_t) + 2 * sizeof(sem_t)));
     close(handle->shm_fd);
 
     __ufifo_lock_release(&handle->lock);
     __ufifo_lock_deinit(&handle->lock);
 
+    if (destroy) {
+        shm_unlink(handle->name);
+    }
+    free(handle);
     return 0;
 }
 
 int ufifo_close(ufifo_t *handle)
 {
-    int ret;
     UFIFO_CHECK_HANDLE_FUNC(handle);
-
-    ret = __ufifo_close(handle);
-    if (ret) {
-        return ret;
-    }
-
-    free(handle);
-    return 0;
+    return __ufifo_close(handle, 0);
 }
 
 int ufifo_destroy(ufifo_t *handle)
 {
-    int ret;
     UFIFO_CHECK_HANDLE_FUNC(handle);
-
-    ret = __ufifo_close(handle);
-    if (ret) {
-        return ret;
-    }
-
-    shm_unlink(handle->name);
-    free(handle);
-    return 0;
+    return __ufifo_close(handle, 1);
 }
 
 static unsigned int __ufifo_unused_len(ufifo_t *handle)
