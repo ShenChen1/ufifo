@@ -11,6 +11,7 @@
 #include <fcntl.h>          /* For O_* constants */
 #include "fdlock.h"
 #include "mutex.h"
+#include "dict.h"
 #include "kfifo.h"
 #include "ufifo.h"
 #include "utils.h"
@@ -50,6 +51,21 @@ struct ufifo {
     sem_t          *bsem_wr;
 };
 
+static mutex_t *s_mod_lock = NULL;
+static dict_t *s_mod_dict = NULL;
+
+static void __attribute__((constructor)) __module_init()
+{
+    mutex_init(&s_mod_lock);
+    s_mod_dict = dictCreate(dictStringOps(NULL), dictIntOps(NULL));
+}
+
+static void __attribute__((destructor)) __module_deinit()
+{
+    dictDestroy(s_mod_dict);
+    mutex_deinit(s_mod_lock);
+}
+
 static inline int __fdlock_acquire(lock_t *lock)
 {
     char path[PATH_MAX];
@@ -65,11 +81,26 @@ static inline int __fdlock_release(lock_t *lock)
 
 static inline int __mutex_init(lock_t *lock)
 {
-    return mutex_init((mutex_t **)lock);
+    const void *mutex = NULL;
+    ufifo_t *ufifo = container_of(lock, ufifo_t, lock);
+    mutex_acquire(s_mod_lock);
+    mutex = dictGet(s_mod_dict, ufifo->name);
+    if (!mutex) {
+        mutex_init((mutex_t **)lock);
+        dictSet(s_mod_dict, ufifo->name, *lock);
+    } else {
+        *lock = (lock_t)mutex;
+    }
+    mutex_release(s_mod_lock);
+    return 0;
 }
 
 static inline int __mutex_deinit(lock_t *lock)
 {
+    ufifo_t *ufifo = container_of(lock, ufifo_t, lock);
+    mutex_acquire(s_mod_lock);
+    dictSet(s_mod_dict, ufifo->name, NULL);
+    mutex_release(s_mod_lock);
     return mutex_deinit((mutex_t *)*lock);
 }
 
@@ -290,9 +321,8 @@ static int __ufifo_close(ufifo_t *handle, int destroy)
     close(handle->shm_fd);
 
     __ufifo_lock_release(&handle->lock);
-    __ufifo_lock_deinit(&handle->lock);
-
     if (destroy) {
+        __ufifo_lock_deinit(&handle->lock);
         shm_unlink(handle->name);
     }
     free(handle);

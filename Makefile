@@ -28,7 +28,7 @@ install:
 test: $(TARGET)
 	@for bin in $(TARGET); do ./$$bin || exit 1; done
 
-SRC := src/mutex.c src/fdlock.c src/kfifo.c src/ufifo.c
+SRC := src/mutex.c src/fdlock.c src/kfifo.c src/ufifo.c src/dict.c
 OBJ := $(addprefix obj/,$(notdir $(patsubst %.c, %.o, $(SRC))))
 
 obj/%.o: src/%.c
