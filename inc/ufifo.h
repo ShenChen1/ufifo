@@ -3,6 +3,8 @@
 
 typedef unsigned int (*ufifo_recsize_hook_t)(unsigned char *p1, unsigned int n1, unsigned char *p2);
 typedef unsigned int (*ufifo_rectag_hook_t)(unsigned char *p1, unsigned int n1, unsigned char *p2);
+typedef unsigned int (*ufifo_recput_hook_t)(unsigned char *p1, unsigned int n1, unsigned char *p2, void *arg);
+typedef unsigned int (*ufifo_recget_hook_t)(unsigned char *p1, unsigned int n1, unsigned char *p2, void *arg);
 
 typedef enum {
     UFIFO_OPT_ALLOC,
@@ -20,6 +22,8 @@ typedef struct {
 typedef struct {
     ufifo_recsize_hook_t    recsize;
     ufifo_rectag_hook_t     rectag;
+    ufifo_recput_hook_t     recput;
+    ufifo_recget_hook_t     recget;
 } ufifo_hook_t;
 
 typedef enum {

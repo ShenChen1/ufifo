@@ -12,7 +12,7 @@ LDFLAGS += -fsanitize=address
 endif
 
 LIB := ufifo
-TARGET := pressure bytestream nolock record record-tag
+TARGET := pressure bytestream nolock record record-tag record-tag-cb
 
 all: $(LIB) $(TARGET)
 
@@ -52,4 +52,7 @@ record: example/record.c obj/libufifo.a
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 record-tag: example/record-tag.c obj/libufifo.a
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+record-tag-cb: example/record-tag-cb.c obj/libufifo.a
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)

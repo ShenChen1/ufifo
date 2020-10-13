@@ -187,6 +187,8 @@ static inline int __ufifo_hook_init(ufifo_t *ufifo, ufifo_hook_t *hook)
 {
     ufifo->hook.recsize = hook->recsize;
     ufifo->hook.rectag = hook->rectag;
+    ufifo->hook.recput = hook->recput;
+    ufifo->hook.recget = hook->recget;
     return 0;
 }
 
@@ -445,7 +447,17 @@ static unsigned int __ufifo_put(ufifo_t *handle, void *buf, unsigned int size, i
             break;
         }
     }
-    len = kfifo_in(handle->kfifo, handle->shm_mem, buf, size);
+    if (handle->hook.recput) {
+        len = handle->kfifo->mask & handle->kfifo->in;
+        len = handle->hook.recput(
+            handle->shm_mem + len,
+            handle->kfifo->mask - len + 1,
+            handle->shm_mem, buf);
+        assert(size == len);
+        handle->kfifo->in += len;
+    } else {
+        len = kfifo_in(handle->kfifo, handle->shm_mem, buf, size);
+    }
     __ufifo_bsem_post(handle->bsem_rd);
 end:
     __ufifo_lock_release(&handle->lock);
@@ -482,8 +494,19 @@ static unsigned int __ufifo_get(ufifo_t *handle, void *buf, unsigned int size, i
             break;
         }
     }
-    size = handle->hook.recsize ? min(size, len) : size;
-    len = kfifo_out(handle->kfifo, handle->shm_mem, buf, size);
+
+    if (handle->hook.recget) {
+        len = handle->kfifo->mask & handle->kfifo->out;
+        len = handle->hook.recget(
+            handle->shm_mem + len,
+            handle->kfifo->mask - len + 1,
+            handle->shm_mem, buf);
+        handle->kfifo->out += len;
+    } else {
+        size = handle->hook.recsize ? min(size, len) : size;
+        len = kfifo_out(handle->kfifo, handle->shm_mem, buf, size);
+    }
+
     __ufifo_bsem_post(handle->bsem_wr);
 end:
     __ufifo_lock_release(&handle->lock);
