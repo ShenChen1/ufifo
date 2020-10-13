@@ -12,4 +12,6 @@
     (void) (&_min1 == &_min2);      \
     _min1 < _min2 ? _min1 : _min2; })
 
+#define smp_wmb __sync_synchronize
+
 #endif /* _UTILS_H_ */

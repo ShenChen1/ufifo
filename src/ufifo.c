@@ -455,6 +455,7 @@ static unsigned int __ufifo_put(ufifo_t *handle, void *buf, unsigned int size, i
             handle->shm_mem, buf);
         assert(size == len);
         handle->kfifo->in += len;
+        smp_wmb();
     } else {
         len = kfifo_in(handle->kfifo, handle->shm_mem, buf, size);
     }
@@ -502,6 +503,7 @@ static unsigned int __ufifo_get(ufifo_t *handle, void *buf, unsigned int size, i
             handle->kfifo->mask - len + 1,
             handle->shm_mem, buf);
         handle->kfifo->out += len;
+        smp_wmb();
     } else {
         size = handle->hook.recsize ? min(size, len) : size;
         len = kfifo_out(handle->kfifo, handle->shm_mem, buf, size);

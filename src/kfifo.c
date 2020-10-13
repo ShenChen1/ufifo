@@ -6,8 +6,6 @@
 #include "log2.h"
 #include "utils.h"
 
-#define smp_wmb __sync_synchronize
-
 /*
  * internal helper to calculate the unused elements in a fifo
  */
