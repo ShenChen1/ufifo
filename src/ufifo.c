@@ -575,6 +575,7 @@ int ufifo_oldest(ufifo_t *handle, unsigned int tag)
 int ufifo_newest(ufifo_t *handle, unsigned int tag)
 {
     int ret;
+    bool found = false;
     unsigned int len, tmp;
     unsigned int final = 0;
     UFIFO_CHECK_HANDLE_FUNC(handle);
@@ -584,11 +585,12 @@ int ufifo_newest(ufifo_t *handle, unsigned int tag)
     while(1) {
         len = __ufifo_peek_len(handle, tmp);
         if (!len) {
-            tmp = final ? final : tmp;
-            ret = final ? 0 : -ESPIPE;
+            tmp = found ? final : tmp;
+            ret = found ? 0 : -ESPIPE;
             break;
         }
         if (__ufifo_peek_tag(handle, tmp) == tag) {
+            found = true;
             final = tmp;
         }
         tmp += len;
