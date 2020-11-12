@@ -114,6 +114,7 @@ int main(int argc, char **argv)
     ufifo_open("pressure", &init, &test_product);
     init.opt = UFIFO_OPT_ATTACH;
     init.lock = UFIFO_LOCK_MUTEX;
+    init.attach.shared = 0;
     init.hook.recsize = recsize;
     ufifo_open("pressure", &init, &test_consume);
 

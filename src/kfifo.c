@@ -11,31 +11,31 @@
  */
 static inline unsigned int __kfifo_unused(kfifo_t *fifo)
 {
-    return (fifo->mask + 1) - (fifo->in - fifo->out);
+    return (*fifo->mask + 1) - (*fifo->in - *fifo->out);
 }
 
 int kfifo_init(kfifo_t *fifo, unsigned int size)
 {
     size = rounddown_pow_of_two(size);
 
-    fifo->in = 0;
-    fifo->out = 0;
+    *fifo->in = 0;
+    *fifo->out = 0;
 
     if (size < 2) {
-        fifo->mask = 0;
+        *fifo->mask = 0;
         return -EINVAL;
     }
-    fifo->mask = size - 1;
+    *fifo->mask = size - 1;
 
     return 0;
 }
 
 static void __kfifo_copy_in(kfifo_t *fifo, void *base, const void *src, unsigned int len, unsigned int off)
 {
-    unsigned int size = fifo->mask + 1;
+    unsigned int size = *fifo->mask + 1;
     unsigned int l;
 
-    off &= fifo->mask;
+    off &= *fifo->mask;
     l = min(len, size - off);
 
     memcpy(base + off, src, l);
@@ -55,17 +55,17 @@ unsigned int kfifo_in(kfifo_t *fifo, void *base, const void *buf, unsigned int l
     if (len > l)
         len = l;
 
-    __kfifo_copy_in(fifo, base, buf, len, fifo->in);
-    fifo->in += len;
+    __kfifo_copy_in(fifo, base, buf, len, *fifo->in);
+    *fifo->in += len;
     return len;
 }
 
 static void __kfifo_copy_out(kfifo_t *fifo, void *base, void *dst, unsigned int len, unsigned int off)
 {
-    unsigned int size = fifo->mask + 1;
+    unsigned int size = *fifo->mask + 1;
     unsigned int l;
 
-    off &= fifo->mask;
+    off &= *fifo->mask;
     l = min(len, size - off);
 
     memcpy(dst, base + off, l);
@@ -81,17 +81,17 @@ unsigned int kfifo_out_peek(kfifo_t *fifo, void *base, void *buf, unsigned int l
 {
     unsigned int l;
 
-    l = fifo->in - fifo->out;
+    l = *fifo->in - *fifo->out;
     if (len > l)
         len = l;
 
-    __kfifo_copy_out(fifo, base, buf, len, fifo->out);
+    __kfifo_copy_out(fifo, base, buf, len, *fifo->out);
     return len;
 }
 
 unsigned int kfifo_out(kfifo_t *fifo, void *base, void *buf, unsigned int len)
 {
     len = kfifo_out_peek(fifo, base, buf, len);
-    fifo->out += len;
+    *fifo->out += len;
     return len;
 }

@@ -4,9 +4,9 @@
 #include <stdbool.h>
 
 typedef struct __kfifo {
-    unsigned int in;
-    unsigned int out;
-    unsigned int mask;
+    unsigned int *in;
+    unsigned int *out;
+    unsigned int *mask;
 } kfifo_t;
 
 int kfifo_init(kfifo_t *fifo, unsigned int size);

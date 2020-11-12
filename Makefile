@@ -3,7 +3,7 @@ PREFIX ?=
 CC := $(CROSS_COMPILE)-gcc
 AR := $(CROSS_COMPILE)-ar
 LD := $(CROSS_COMPILE)-gcc
-CFLAGS := -g -Os -Wall -Werror -Iinc
+CFLAGS := -g -O0 -Wall -Werror -Iinc
 LDFLAGS := -lrt -lpthread
 
 ifeq ($(SANITIZER), 1)

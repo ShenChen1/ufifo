@@ -17,6 +17,7 @@ typedef struct {
 } ufifo_alloc_t;
 
 typedef struct {
+    unsigned int shared;
 } ufifo_attach_t;
 
 typedef struct {
@@ -55,9 +56,13 @@ void ufifo_skip(ufifo_t *handle);
 unsigned int ufifo_peek_len(ufifo_t *handle);
 unsigned int ufifo_put(ufifo_t *handle, void *buf, unsigned int size);
 unsigned int ufifo_put_block(ufifo_t *handle, void *buf, unsigned int size);
+unsigned int ufifo_put_timeout(ufifo_t *handle, void *buf, unsigned long timeout);
 unsigned int ufifo_get(ufifo_t *handle, void *buf, unsigned int size);
 unsigned int ufifo_get_block(ufifo_t *handle, void *buf, unsigned int size);
+unsigned int ufifo_get_timeout(ufifo_t *handle, void *buf, unsigned long timeout);
 unsigned int ufifo_peek(ufifo_t *handle, void *buf, unsigned int size);
+unsigned int ufifo_peek_block(ufifo_t *handle, void *buf, unsigned int size);
+unsigned int ufifo_peek_timeout(ufifo_t *handle, void *buf, unsigned long timeout);
 int ufifo_oldest(ufifo_t *handle, unsigned int tag);
 int ufifo_newest(ufifo_t *handle, unsigned int tag);
 
