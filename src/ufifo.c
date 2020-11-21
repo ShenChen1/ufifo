@@ -9,6 +9,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>       /* For mode constants */
 #include <fcntl.h>          /* For O_* constants */
+#include <time.h>
 #include "fdlock.h"
 #include "mutex.h"
 #include "dict.h"
@@ -174,6 +175,35 @@ static int __ufifo_bsem_wait(sem_t *bsem, lock_t *lock)
 
     __ufifo_lock_release(lock);
     ret = sem_wait(bsem);
+    __ufifo_lock_acquire(lock);
+
+    return ret;
+}
+
+static int __ufifo_bsem_timedwait(sem_t *bsem, lock_t *lock, long millisec)
+{
+    int ret;
+    struct timespec wt;
+    struct timespec ts;
+
+    __ufifo_lock_release(lock);
+
+    wt.tv_sec  = millisec / 1000;
+    wt.tv_nsec = (millisec % 1000) * 1000000;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+
+    wt.tv_sec  += ts.tv_sec;
+    wt.tv_nsec += ts.tv_nsec;
+    if(wt.tv_nsec >= 1000000000) {
+        wt.tv_sec  += 1;
+        wt.tv_nsec %= 1000000000;
+    }
+
+    ret = sem_timedwait(bsem, &wt);
+    if (ret && errno == ETIMEDOUT) {
+        ret = ETIMEDOUT;
+    }
     __ufifo_lock_acquire(lock);
 
     return ret;
@@ -441,7 +471,7 @@ unsigned int ufifo_peek_len(ufifo_t *handle)
     return len;
 }
 
-static unsigned int __ufifo_put(ufifo_t *handle, void *buf, unsigned int size, int block)
+static unsigned int __ufifo_put(ufifo_t *handle, void *buf, unsigned int size, long millisec)
 {
     int ret;
     unsigned int len;
@@ -450,7 +480,14 @@ static unsigned int __ufifo_put(ufifo_t *handle, void *buf, unsigned int size, i
     while (1) {
         len = __ufifo_unused_len(handle);
         if (len < size) {
-            ret = block ? __ufifo_bsem_wait(handle->bsem_wr, &handle->lock) : 1;
+            if (millisec == 0) {
+                ret = -1;
+            } else if (millisec == -1) {
+                ret = __ufifo_bsem_wait(handle->bsem_rd, &handle->lock);
+            } else {
+                ret = __ufifo_bsem_timedwait(handle->bsem_rd, &handle->lock, millisec);
+                millisec = 0;
+            }
             if (ret) {
                 len = 0;
                 goto end;
@@ -487,10 +524,16 @@ unsigned int ufifo_put(ufifo_t *handle, void *buf, unsigned int size)
 unsigned int ufifo_put_block(ufifo_t *handle, void *buf, unsigned int size)
 {
     UFIFO_CHECK_HANDLE_FUNC(handle);
-    return __ufifo_put(handle, buf, size, 1);
+    return __ufifo_put(handle, buf, size, -1);
 }
 
-static unsigned int __ufifo_get(ufifo_t *handle, void *buf, unsigned int size, int block)
+unsigned int ufifo_put_timeout(ufifo_t *handle, void *buf, unsigned int size, long millisec)
+{
+    UFIFO_CHECK_HANDLE_FUNC(handle);
+    return __ufifo_put(handle, buf, size, millisec);
+}
+
+static unsigned int __ufifo_get(ufifo_t *handle, void *buf, unsigned int size, long millisec)
 {
     int ret;
     unsigned int len;
@@ -499,7 +542,14 @@ static unsigned int __ufifo_get(ufifo_t *handle, void *buf, unsigned int size, i
     while (1) {
         len = __ufifo_peek_len(handle, *handle->kfifo.out);
         if (len == 0) {
-            ret = block ? __ufifo_bsem_wait(handle->bsem_rd, &handle->lock) : 1;
+            if (millisec == 0) {
+                ret = -1;
+            } else if (millisec == -1) {
+                ret = __ufifo_bsem_wait(handle->bsem_rd, &handle->lock);
+            } else {
+                ret = __ufifo_bsem_timedwait(handle->bsem_rd, &handle->lock, millisec);
+                millisec = 0;
+            }
             if (ret) {
                 goto end;
             }
@@ -537,10 +587,16 @@ unsigned int ufifo_get(ufifo_t *handle, void *buf, unsigned int size)
 unsigned int ufifo_get_block(ufifo_t *handle, void *buf, unsigned int size)
 {
     UFIFO_CHECK_HANDLE_FUNC(handle);
-    return __ufifo_get(handle, buf, size, 1);
+    return __ufifo_get(handle, buf, size, -1);
 }
 
-static unsigned int __ufifo_peek(ufifo_t *handle, void *buf, unsigned int size, int block)
+unsigned int ufifo_get_timeout(ufifo_t *handle, void *buf, unsigned int size, long millisec)
+{
+    UFIFO_CHECK_HANDLE_FUNC(handle);
+    return __ufifo_get(handle, buf, size, millisec);
+}
+
+static unsigned int __ufifo_peek(ufifo_t *handle, void *buf, unsigned int size, long millisec)
 {
     int ret;
     unsigned int len;
@@ -549,7 +605,14 @@ static unsigned int __ufifo_peek(ufifo_t *handle, void *buf, unsigned int size, 
     while (1) {
         len = __ufifo_peek_len(handle, *handle->kfifo.out);
         if (len == 0) {
-            ret = block ? __ufifo_bsem_wait(handle->bsem_rd, &handle->lock) : 1;
+            if (millisec == 0) {
+                ret = -1;
+            } else if (millisec == -1) {
+                ret = __ufifo_bsem_wait(handle->bsem_rd, &handle->lock);
+            } else {
+                ret = __ufifo_bsem_timedwait(handle->bsem_rd, &handle->lock, millisec);
+                millisec = 0;
+            }
             if (ret) {
                 goto end;
             }
@@ -586,7 +649,13 @@ unsigned int ufifo_peek(ufifo_t *handle, void *buf, unsigned int size)
 unsigned int ufifo_peek_block(ufifo_t *handle, void *buf, unsigned int size)
 {
     UFIFO_CHECK_HANDLE_FUNC(handle);
-    return __ufifo_peek(handle, buf, size, 1);
+    return __ufifo_peek(handle, buf, size, -1);
+}
+
+unsigned int ufifo_peek_timeout(ufifo_t *handle, void *buf, unsigned int size, long millisec)
+{
+    UFIFO_CHECK_HANDLE_FUNC(handle);
+    return __ufifo_peek(handle, buf, size, millisec);
 }
 
 int ufifo_oldest(ufifo_t *handle, unsigned int tag)
