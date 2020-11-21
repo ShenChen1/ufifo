@@ -466,8 +466,8 @@ static unsigned int __ufifo_put(ufifo_t *handle, void *buf, unsigned int size, i
             *handle->kfifo.mask - len + 1,
             handle->shm_mem, buf);
         assert(size == len);
-        *handle->kfifo.in += len;
         smp_wmb();
+        *handle->kfifo.in += len;
     } else {
         len = kfifo_in(&handle->kfifo, handle->shm_mem, buf, size);
     }
@@ -514,8 +514,8 @@ static unsigned int __ufifo_get(ufifo_t *handle, void *buf, unsigned int size, i
             handle->shm_mem + len,
             *handle->kfifo.mask - len + 1,
             handle->shm_mem, buf);
-        *handle->kfifo.out += len;
         smp_wmb();
+        *handle->kfifo.out += len;
     } else {
         size = handle->hook.recsize ? min(size, len) : size;
         len = kfifo_out(&handle->kfifo, handle->shm_mem, buf, size);
@@ -540,22 +540,53 @@ unsigned int ufifo_get_block(ufifo_t *handle, void *buf, unsigned int size)
     return __ufifo_get(handle, buf, size, 1);
 }
 
-unsigned int ufifo_peek(ufifo_t *handle, void *buf, unsigned int size)
+static unsigned int __ufifo_peek(ufifo_t *handle, void *buf, unsigned int size, int block)
 {
+    int ret;
     unsigned int len;
-    UFIFO_CHECK_HANDLE_FUNC(handle);
 
     __ufifo_lock_acquire(&handle->lock);
-    len = __ufifo_peek_len(handle, *handle->kfifo.out);
-    if (len == 0) {
-        goto end;
+    while (1) {
+        len = __ufifo_peek_len(handle, *handle->kfifo.out);
+        if (len == 0) {
+            ret = block ? __ufifo_bsem_wait(handle->bsem_rd, &handle->lock) : 1;
+            if (ret) {
+                goto end;
+            }
+        } else {
+            break;
+        }
     }
-    size = handle->hook.recsize ? min(size, len) : size;
-    len = kfifo_out_peek(&handle->kfifo, handle->shm_mem, buf, size);
+
+    if (handle->hook.recget) {
+        len = *handle->kfifo.mask & *handle->kfifo.out;
+        len = handle->hook.recget(
+            handle->shm_mem + len,
+            *handle->kfifo.mask - len + 1,
+            handle->shm_mem, buf);
+        smp_wmb();
+    } else {
+        size = handle->hook.recsize ? min(size, len) : size;
+        len = kfifo_out_peek(&handle->kfifo, handle->shm_mem, buf, size);
+    }
+
+    __ufifo_bsem_post(handle->bsem_wr);
 end:
     __ufifo_lock_release(&handle->lock);
 
     return len;
+}
+
+unsigned int ufifo_peek(ufifo_t *handle, void *buf, unsigned int size)
+{
+    UFIFO_CHECK_HANDLE_FUNC(handle);
+    return __ufifo_peek(handle, buf, size, 0);
+}
+
+unsigned int ufifo_peek_block(ufifo_t *handle, void *buf, unsigned int size)
+{
+    UFIFO_CHECK_HANDLE_FUNC(handle);
+    return __ufifo_peek(handle, buf, size, 1);
 }
 
 int ufifo_oldest(ufifo_t *handle, unsigned int tag)
