@@ -660,7 +660,7 @@ unsigned int ufifo_peek_timeout(ufifo_t *handle, void *buf, unsigned int size, l
 
 int ufifo_oldest(ufifo_t *handle, unsigned int tag)
 {
-    int ret;
+    int ret = 0;
     unsigned int len, tmp;
     UFIFO_CHECK_HANDLE_FUNC(handle);
 
@@ -686,7 +686,7 @@ int ufifo_oldest(ufifo_t *handle, unsigned int tag)
 
 int ufifo_newest(ufifo_t *handle, unsigned int tag)
 {
-    int ret;
+    int ret = 0;
     bool found = false;
     unsigned int len, tmp;
     unsigned int final = 0;

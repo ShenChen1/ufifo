@@ -30,7 +30,7 @@ int kfifo_init(kfifo_t *fifo, unsigned int size)
     return 0;
 }
 
-static void __kfifo_copy_in(kfifo_t *fifo, void *base, const void *src, unsigned int len, unsigned int off)
+static void __kfifo_copy_in(kfifo_t *fifo, char *base, const char *src, unsigned int len, unsigned int off)
 {
     unsigned int size = *fifo->mask + 1;
     unsigned int l;
@@ -60,7 +60,7 @@ unsigned int kfifo_in(kfifo_t *fifo, void *base, const void *buf, unsigned int l
     return len;
 }
 
-static void __kfifo_copy_out(kfifo_t *fifo, void *base, void *dst, unsigned int len, unsigned int off)
+static void __kfifo_copy_out(kfifo_t *fifo, char *base, char *dst, unsigned int len, unsigned int off)
 {
     unsigned int size = *fifo->mask + 1;
     unsigned int l;

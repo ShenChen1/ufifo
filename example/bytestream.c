@@ -46,10 +46,10 @@ int main()
 
     /* get max of 2 elements from the fifo */
     ret = ufifo_get(test, buf, 2);
-    printf("ret: %d\n", ret);
+    printf("ret: %u\n", ret);
     /* and put it back to the end of the zfifo */
     ret = ufifo_put(test, buf, ret);
-    printf("ret: %d\n", ret);
+    printf("ret: %u\n", ret);
 
     /* skip first element of the fifo */
     printf("skip 1st element\n");

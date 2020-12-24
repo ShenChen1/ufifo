@@ -28,7 +28,7 @@ static unsigned int recsize(unsigned char *p1, unsigned int n1, unsigned char *p
         size = rec->size;
     } else {
         record_t rec;
-        void *p = (void *)(&rec);
+        char *p = (char *)(&rec);
         memcpy(p, p1, n1);
         memcpy(p + n1, p2, size - n1);
         size = rec.size;
