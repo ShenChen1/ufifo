@@ -230,7 +230,7 @@ static int __ufifo_init_from_shm(ufifo_t *ufifo)
     struct stat stat;
 
     ret = fstat(ufifo->shm_fd, &stat);
-    if (ufifo->shm_fd < 0) {
+    if (ret < 0) {
         ret = -errno;
         goto end;
     }
@@ -258,7 +258,7 @@ static int __ufifo_init_from_user(ufifo_t *ufifo)
 
     ufifo->shm_size += (sizeof(unsigned int) * 3 + 2 * sizeof(sem_t));
     ret = ftruncate(ufifo->shm_fd, ufifo->shm_size);
-    if (ufifo->shm_fd < 0) {
+    if (ret < 0) {
         ret = -errno;
         goto end;
     }
@@ -302,7 +302,7 @@ int ufifo_open(char *name, ufifo_init_t *init, ufifo_t **handle)
         goto err1;
     }
 
-    strncpy(ufifo->name, name, sizeof(ufifo->name));
+    strncpy(ufifo->name, name, sizeof(ufifo->name) - 1);
     ret = __ufifo_lock_acquire(&ufifo->lock);
     if (ret < 0) {
         goto err2;
