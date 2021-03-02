@@ -492,9 +492,9 @@ static unsigned int __ufifo_put(ufifo_t *handle, void *buf, unsigned int size, l
             if (millisec == 0) {
                 ret = -1;
             } else if (millisec == -1) {
-                ret = __ufifo_bsem_wait(handle->bsem_rd, &handle->lock);
+                ret = __ufifo_bsem_wait(handle->bsem_wr, &handle->lock);
             } else {
-                ret = __ufifo_bsem_timedwait(handle->bsem_rd, &handle->lock, millisec);
+                ret = __ufifo_bsem_timedwait(handle->bsem_wr, &handle->lock, millisec);
                 millisec = 0;
             }
             if (ret) {
