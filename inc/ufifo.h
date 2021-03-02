@@ -14,6 +14,7 @@ typedef enum {
 
 typedef struct {
     unsigned int size;
+    unsigned int force;
 } ufifo_alloc_t;
 
 typedef struct {

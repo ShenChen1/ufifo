@@ -80,6 +80,7 @@ int main(void)
     init.opt = UFIFO_OPT_ALLOC;
     init.lock = UFIFO_LOCK_FDLOCK;
     init.alloc.size = FIFO_SIZE;
+    init.alloc.force = 1;
     init.hook.recsize = recsize;
     init.hook.rectag = rectag;
     ufifo_open("record-tag", &init, &test);

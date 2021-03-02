@@ -110,6 +110,7 @@ int main(int argc, char **argv)
     init.opt = UFIFO_OPT_ALLOC;
     init.lock = UFIFO_LOCK_MUTEX;
     init.alloc.size = FIFO_SIZE;
+    init.alloc.force = 1;
     init.hook.recsize = recsize;
     ufifo_open("pressure", &init, &test_product);
     init.opt = UFIFO_OPT_ATTACH;

@@ -91,6 +91,7 @@ int main()
     init.opt = UFIFO_OPT_ALLOC;
     init.lock = UFIFO_LOCK_NONE;
     init.alloc.size = FIFO_SIZE;
+    init.alloc.force = 1;
     init.hook.recsize = recsize;
     ufifo_open("nolock", &init, &test);
 

@@ -308,7 +308,16 @@ int ufifo_open(char *name, ufifo_init_t *init, ufifo_t **handle)
         goto err2;
     }
 
-    int oflag = (init->opt == UFIFO_OPT_ALLOC) ? (O_RDWR | O_CREAT) : (O_RDWR);
+    int oflag = O_RDWR;
+    if (init->opt == UFIFO_OPT_ALLOC) {
+        if (access(name, F_OK) && !init->alloc.force) {
+            init->opt = UFIFO_OPT_ATTACH;
+            init->attach.shared = 0;
+        } else {
+            oflag = O_RDWR | O_CREAT;
+        }
+    }
+
     ufifo->shm_fd = shm_open(name, oflag, (S_IRUSR | S_IWUSR));
     if (ufifo->shm_fd < 0) {
         ret = -errno;
