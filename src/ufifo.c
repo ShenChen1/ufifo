@@ -310,11 +310,15 @@ int ufifo_open(char *name, ufifo_init_t *init, ufifo_t **handle)
 
     int oflag = O_RDWR;
     if (init->opt == UFIFO_OPT_ALLOC) {
-        if (access(name, F_OK) && !init->alloc.force) {
+        ufifo->shm_fd = shm_open(name, oflag, (S_IRUSR | S_IWUSR));
+        if (ufifo->shm_fd >= 0 && init->alloc.force == 0) {
             init->opt = UFIFO_OPT_ATTACH;
             init->attach.shared = 0;
         } else {
             oflag = O_RDWR | O_CREAT;
+        }
+        if (ufifo->shm_fd >= 0) {
+            close(ufifo->shm_fd);
         }
     }
 
