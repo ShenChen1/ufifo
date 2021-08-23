@@ -237,11 +237,11 @@ static int __ufifo_init_from_shm(ufifo_t *ufifo)
 
     ufifo->shm_size = stat.st_size;
     ufifo->shm_mem = mmap(NULL, ufifo->shm_size, (PROT_READ | PROT_WRITE), MAP_SHARED, ufifo->shm_fd, 0);
-    ufifo->shm_size -= (sizeof(unsigned int) * 3 + 2 * sizeof(sem_t));
+    ufifo->shm_size -= (sizeof(size_t) * 3 + 2 * sizeof(sem_t));
     ufifo->kfifo.in = (void *)((char *)ufifo->shm_mem + ufifo->shm_size);
-    ufifo->kfifo.out = (void *)((char *)ufifo->kfifo.in + sizeof(unsigned int));
-    ufifo->kfifo.mask = (void *)((char *)ufifo->kfifo.out + sizeof(unsigned int));
-    ufifo->bsem_wr = (void *)((char *)ufifo->kfifo.mask + sizeof(unsigned int));
+    ufifo->kfifo.out = (void *)((char *)ufifo->kfifo.in + sizeof(size_t));
+    ufifo->kfifo.mask = (void *)((char *)ufifo->kfifo.out + sizeof(size_t));
+    ufifo->bsem_wr = (void *)((char *)ufifo->kfifo.mask + sizeof(size_t));
     ufifo->bsem_rd = (void *)((char *)ufifo->bsem_wr + sizeof(sem_t));
 
 end:
@@ -256,7 +256,7 @@ static int __ufifo_init_from_user(ufifo_t *ufifo)
         return -EINVAL;
     }
 
-    ufifo->shm_size += (sizeof(unsigned int) * 3 + 2 * sizeof(sem_t));
+    ufifo->shm_size += (sizeof(size_t) * 3 + 2 * sizeof(sem_t));
     ret = ftruncate(ufifo->shm_fd, ufifo->shm_size);
     if (ret < 0) {
         ret = -errno;
@@ -264,12 +264,12 @@ static int __ufifo_init_from_user(ufifo_t *ufifo)
     }
 
     ufifo->shm_mem = mmap(NULL, ufifo->shm_size, (PROT_READ | PROT_WRITE), MAP_SHARED, ufifo->shm_fd, 0);
-    ufifo->shm_size -= (sizeof(unsigned int) * 3 + 2 * sizeof(sem_t));
+    ufifo->shm_size -= (sizeof(size_t) * 3 + 2 * sizeof(sem_t));
     ufifo->kfifo.in = (void *)((char *)ufifo->shm_mem + ufifo->shm_size);
-    ufifo->kfifo.out = (void *)((char *)ufifo->kfifo.in + sizeof(unsigned int));
-    ufifo->kfifo.mask = (void *)((char *)ufifo->kfifo.out + sizeof(unsigned int));
+    ufifo->kfifo.out = (void *)((char *)ufifo->kfifo.in + sizeof(size_t));
+    ufifo->kfifo.mask = (void *)((char *)ufifo->kfifo.out + sizeof(size_t));
     ret |= kfifo_init(&ufifo->kfifo, ufifo->shm_size);
-    ufifo->bsem_wr = (void *)((char *)ufifo->kfifo.mask + sizeof(unsigned int));
+    ufifo->bsem_wr = (void *)((char *)ufifo->kfifo.mask + sizeof(size_t));
     ret |= __ufifo_bsem_init(ufifo->bsem_wr, 0);
     ufifo->bsem_rd = (void *)((char *)ufifo->bsem_wr + sizeof(sem_t));
     ret |= __ufifo_bsem_init(ufifo->bsem_rd, 0);
