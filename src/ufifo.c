@@ -30,6 +30,14 @@
 
 typedef void * lock_t;
 
+typedef struct ufifo_ctrl {
+    unsigned int    in;
+    unsigned int    out;
+    unsigned int    mask;
+    sem_t           bsem_wr;
+    sem_t           bsem_rd;
+} ufifo_ctrl_t;
+
 struct ufifo {
 #if UFIFO_DEBUG
     unsigned int    magic;
@@ -43,15 +51,13 @@ struct ufifo {
     int             shm_fd;
     unsigned int    shm_size;
     void           *shm_mem;
+    ufifo_ctrl_t   *ctrl;
 
     lock_t          lock;
     int           (*lock_init)(lock_t *lock);
     int           (*lock_deinit)(lock_t *lock);
     int           (*lock_acquire)(lock_t *lock);
     int           (*lock_release)(lock_t *lock);
-
-    sem_t          *bsem_rd;
-    sem_t          *bsem_wr;
 };
 
 static mutex_t *s_mod_lock = NULL;
@@ -237,12 +243,11 @@ static int __ufifo_init_from_shm(ufifo_t *ufifo)
 
     ufifo->shm_size = stat.st_size;
     ufifo->shm_mem = mmap(NULL, ufifo->shm_size, (PROT_READ | PROT_WRITE), MAP_SHARED, ufifo->shm_fd, 0);
-    ufifo->shm_size -= (sizeof(size_t) * 3 + 2 * sizeof(sem_t));
-    ufifo->kfifo.in = (void *)((char *)ufifo->shm_mem + ufifo->shm_size);
-    ufifo->kfifo.out = (void *)((char *)ufifo->kfifo.in + sizeof(size_t));
-    ufifo->kfifo.mask = (void *)((char *)ufifo->kfifo.out + sizeof(size_t));
-    ufifo->bsem_wr = (void *)((char *)ufifo->kfifo.mask + sizeof(size_t));
-    ufifo->bsem_rd = (void *)((char *)ufifo->bsem_wr + sizeof(sem_t));
+    ufifo->shm_size -= sizeof(ufifo_ctrl_t);
+    ufifo->ctrl = (ufifo_ctrl_t *)((char *)ufifo->shm_mem + ufifo->shm_size);
+    ufifo->kfifo.in = &ufifo->ctrl->in;
+    ufifo->kfifo.out = &ufifo->ctrl->out;
+    ufifo->kfifo.mask = &ufifo->ctrl->mask;
 
 end:
     return ret;
@@ -256,7 +261,7 @@ static int __ufifo_init_from_user(ufifo_t *ufifo)
         return -EINVAL;
     }
 
-    ufifo->shm_size += (sizeof(size_t) * 3 + 2 * sizeof(sem_t));
+    ufifo->shm_size += sizeof(ufifo_ctrl_t);
     ret = ftruncate(ufifo->shm_fd, ufifo->shm_size);
     if (ret < 0) {
         ret = -errno;
@@ -264,15 +269,14 @@ static int __ufifo_init_from_user(ufifo_t *ufifo)
     }
 
     ufifo->shm_mem = mmap(NULL, ufifo->shm_size, (PROT_READ | PROT_WRITE), MAP_SHARED, ufifo->shm_fd, 0);
-    ufifo->shm_size -= (sizeof(size_t) * 3 + 2 * sizeof(sem_t));
-    ufifo->kfifo.in = (void *)((char *)ufifo->shm_mem + ufifo->shm_size);
-    ufifo->kfifo.out = (void *)((char *)ufifo->kfifo.in + sizeof(size_t));
-    ufifo->kfifo.mask = (void *)((char *)ufifo->kfifo.out + sizeof(size_t));
+    ufifo->shm_size -= sizeof(ufifo_ctrl_t);
+    ufifo->ctrl = (ufifo_ctrl_t *)((char *)ufifo->shm_mem + ufifo->shm_size);
+    ufifo->kfifo.in = &ufifo->ctrl->in;
+    ufifo->kfifo.out = &ufifo->ctrl->out;
+    ufifo->kfifo.mask = &ufifo->ctrl->mask;
     ret |= kfifo_init(&ufifo->kfifo, ufifo->shm_size);
-    ufifo->bsem_wr = (void *)((char *)ufifo->kfifo.mask + sizeof(size_t));
-    ret |= __ufifo_bsem_init(ufifo->bsem_wr, 0);
-    ufifo->bsem_rd = (void *)((char *)ufifo->bsem_wr + sizeof(sem_t));
-    ret |= __ufifo_bsem_init(ufifo->bsem_rd, 0);
+    ret |= __ufifo_bsem_init(&ufifo->ctrl->bsem_wr, 0);
+    ret |= __ufifo_bsem_init(&ufifo->ctrl->bsem_rd, 0);
 
 end:
     return ret;
@@ -371,10 +375,10 @@ static int __ufifo_close(ufifo_t *handle, int destroy)
     }
 
     if (destroy) {
-        __ufifo_bsem_deinit(handle->bsem_wr);
-        __ufifo_bsem_deinit(handle->bsem_rd);
+        __ufifo_bsem_deinit(&handle->ctrl->bsem_wr);
+        __ufifo_bsem_deinit(&handle->ctrl->bsem_rd);
     }
-    munmap(handle->shm_mem, handle->shm_size + (sizeof(kfifo_t) + 2 * sizeof(sem_t)));
+    munmap(handle->shm_mem, handle->shm_size + sizeof(ufifo_ctrl_t));
     close(handle->shm_fd);
 
     __ufifo_lock_release(&handle->lock);
@@ -496,9 +500,9 @@ static unsigned int __ufifo_put(ufifo_t *handle, void *buf, unsigned int size, l
             if (millisec == 0) {
                 ret = -1;
             } else if (millisec == -1) {
-                ret = __ufifo_bsem_wait(handle->bsem_wr, &handle->lock);
+                ret = __ufifo_bsem_wait(&handle->ctrl->bsem_wr, &handle->lock);
             } else {
-                ret = __ufifo_bsem_timedwait(handle->bsem_wr, &handle->lock, millisec);
+                ret = __ufifo_bsem_timedwait(&handle->ctrl->bsem_wr, &handle->lock, millisec);
                 millisec = 0;
             }
             if (ret) {
@@ -521,7 +525,7 @@ static unsigned int __ufifo_put(ufifo_t *handle, void *buf, unsigned int size, l
     } else {
         len = kfifo_in(&handle->kfifo, handle->shm_mem, buf, size);
     }
-    __ufifo_bsem_post(handle->bsem_rd);
+    __ufifo_bsem_post(&handle->ctrl->bsem_rd);
 end:
     __ufifo_lock_release(&handle->lock);
 
@@ -558,9 +562,9 @@ static unsigned int __ufifo_get(ufifo_t *handle, void *buf, unsigned int size, l
             if (millisec == 0) {
                 ret = -1;
             } else if (millisec == -1) {
-                ret = __ufifo_bsem_wait(handle->bsem_rd, &handle->lock);
+                ret = __ufifo_bsem_wait(&handle->ctrl->bsem_rd, &handle->lock);
             } else {
-                ret = __ufifo_bsem_timedwait(handle->bsem_rd, &handle->lock, millisec);
+                ret = __ufifo_bsem_timedwait(&handle->ctrl->bsem_rd, &handle->lock, millisec);
                 millisec = 0;
             }
             if (ret) {
@@ -584,7 +588,7 @@ static unsigned int __ufifo_get(ufifo_t *handle, void *buf, unsigned int size, l
         len = kfifo_out(&handle->kfifo, handle->shm_mem, buf, size);
     }
 
-    __ufifo_bsem_post(handle->bsem_wr);
+    __ufifo_bsem_post(&handle->ctrl->bsem_wr);
 end:
     __ufifo_lock_release(&handle->lock);
 
@@ -621,9 +625,9 @@ static unsigned int __ufifo_peek(ufifo_t *handle, void *buf, unsigned int size, 
             if (millisec == 0) {
                 ret = -1;
             } else if (millisec == -1) {
-                ret = __ufifo_bsem_wait(handle->bsem_rd, &handle->lock);
+                ret = __ufifo_bsem_wait(&handle->ctrl->bsem_rd, &handle->lock);
             } else {
-                ret = __ufifo_bsem_timedwait(handle->bsem_rd, &handle->lock, millisec);
+                ret = __ufifo_bsem_timedwait(&handle->ctrl->bsem_rd, &handle->lock, millisec);
                 millisec = 0;
             }
             if (ret) {
@@ -646,7 +650,7 @@ static unsigned int __ufifo_peek(ufifo_t *handle, void *buf, unsigned int size, 
         len = kfifo_out_peek(&handle->kfifo, handle->shm_mem, buf, size);
     }
 
-    __ufifo_bsem_post(handle->bsem_wr);
+    __ufifo_bsem_post(&handle->ctrl->bsem_wr);
 end:
     __ufifo_lock_release(&handle->lock);
 
