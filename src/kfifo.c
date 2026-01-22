@@ -3,7 +3,6 @@
 #include <string.h>
 #include <errno.h>
 #include "kfifo.h"
-#include "log2.h"
 #include "utils.h"
 
 /*
@@ -14,10 +13,16 @@ static inline unsigned int __kfifo_unused(kfifo_t *fifo)
     return (*fifo->mask + 1) - (*fifo->in - *fifo->out);
 }
 
+/*
+ * kfifo_init - initialize a fifo
+ * @fifo: the fifo to initialize
+ * @size: the size of the fifo buffer (must be a power of 2)
+ *
+ * Note: The caller is responsible for ensuring size is a power of 2.
+ * Use rounddown_pow_of_two() from log2.h before calling this function.
+ */
 int kfifo_init(kfifo_t *fifo, unsigned int size)
 {
-    size = rounddown_pow_of_two(size);
-
     *fifo->in = 0;
     *fifo->out = 0;
 

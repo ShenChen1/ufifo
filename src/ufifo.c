@@ -14,6 +14,7 @@
 #include "mutex.h"
 #include "dict.h"
 #include "kfifo.h"
+#include "log2.h"
 #include "ufifo.h"
 #include "utils.h"
 
@@ -261,6 +262,7 @@ static int __ufifo_init_from_user(ufifo_t *ufifo)
         return -EINVAL;
     }
 
+    ufifo->shm_size = rounddown_pow_of_two(ufifo->shm_size);
     ufifo->shm_size += sizeof(ufifo_ctrl_t);
     ret = ftruncate(ufifo->shm_fd, ufifo->shm_size);
     if (ret < 0) {
