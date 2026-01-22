@@ -1,6 +1,10 @@
 #ifndef _UFIFO_H_
 #define _UFIFO_H_
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef unsigned int (*ufifo_recsize_hook_t)(unsigned char *p1, unsigned int n1, unsigned char *p2);
 typedef unsigned int (*ufifo_rectag_hook_t)(unsigned char *p1, unsigned int n1, unsigned char *p2);
 typedef unsigned int (*ufifo_recput_hook_t)(unsigned char *p1, unsigned int n1, unsigned char *p2, void *arg);
@@ -66,5 +70,9 @@ unsigned int ufifo_peek_block(ufifo_t *handle, void *buf, unsigned int size);
 unsigned int ufifo_peek_timeout(ufifo_t *handle, void *buf, unsigned int size, long millisec);
 int ufifo_oldest(ufifo_t *handle, unsigned int tag);
 int ufifo_newest(ufifo_t *handle, unsigned int tag);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* _UFIFO_H_ */
