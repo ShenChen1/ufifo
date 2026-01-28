@@ -1,5 +1,5 @@
-cmake_minimum_required(VERSION 3.10)
-project(ufifo VERSION 1.0.0 LANGUAGES C)
+cmake_minimum_required(VERSION 3.14)
+project(ufifo VERSION 1.0.0 LANGUAGES C CXX)
 
 # Options
 option(SANITIZER "Enable Address Sanitizer" OFF)
@@ -11,8 +11,7 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 # Include directories
 include_directories(${CMAKE_SOURCE_DIR}/inc)
 
-# Common compile options
-add_compile_options(-g -Os -Wall -Werror)
+# Common compile options for ufifo targets (applied per-target below)
 
 # Sanitizer support
 if(SANITIZER)
@@ -39,6 +38,7 @@ set_target_properties(ufifo_static PROPERTIES
     OUTPUT_NAME ufifo
     POSITION_INDEPENDENT_CODE ON
 )
+target_compile_options(ufifo_static PRIVATE -g -Os -Wall -Werror)
 
 # Create shared library
 add_library(ufifo_shared SHARED ${LIB_SOURCES})
@@ -46,6 +46,7 @@ set_target_properties(ufifo_shared PROPERTIES
     OUTPUT_NAME ufifo
     POSITION_INDEPENDENT_CODE ON
 )
+target_compile_options(ufifo_shared PRIVATE -g -Os -Wall -Werror)
 
 # Example executables
 set(EXAMPLES
@@ -58,6 +59,7 @@ set(EXAMPLES
 
 foreach(example ${EXAMPLES})
     add_executable(${example} example/${example}.c)
+    target_compile_options(${example} PRIVATE -g -Os -Wall -Werror)
     target_link_libraries(${example} PRIVATE ufifo_static ${RT_LIBRARY} ${PTHREAD_LIBRARY})
 endforeach()
 
@@ -74,3 +76,25 @@ enable_testing()
 foreach(example ${EXAMPLES})
     add_test(NAME ${example} COMMAND ${example})
 endforeach()
+
+# GTest support
+include(FetchContent)
+FetchContent_Declare(
+    googletest
+    URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.tar.gz
+)
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(googletest)
+
+# ufifo test executable
+add_executable(ufifo_test test/ufifo_test.cpp)
+target_link_libraries(ufifo_test PRIVATE
+    ufifo_static
+    ${RT_LIBRARY}
+    ${PTHREAD_LIBRARY}
+    GTest::gtest_main
+)
+target_include_directories(ufifo_test PRIVATE ${CMAKE_SOURCE_DIR}/inc)
+
+include(GoogleTest)
+gtest_discover_tests(ufifo_test)

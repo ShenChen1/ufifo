@@ -151,7 +151,7 @@ void dictSet(dict_t *d, const void *key, const void *value)
         e->value = value ? d->valueOps.copy(value, d->valueOps.arg) : 0;
 
         /* link it in */
-        tablePosition = e->hash & d->tableSize;
+        tablePosition = e->hash % d->tableSize;
         e->next = d->table[tablePosition];
         d->table[tablePosition] = e;
 

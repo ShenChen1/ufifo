@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
@@ -63,15 +64,18 @@ struct ufifo {
 
 static mutex_t *s_mod_lock = NULL;
 static dict_t *s_mod_dict = NULL;
+static dict_t *s_mod_refcount = NULL;  /* tracks mutex reference counts */
 
 static void __attribute__((constructor)) __module_init()
 {
     mutex_init(&s_mod_lock);
     s_mod_dict = dictCreate(dictStringOps(NULL), dictIntOps(NULL));
+    s_mod_refcount = dictCreate(dictStringOps(NULL), dictIntOps(NULL));
 }
 
 static void __attribute__((destructor)) __module_deinit()
 {
+    dictDestroy(s_mod_refcount);
     dictDestroy(s_mod_dict);
     mutex_deinit(s_mod_lock);
 }
@@ -92,26 +96,40 @@ static inline int __fdlock_release(lock_t *lock)
 static inline int __mutex_init(lock_t *lock)
 {
     const void *mutex = NULL;
+    size_t refcount = 0;
     ufifo_t *ufifo = container_of(lock, ufifo_t, lock);
     mutex_acquire(s_mod_lock);
     mutex = dictGet(s_mod_dict, ufifo->name);
     if (!mutex) {
         mutex_init((mutex_t **)lock);
         dictSet(s_mod_dict, ufifo->name, *lock);
+        refcount = 1;
     } else {
         *lock = (lock_t)mutex;
+        refcount = (size_t)dictGet(s_mod_refcount, ufifo->name);
+        refcount++;
     }
+    dictSet(s_mod_refcount, ufifo->name, (void *)refcount);
     mutex_release(s_mod_lock);
     return 0;
 }
 
 static inline int __mutex_deinit(lock_t *lock)
 {
+    size_t refcount;
     ufifo_t *ufifo = container_of(lock, ufifo_t, lock);
     mutex_acquire(s_mod_lock);
-    dictSet(s_mod_dict, ufifo->name, NULL);
+    refcount = (size_t)dictGet(s_mod_refcount, ufifo->name);
+    refcount--;
+    if (refcount == 0) {
+        dictSet(s_mod_dict, ufifo->name, NULL);
+        dictSet(s_mod_refcount, ufifo->name, NULL);
+        mutex_release(s_mod_lock);
+        return mutex_deinit((mutex_t *)*lock);
+    }
+    dictSet(s_mod_refcount, ufifo->name, (void *)refcount);
     mutex_release(s_mod_lock);
-    return mutex_deinit((mutex_t *)*lock);
+    return 0;
 }
 
 static inline int __mutex_acquire(lock_t *lock)
@@ -207,7 +225,7 @@ static int __ufifo_bsem_timedwait(sem_t *bsem, lock_t *lock, long millisec)
         wt.tv_nsec %= 1000000000;
     }
 
-    ret = sem_timedwait(bsem, &wt);
+    ret = sem_clockwait(bsem, CLOCK_MONOTONIC, &wt);
     if (ret && errno == ETIMEDOUT) {
         ret = ETIMEDOUT;
     }
@@ -302,13 +320,13 @@ int ufifo_open(char *name, ufifo_init_t *init, ufifo_t **handle)
         return -ENOMEM;
     }
 
+    strncpy(ufifo->name, name, sizeof(ufifo->name) - 1);
     ret |= __ufifo_hook_init(ufifo, &init->hook);
     ret |= __ufifo_lock_init(&ufifo->lock, init->lock);
     if (ret < 0) {
         goto err1;
     }
 
-    strncpy(ufifo->name, name, sizeof(ufifo->name) - 1);
     ret = __ufifo_lock_acquire(&ufifo->lock);
     if (ret < 0) {
         goto err2;
