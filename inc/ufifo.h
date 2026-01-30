@@ -18,8 +18,8 @@ typedef enum {
 
 typedef enum {
     UFIFO_LOCK_NONE,
-    UFIFO_LOCK_MUTEX,
-    UFIFO_LOCK_FDLOCK,
+    UFIFO_LOCK_THREAD,
+    UFIFO_LOCK_PROCESS,
     UFIFO_LOCK_MAX,
 } ufifo_lock_e;
 

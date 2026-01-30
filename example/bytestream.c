@@ -28,7 +28,7 @@ int main()
     init.opt = UFIFO_OPT_ALLOC;
     init.alloc.size = FIFO_SIZE;
     init.alloc.force = 1;
-    init.alloc.lock = UFIFO_LOCK_FDLOCK;
+    init.alloc.lock = UFIFO_LOCK_PROCESS;
     ufifo_open("bytestream", &init, &test);
 
     /* put string into the fifo */

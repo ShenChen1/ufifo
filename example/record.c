@@ -59,7 +59,7 @@ int main(void)
     init.opt = UFIFO_OPT_ALLOC;
     init.alloc.size = FIFO_SIZE;
     init.alloc.force = 1;
-    init.alloc.lock = UFIFO_LOCK_MUTEX;
+    init.alloc.lock = UFIFO_LOCK_THREAD;
     init.hook.recsize = recsize;
     ufifo_open("record", &init, &test);
 

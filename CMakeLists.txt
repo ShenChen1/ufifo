@@ -25,11 +25,8 @@ find_library(PTHREAD_LIBRARY pthread)
 
 # Library source files
 set(LIB_SOURCES
-    src/mutex.c
-    src/fdlock.c
     src/kfifo.c
     src/ufifo.c
-    src/dict.c
 )
 
 # Create static library

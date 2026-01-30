@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
+#include <pthread.h>
 #include <assert.h>
 #include <errno.h>
 #include <limits.h>
@@ -11,9 +12,6 @@
 #include <sys/stat.h>       /* For mode constants */
 #include <fcntl.h>          /* For O_* constants */
 #include <time.h>
-#include "fdlock.h"
-#include "mutex.h"
-#include "dict.h"
 #include "kfifo.h"
 #include "log2.h"
 #include "ufifo.h"
@@ -30,14 +28,16 @@
 #define UFIFO_CHECK_HANDLE_FUNC(handle)
 #endif
 
-typedef void * lock_t;
-
 typedef struct ufifo_ctrl {
     unsigned int    in;
     unsigned int    out;
     unsigned int    mask;
+
     sem_t           bsem_wr;
     sem_t           bsem_rd;
+
+    ufifo_lock_e    lock; 
+    pthread_mutex_t mutex;
 } ufifo_ctrl_t;
 
 struct ufifo {
@@ -53,134 +53,67 @@ struct ufifo {
     unsigned int    shm_size;
     void           *shm_mem;
     ufifo_ctrl_t   *ctrl;
-
-    lock_t          lock;
-    int           (*lock_init)(lock_t *lock);
-    int           (*lock_deinit)(lock_t *lock);
-    int           (*lock_acquire)(lock_t *lock);
-    int           (*lock_release)(lock_t *lock);
 };
 
-static mutex_t *s_mod_lock = NULL;
-static dict_t *s_mod_dict = NULL;
-static dict_t *s_mod_refcount = NULL;  /* tracks mutex reference counts */
-
-static void __attribute__((constructor)) __module_init()
+static inline int __ufifo_lock_acquire(ufifo_t *ufifo)
 {
-    mutex_init(&s_mod_lock);
-    s_mod_dict = dictCreate(dictStringOps(NULL), dictIntOps(NULL));
-    s_mod_refcount = dictCreate(dictStringOps(NULL), dictIntOps(NULL));
-}
+    int ret;
 
-static void __attribute__((destructor)) __module_deinit()
-{
-    dictDestroy(s_mod_refcount);
-    dictDestroy(s_mod_dict);
-    mutex_deinit(s_mod_lock);
-}
-
-static inline int __fdlock_acquire(lock_t *lock)
-{
-    char path[PATH_MAX];
-    ufifo_t *ufifo = container_of(lock, ufifo_t, lock);
-    snprintf(path, sizeof(path), "/var/lock/%s.lock", ufifo->name);
-    return fdlock_acquire(path, (fdlock_t **)lock);
-}
-
-static inline int __fdlock_release(lock_t *lock)
-{
-    return fdlock_release((fdlock_t **)lock);
-}
-
-static inline int __mutex_init(lock_t *lock)
-{
-    const void *mutex = NULL;
-    size_t refcount = 0;
-    ufifo_t *ufifo = container_of(lock, ufifo_t, lock);
-    mutex_acquire(s_mod_lock);
-    mutex = dictGet(s_mod_dict, ufifo->name);
-    if (!mutex) {
-        mutex_init((mutex_t **)lock);
-        dictSet(s_mod_dict, ufifo->name, *lock);
-        refcount = 1;
-    } else {
-        *lock = (lock_t)mutex;
-        refcount = (size_t)dictGet(s_mod_refcount, ufifo->name);
-        refcount++;
-    }
-    dictSet(s_mod_refcount, ufifo->name, (void *)refcount);
-    mutex_release(s_mod_lock);
-    return 0;
-}
-
-static inline int __mutex_deinit(lock_t *lock)
-{
-    size_t refcount;
-    ufifo_t *ufifo = container_of(lock, ufifo_t, lock);
-    mutex_acquire(s_mod_lock);
-    refcount = (size_t)dictGet(s_mod_refcount, ufifo->name);
-    refcount--;
-    if (refcount == 0) {
-        dictSet(s_mod_dict, ufifo->name, NULL);
-        dictSet(s_mod_refcount, ufifo->name, NULL);
-        mutex_release(s_mod_lock);
-        return mutex_deinit((mutex_t *)*lock);
-    }
-    dictSet(s_mod_refcount, ufifo->name, (void *)refcount);
-    mutex_release(s_mod_lock);
-    return 0;
-}
-
-static inline int __mutex_acquire(lock_t *lock)
-{
-    return mutex_acquire((mutex_t *)*lock);
-}
-
-static inline int __mutex_release(lock_t *lock)
-{
-    return mutex_release((mutex_t *)*lock);
-}
-
-static inline int __ufifo_lock_acquire(lock_t *lock)
-{
-    ufifo_t *ufifo = container_of(lock, ufifo_t, lock);
-    return ufifo->lock_acquire ? ufifo->lock_acquire(lock) : 0;
-}
-
-static inline int __ufifo_lock_release(lock_t *lock)
-{
-    ufifo_t *ufifo = container_of(lock, ufifo_t, lock);
-    return ufifo->lock_release ? ufifo->lock_release(lock) : 0;
-}
-
-static inline int __ufifo_lock_init(lock_t *lock, ufifo_lock_e type)
-{
-    ufifo_t *ufifo = container_of(lock, ufifo_t, lock);
-
-    if (type == UFIFO_LOCK_FDLOCK) {
-        ufifo->lock_init = NULL;
-        ufifo->lock_deinit = NULL;
-        ufifo->lock_acquire = __fdlock_acquire;
-        ufifo->lock_release = __fdlock_release;
-    } else if (type == UFIFO_LOCK_MUTEX) {
-        ufifo->lock_init = __mutex_init;
-        ufifo->lock_deinit = __mutex_deinit;
-        ufifo->lock_acquire = __mutex_acquire;
-        ufifo->lock_release = __mutex_release;
-    } else {
-        ufifo->lock_init = NULL;
-        ufifo->lock_deinit = NULL;
-        ufifo->lock_acquire = NULL;
-        ufifo->lock_release = NULL;
+    if (ufifo->ctrl->lock == UFIFO_LOCK_NONE) {
+        return 0;
     }
 
-    return ufifo->lock_init ? ufifo->lock_init(lock) : 0;
+    ret = pthread_mutex_lock(&ufifo->ctrl->mutex);
+    if (ret == EOWNERDEAD) {
+        /* Lock owner crashed, recover the mutex */
+        pthread_mutex_consistent(&ufifo->ctrl->mutex);
+        ret = 0;
+    }
+
+    return ret;
 }
 
-static inline int __ufifo_lock_deinit(lock_t *lock)
+static inline int __ufifo_lock_release(ufifo_t *ufifo)
 {
-    ufifo_t *ufifo = container_of(lock, ufifo_t, lock);
-    return ufifo->lock_deinit ? ufifo->lock_deinit(lock) : 0;
+    if (ufifo->ctrl->lock == UFIFO_LOCK_NONE) {
+        return 0;
+    }
+
+    return pthread_mutex_unlock(&ufifo->ctrl->mutex);
+}
+
+static inline int __ufifo_lock_init(ufifo_t *ufifo, ufifo_lock_e type)
+{
+    pthread_mutexattr_t attr;
+    int ret = 0;
+
+    ufifo->ctrl->lock = type;
+    if (type == UFIFO_LOCK_NONE) {
+        return 0;
+    }
+
+    pthread_mutexattr_init(&attr);
+
+    if (type == UFIFO_LOCK_THREAD) {
+        pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_PRIVATE);
+    } else if (type == UFIFO_LOCK_PROCESS) {
+        pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
+        pthread_mutexattr_setrobust(&attr, PTHREAD_MUTEX_ROBUST);
+    }
+
+    ret = pthread_mutex_init(&ufifo->ctrl->mutex, &attr);
+    pthread_mutexattr_destroy(&attr);
+
+    return ret;
+}
+
+static inline int __ufifo_lock_deinit(ufifo_t *ufifo)
+{
+    if (ufifo->ctrl->lock == UFIFO_LOCK_NONE) {
+        return 0;
+    }
+
+    return pthread_mutex_destroy(&ufifo->ctrl->mutex);
 }
 
 static int __ufifo_bsem_init(sem_t *bsem, unsigned int value)
@@ -193,24 +126,24 @@ static int __ufifo_bsem_deinit(sem_t *bsem)
     return sem_destroy(bsem);
 }
 
-static int __ufifo_bsem_wait(sem_t *bsem, lock_t *lock)
+static int __ufifo_bsem_wait(sem_t *bsem, ufifo_t *ufifo)
 {
     int ret;
 
-    __ufifo_lock_release(lock);
+    __ufifo_lock_release(ufifo);
     ret = sem_wait(bsem);
-    __ufifo_lock_acquire(lock);
+    __ufifo_lock_acquire(ufifo);
 
     return ret;
 }
 
-static int __ufifo_bsem_timedwait(sem_t *bsem, lock_t *lock, long millisec)
+static int __ufifo_bsem_timedwait(sem_t *bsem, ufifo_t *ufifo, long millisec)
 {
     int ret;
     struct timespec wt;
     struct timespec ts;
 
-    __ufifo_lock_release(lock);
+    __ufifo_lock_release(ufifo);
 
     wt.tv_sec  = millisec / 1000;
     wt.tv_nsec = (millisec % 1000) * 1000000;
@@ -228,7 +161,8 @@ static int __ufifo_bsem_timedwait(sem_t *bsem, lock_t *lock, long millisec)
     if (ret && errno == ETIMEDOUT) {
         ret = ETIMEDOUT;
     }
-    __ufifo_lock_acquire(lock);
+
+    __ufifo_lock_acquire(ufifo);
 
     return ret;
 }
@@ -305,7 +239,7 @@ int ufifo_open(char *name, ufifo_init_t *init, ufifo_t **handle)
 {
     int ret = 0;
     ufifo_t *ufifo = NULL;
-    ufifo_lock_e lock_type = UFIFO_LOCK_NONE;
+    int is_alloc = 0;
 
     if (name == NULL || init == NULL) {
         return -EINVAL;
@@ -326,15 +260,8 @@ int ufifo_open(char *name, ufifo_init_t *init, ufifo_t **handle)
 
     strncpy(ufifo->name, name, sizeof(ufifo->name) - 1);
     ret |= __ufifo_hook_init(ufifo, &init->hook);
-    lock_type = (init->opt == UFIFO_OPT_ALLOC) ? init->alloc.lock : UFIFO_LOCK_NONE;
-    ret |= __ufifo_lock_init(&ufifo->lock, lock_type);
     if (ret < 0) {
         goto err1;
-    }
-
-    ret = __ufifo_lock_acquire(&ufifo->lock);
-    if (ret < 0) {
-        goto err2;
     }
 
     int oflag = O_RDWR;
@@ -353,33 +280,43 @@ int ufifo_open(char *name, ufifo_init_t *init, ufifo_t **handle)
     ufifo->shm_fd = shm_open(name, oflag, (S_IRUSR | S_IWUSR));
     if (ufifo->shm_fd < 0) {
         ret = -errno;
-        goto err3;
+        goto err1;
     }
 
-    if (init->opt == UFIFO_OPT_ALLOC) {
+    is_alloc = (init->opt == UFIFO_OPT_ALLOC);
+    if (is_alloc) {
         ufifo->shm_size = init->alloc.size;
         ret = __ufifo_init_from_user(ufifo);
+        if (ret < 0) {
+            goto err2;
+        }
+        /* Initialize lock only on ALLOC (lock is in shared memory) */
+        ret = __ufifo_lock_init(ufifo, init->alloc.lock);
+        if (ret < 0) {
+            goto err3;
+        }
     } else {
         ret = __ufifo_init_from_shm(ufifo);
-    }
-    if (ret < 0) {
-        goto err4;
+        if (ret < 0) {
+            goto err2;
+        }
     }
 
 #if UFIFO_DEBUG
     ufifo->magic = UFIFO_MAGIC;
 #endif
     *handle = ufifo;
-    __ufifo_lock_release(&ufifo->lock);
     return 0;
 
-err4:
-    close(ufifo->shm_fd);
-    shm_unlink(ufifo->name);
 err3:
-    __ufifo_lock_release(&ufifo->lock);
+    __ufifo_bsem_deinit(&ufifo->ctrl->bsem_wr);
+    __ufifo_bsem_deinit(&ufifo->ctrl->bsem_rd);
+    munmap(ufifo->shm_mem, ufifo->shm_size + sizeof(ufifo_ctrl_t));
 err2:
-    __ufifo_lock_deinit(&ufifo->lock);
+    close(ufifo->shm_fd);
+    if (is_alloc) {
+        shm_unlink(ufifo->name);
+    }
 err1:
     free(ufifo);
     return ret;
@@ -387,23 +324,16 @@ err1:
 
 static int __ufifo_close(ufifo_t *handle, int destroy)
 {
-    int ret;
-
-    ret = __ufifo_lock_acquire(&handle->lock);
-    if (ret < 0) {
-        return ret;
-    }
-
     if (destroy) {
+        __ufifo_lock_deinit(handle);
         __ufifo_bsem_deinit(&handle->ctrl->bsem_wr);
         __ufifo_bsem_deinit(&handle->ctrl->bsem_rd);
     }
+
     munmap(handle->shm_mem, handle->shm_size + sizeof(ufifo_ctrl_t));
     close(handle->shm_fd);
 
-    __ufifo_lock_release(&handle->lock);
     if (destroy) {
-        __ufifo_lock_deinit(&handle->lock);
         shm_unlink(handle->name);
     }
     free(handle);
@@ -470,9 +400,9 @@ void ufifo_reset(ufifo_t *handle)
 {
     UFIFO_CHECK_HANDLE_FUNC(handle);
 
-    __ufifo_lock_acquire(&handle->lock);
+    __ufifo_lock_acquire(handle);
     *handle->kfifo.out = *handle->kfifo.in = 0;
-    __ufifo_lock_release(&handle->lock);
+    __ufifo_lock_release(handle);
 }
 
 unsigned int ufifo_len(ufifo_t *handle)
@@ -480,9 +410,9 @@ unsigned int ufifo_len(ufifo_t *handle)
     unsigned int len;
     UFIFO_CHECK_HANDLE_FUNC(handle);
 
-    __ufifo_lock_acquire(&handle->lock);
+    __ufifo_lock_acquire(handle);
     len = *handle->kfifo.in - *handle->kfifo.out;
-    __ufifo_lock_release(&handle->lock);
+    __ufifo_lock_release(handle);
 
     return len;
 }
@@ -491,9 +421,9 @@ void ufifo_skip(ufifo_t *handle)
 {
     UFIFO_CHECK_HANDLE_FUNC(handle);
 
-    __ufifo_lock_acquire(&handle->lock);
+    __ufifo_lock_acquire(handle);
     *handle->kfifo.out += __ufifo_peek_len(handle, *handle->kfifo.out);
-    __ufifo_lock_release(&handle->lock);
+    __ufifo_lock_release(handle);
 }
 
 unsigned int ufifo_peek_len(ufifo_t *handle)
@@ -501,9 +431,9 @@ unsigned int ufifo_peek_len(ufifo_t *handle)
     unsigned int len;
     UFIFO_CHECK_HANDLE_FUNC(handle);
 
-    __ufifo_lock_acquire(&handle->lock);
+    __ufifo_lock_acquire(handle);
     len = __ufifo_peek_len(handle, *handle->kfifo.out);
-    __ufifo_lock_release(&handle->lock);
+    __ufifo_lock_release(handle);
 
     return len;
 }
@@ -513,16 +443,16 @@ static unsigned int __ufifo_put(ufifo_t *handle, void *buf, unsigned int size, l
     int ret;
     unsigned int len;
 
-    __ufifo_lock_acquire(&handle->lock);
+    __ufifo_lock_acquire(handle);
     while (1) {
         len = __ufifo_unused_len(handle);
         if (len < size) {
             if (millisec == 0) {
                 ret = -1;
             } else if (millisec == -1) {
-                ret = __ufifo_bsem_wait(&handle->ctrl->bsem_wr, &handle->lock);
+                ret = __ufifo_bsem_wait(&handle->ctrl->bsem_wr, handle);
             } else {
-                ret = __ufifo_bsem_timedwait(&handle->ctrl->bsem_wr, &handle->lock, millisec);
+                ret = __ufifo_bsem_timedwait(&handle->ctrl->bsem_wr, handle, millisec);
                 millisec = 0;
             }
             if (ret) {
@@ -547,7 +477,7 @@ static unsigned int __ufifo_put(ufifo_t *handle, void *buf, unsigned int size, l
     }
     __ufifo_bsem_post(&handle->ctrl->bsem_rd);
 end:
-    __ufifo_lock_release(&handle->lock);
+    __ufifo_lock_release(handle);
 
     return len;
 }
@@ -575,16 +505,16 @@ static unsigned int __ufifo_get(ufifo_t *handle, void *buf, unsigned int size, l
     int ret;
     unsigned int len;
 
-    __ufifo_lock_acquire(&handle->lock);
+    __ufifo_lock_acquire(handle);
     while (1) {
         len = __ufifo_peek_len(handle, *handle->kfifo.out);
         if (len == 0) {
             if (millisec == 0) {
                 ret = -1;
             } else if (millisec == -1) {
-                ret = __ufifo_bsem_wait(&handle->ctrl->bsem_rd, &handle->lock);
+                ret = __ufifo_bsem_wait(&handle->ctrl->bsem_rd, handle);
             } else {
-                ret = __ufifo_bsem_timedwait(&handle->ctrl->bsem_rd, &handle->lock, millisec);
+                ret = __ufifo_bsem_timedwait(&handle->ctrl->bsem_rd, handle, millisec);
                 millisec = 0;
             }
             if (ret) {
@@ -610,7 +540,7 @@ static unsigned int __ufifo_get(ufifo_t *handle, void *buf, unsigned int size, l
 
     __ufifo_bsem_post(&handle->ctrl->bsem_wr);
 end:
-    __ufifo_lock_release(&handle->lock);
+    __ufifo_lock_release(handle);
 
     return len;
 }
@@ -638,16 +568,16 @@ static unsigned int __ufifo_peek(ufifo_t *handle, void *buf, unsigned int size, 
     int ret;
     unsigned int len;
 
-    __ufifo_lock_acquire(&handle->lock);
+    __ufifo_lock_acquire(handle);
     while (1) {
         len = __ufifo_peek_len(handle, *handle->kfifo.out);
         if (len == 0) {
             if (millisec == 0) {
                 ret = -1;
             } else if (millisec == -1) {
-                ret = __ufifo_bsem_wait(&handle->ctrl->bsem_rd, &handle->lock);
+                ret = __ufifo_bsem_wait(&handle->ctrl->bsem_rd, handle);
             } else {
-                ret = __ufifo_bsem_timedwait(&handle->ctrl->bsem_rd, &handle->lock, millisec);
+                ret = __ufifo_bsem_timedwait(&handle->ctrl->bsem_rd, handle, millisec);
                 millisec = 0;
             }
             if (ret) {
@@ -672,7 +602,7 @@ static unsigned int __ufifo_peek(ufifo_t *handle, void *buf, unsigned int size, 
 
     __ufifo_bsem_post(&handle->ctrl->bsem_wr);
 end:
-    __ufifo_lock_release(&handle->lock);
+    __ufifo_lock_release(handle);
 
     return len;
 }
@@ -701,7 +631,7 @@ int ufifo_oldest(ufifo_t *handle, unsigned int tag)
     unsigned int len, tmp;
     UFIFO_CHECK_HANDLE_FUNC(handle);
 
-    __ufifo_lock_acquire(&handle->lock);
+    __ufifo_lock_acquire(handle);
     tmp = *handle->kfifo.out;
     while(1) {
         len = __ufifo_peek_len(handle, tmp);
@@ -716,7 +646,7 @@ int ufifo_oldest(ufifo_t *handle, unsigned int tag)
         tmp += len;
     }
     *handle->kfifo.out = tmp;
-    __ufifo_lock_release(&handle->lock);
+    __ufifo_lock_release(handle);
 
     return ret;
 }
@@ -729,7 +659,7 @@ int ufifo_newest(ufifo_t *handle, unsigned int tag)
     unsigned int final = 0;
     UFIFO_CHECK_HANDLE_FUNC(handle);
 
-    __ufifo_lock_acquire(&handle->lock);
+    __ufifo_lock_acquire(handle);
     tmp = *handle->kfifo.out;
     while(1) {
         len = __ufifo_peek_len(handle, tmp);
@@ -745,7 +675,7 @@ int ufifo_newest(ufifo_t *handle, unsigned int tag)
         tmp += len;
     }
     *handle->kfifo.out = tmp;
-    __ufifo_lock_release(&handle->lock);
+    __ufifo_lock_release(handle);
 
     return ret;
 }

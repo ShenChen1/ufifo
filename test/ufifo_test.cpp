@@ -57,7 +57,7 @@ protected:
     /**
      * @brief Create a basic bytestream FIFO
      */
-    int CreateBytestream(unsigned int size, ufifo_lock_e lock = UFIFO_LOCK_MUTEX) {
+    int CreateBytestream(unsigned int size, ufifo_lock_e lock = UFIFO_LOCK_THREAD) {
         ufifo_init_t init = {};
         init.opt = UFIFO_OPT_ALLOC;
         init.alloc.size = size;
@@ -78,7 +78,7 @@ TEST_F(UfifoApiTest, OpenWithNullName) {
     ufifo_init_t init = {};
     init.opt = UFIFO_OPT_ALLOC;
     init.alloc.size = 64;
-    init.alloc.lock = UFIFO_LOCK_MUTEX;
+    init.alloc.lock = UFIFO_LOCK_THREAD;
 
     int ret = ufifo_open(nullptr, &init, &fifo_);
     EXPECT_EQ(ret, -EINVAL) << "Should return -EINVAL when name is NULL";
@@ -93,7 +93,7 @@ TEST_F(UfifoApiTest, OpenWithInvalidOpt) {
     ufifo_init_t init = {};
     init.opt = UFIFO_OPT_MAX;  // Invalid
     init.alloc.size = 64;
-    init.alloc.lock = UFIFO_LOCK_MUTEX;
+    init.alloc.lock = UFIFO_LOCK_THREAD;
 
     int ret = ufifo_open(const_cast<char*>(GenerateName("invalid_opt").c_str()),
                          &init, &fifo_);
@@ -116,7 +116,7 @@ TEST_F(UfifoApiTest, OpenWithZeroSize) {
     init.opt = UFIFO_OPT_ALLOC;
     init.alloc.size = 0;  // Invalid
     init.alloc.force = 1;
-    init.alloc.lock = UFIFO_LOCK_MUTEX;
+    init.alloc.lock = UFIFO_LOCK_THREAD;
 
     int ret = ufifo_open(const_cast<char*>(GenerateName("zero_size").c_str()),
                          &init, &fifo_);
@@ -281,7 +281,7 @@ static unsigned int test_recsize(unsigned char* p1, unsigned int n1, unsigned ch
 
 class UfifoRecordTest : public UfifoTestBase {
 protected:
-    int CreateRecordFifo(unsigned int size, ufifo_lock_e lock = UFIFO_LOCK_MUTEX) {
+    int CreateRecordFifo(unsigned int size, ufifo_lock_e lock = UFIFO_LOCK_THREAD) {
         ufifo_init_t init = {};
         init.opt = UFIFO_OPT_ALLOC;
         init.alloc.size = size;
@@ -407,7 +407,7 @@ protected:
         init.opt = UFIFO_OPT_ALLOC;
         init.alloc.size = size;
         init.alloc.force = 1;
-        init.alloc.lock = UFIFO_LOCK_MUTEX;
+        init.alloc.lock = UFIFO_LOCK_THREAD;
         init.hook.recsize = tagged_recsize;
         init.hook.rectag = tagged_rectag;
         return ufifo_open(const_cast<char*>(GenerateName("tagged").c_str()),
@@ -566,8 +566,8 @@ TEST_F(UfifoLockTest, NoLockMode) {
     EXPECT_STREQ(buf, "nolock");
 }
 
-TEST_F(UfifoLockTest, MutexLockMode) {
-    ASSERT_EQ(0, CreateBytestream(64, UFIFO_LOCK_MUTEX));
+TEST_F(UfifoLockTest, ThreadLockMode) {
+    ASSERT_EQ(0, CreateBytestream(64, UFIFO_LOCK_THREAD));
 
     // Basic operation should work
     int val = 123;
@@ -578,8 +578,8 @@ TEST_F(UfifoLockTest, MutexLockMode) {
     EXPECT_EQ(out, 123);
 }
 
-TEST_F(UfifoLockTest, FdLockMode) {
-    ASSERT_EQ(0, CreateBytestream(64, UFIFO_LOCK_FDLOCK));
+TEST_F(UfifoLockTest, ProcessLockMode) {
+    ASSERT_EQ(0, CreateBytestream(64, UFIFO_LOCK_PROCESS));
 
     int val = 456;
     ufifo_put(fifo_, &val, sizeof(val));
@@ -587,6 +587,124 @@ TEST_F(UfifoLockTest, FdLockMode) {
     int out;
     ufifo_get(fifo_, &out, sizeof(out));
     EXPECT_EQ(out, 456);
+}
+
+TEST_F(UfifoLockTest, ThreadLockConcurrency) {
+    ASSERT_EQ(0, CreateBytestream(4096, UFIFO_LOCK_THREAD));
+
+    const int num_threads = 4;
+    const int items_per_thread = 100;
+    std::atomic<int> total_put{0};
+    std::atomic<int> total_get{0};
+
+    std::vector<std::thread> producers;
+    for (int t = 0; t < num_threads; t++) {
+        producers.emplace_back([&, t]() {
+            for (int i = 0; i < items_per_thread; i++) {
+                int val = t * 1000 + i;
+                while (ufifo_put(fifo_, &val, sizeof(val)) == 0) {
+                    std::this_thread::yield();
+                }
+                total_put++;
+            }
+        });
+    }
+
+    std::thread consumer([&]() {
+        while (total_get < num_threads * items_per_thread) {
+            int val;
+            if (ufifo_get(fifo_, &val, sizeof(val)) > 0) {
+                total_get++;
+            } else {
+                std::this_thread::yield();
+            }
+        }
+    });
+
+    for (auto& t : producers) t.join();
+    consumer.join();
+
+    EXPECT_EQ(total_put.load(), num_threads * items_per_thread);
+    EXPECT_EQ(total_get.load(), num_threads * items_per_thread);
+}
+
+TEST_F(UfifoLockTest, ProcessLockConcurrency) {
+    ASSERT_EQ(0, CreateBytestream(4096, UFIFO_LOCK_PROCESS));
+
+    const int num_threads = 4;
+    const int items_per_thread = 100;
+    std::atomic<int> total_put{0};
+    std::atomic<int> total_get{0};
+
+    std::vector<std::thread> producers;
+    for (int t = 0; t < num_threads; t++) {
+        producers.emplace_back([&, t]() {
+            for (int i = 0; i < items_per_thread; i++) {
+                int val = t * 1000 + i;
+                while (ufifo_put(fifo_, &val, sizeof(val)) == 0) {
+                    std::this_thread::yield();
+                }
+                total_put++;
+            }
+        });
+    }
+
+    std::thread consumer([&]() {
+        while (total_get < num_threads * items_per_thread) {
+            int val;
+            if (ufifo_get(fifo_, &val, sizeof(val)) > 0) {
+                total_get++;
+            } else {
+                std::this_thread::yield();
+            }
+        }
+    });
+
+    for (auto& t : producers) t.join();
+    consumer.join();
+
+    EXPECT_EQ(total_put.load(), num_threads * items_per_thread);
+    EXPECT_EQ(total_get.load(), num_threads * items_per_thread);
+}
+
+// Test ROBUST mutex: crash recovery scenario
+TEST_F(UfifoLockTest, ProcessLockCrashRecovery) {
+    std::string name = GenerateName("crash_recovery");
+
+    ufifo_init_t init = {};
+    init.opt = UFIFO_OPT_ALLOC;
+    init.alloc.size = 64;
+    init.alloc.force = 1;
+    init.alloc.lock = UFIFO_LOCK_PROCESS;
+
+    ASSERT_EQ(0, ufifo_open(const_cast<char*>(name.c_str()), &init, &fifo_));
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        // Child: attach, put data, then crash while "holding" conceptual access
+        ufifo_t* child_fifo = nullptr;
+        ufifo_init_t child_init = {};
+        child_init.opt = UFIFO_OPT_ATTACH;
+
+        if (ufifo_open(const_cast<char*>(name.c_str()), &child_init, &child_fifo) == 0) {
+            int val = 999;
+            ufifo_put(child_fifo, &val, sizeof(val));
+            // Simulate crash (exit without cleanup)
+            _exit(0);
+        }
+        _exit(1);
+    } else {
+        // Parent: wait for child, then verify we can still access
+        int status;
+        waitpid(pid, &status, 0);
+        EXPECT_TRUE(WIFEXITED(status));
+
+        // Should still be able to read data after child "crashed"
+        int val;
+        unsigned int len = ufifo_get(fifo_, &val, sizeof(val));
+        EXPECT_EQ(len, sizeof(val));
+        EXPECT_EQ(val, 999);
+    }
 }
 
 // =============================================================================
@@ -622,7 +740,7 @@ TEST_F(UfifoMultiInstanceTest, AllocAndAttach) {
     init_alloc.opt = UFIFO_OPT_ALLOC;
     init_alloc.alloc.size = 64;
     init_alloc.alloc.force = 1;
-    init_alloc.alloc.lock = UFIFO_LOCK_MUTEX;
+    init_alloc.alloc.lock = UFIFO_LOCK_THREAD;
 
     std::string name = GenerateName("alloc_attach");
     ASSERT_EQ(0, ufifo_open(const_cast<char*>(name.c_str()), &init_alloc, &producer));
@@ -763,7 +881,7 @@ protected:
 class UfifoMPSCTest : public UfifoTestBase {};
 
 TEST_F(UfifoMPSCTest, ConcurrentPut) {
-    ASSERT_EQ(0, CreateBytestream(4096, UFIFO_LOCK_MUTEX));
+    ASSERT_EQ(0, CreateBytestream(4096, UFIFO_LOCK_THREAD));
 
     const int num_producers = 4;
     const int items_per_producer = 100;
@@ -803,7 +921,7 @@ TEST_F(UfifoMPSCTest, ConcurrentPut) {
 }
 
 TEST_F(UfifoMPSCTest, DataIntegrity) {
-    ASSERT_EQ(0, CreateBytestream(2048, UFIFO_LOCK_MUTEX));
+    ASSERT_EQ(0, CreateBytestream(2048, UFIFO_LOCK_THREAD));
 
     const int num_producers = 2;
     const int items_per_producer = 50;
@@ -850,7 +968,7 @@ TEST_F(UfifoMPSCTest, DataIntegrity) {
 class UfifoMPMCTest : public UfifoTestBase {};
 
 TEST_F(UfifoMPMCTest, FullConcurrency) {
-    ASSERT_EQ(0, CreateBytestream(4096, UFIFO_LOCK_MUTEX));
+    ASSERT_EQ(0, CreateBytestream(4096, UFIFO_LOCK_THREAD));
 
     const int num_producers = 2;
     const int num_consumers = 2;
@@ -920,7 +1038,7 @@ TEST_F(UfifoEdgeCaseTest, AllocForceOverwrite) {
     init.opt = UFIFO_OPT_ALLOC;
     init.alloc.size = 64;
     init.alloc.force = 1;
-    init.alloc.lock = UFIFO_LOCK_MUTEX;
+    init.alloc.lock = UFIFO_LOCK_THREAD;
 
     std::string name = GenerateName("force_overwrite");
 
@@ -947,7 +1065,7 @@ TEST_F(UfifoEdgeCaseTest, AllocNoForceReuse) {
     init.opt = UFIFO_OPT_ALLOC;
     init.alloc.size = 64;
     init.alloc.force = 1;
-    init.alloc.lock = UFIFO_LOCK_MUTEX;
+    init.alloc.lock = UFIFO_LOCK_THREAD;
 
     std::string name = GenerateName("no_force_reuse");
 
@@ -976,7 +1094,7 @@ TEST_F(UfifoEdgeCaseTest, CrossProcessSharing) {
     init.opt = UFIFO_OPT_ALLOC;
     init.alloc.size = 64;
     init.alloc.force = 1;
-    init.alloc.lock = UFIFO_LOCK_FDLOCK;  // FDLOCK for cross-process
+    init.alloc.lock = UFIFO_LOCK_PROCESS;  // FDLOCK for cross-process
 
     ASSERT_EQ(0, ufifo_open(const_cast<char*>(name.c_str()), &init, &fifo));
     fifos_.push_back(fifo);
