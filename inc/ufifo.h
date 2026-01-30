@@ -16,13 +16,21 @@ typedef enum {
     UFIFO_OPT_MAX,
 } ufifo_opt_e;
 
+typedef enum {
+    UFIFO_LOCK_NONE,
+    UFIFO_LOCK_MUTEX,
+    UFIFO_LOCK_FDLOCK,
+    UFIFO_LOCK_MAX,
+} ufifo_lock_e;
+
 typedef struct {
     unsigned int size;
     unsigned int force;
+    ufifo_lock_e lock;
 } ufifo_alloc_t;
 
 typedef struct {
-    unsigned int shared;
+    /* Reserved for future use */
 } ufifo_attach_t;
 
 typedef struct {
@@ -32,15 +40,7 @@ typedef struct {
     ufifo_recget_hook_t     recget;
 } ufifo_hook_t;
 
-typedef enum {
-    UFIFO_LOCK_NONE,
-    UFIFO_LOCK_MUTEX,
-    UFIFO_LOCK_FDLOCK,
-    UFIFO_LOCK_MAX,
-} ufifo_lock_e;
-
 typedef struct {
-    ufifo_lock_e lock;
     ufifo_opt_e opt;
     union {
         ufifo_alloc_t alloc;

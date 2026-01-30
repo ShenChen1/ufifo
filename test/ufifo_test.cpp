@@ -60,9 +60,9 @@ protected:
     int CreateBytestream(unsigned int size, ufifo_lock_e lock = UFIFO_LOCK_MUTEX) {
         ufifo_init_t init = {};
         init.opt = UFIFO_OPT_ALLOC;
-        init.lock = lock;
         init.alloc.size = size;
         init.alloc.force = 1;
+        init.alloc.lock = lock;
         return ufifo_open(const_cast<char*>(GenerateName("bytestream").c_str()),
                           &init, &fifo_);
     }
@@ -77,8 +77,8 @@ class UfifoApiTest : public UfifoTestBase {};
 TEST_F(UfifoApiTest, OpenWithNullName) {
     ufifo_init_t init = {};
     init.opt = UFIFO_OPT_ALLOC;
-    init.lock = UFIFO_LOCK_MUTEX;
     init.alloc.size = 64;
+    init.alloc.lock = UFIFO_LOCK_MUTEX;
 
     int ret = ufifo_open(nullptr, &init, &fifo_);
     EXPECT_EQ(ret, -EINVAL) << "Should return -EINVAL when name is NULL";
@@ -92,8 +92,8 @@ TEST_F(UfifoApiTest, OpenWithNullInit) {
 TEST_F(UfifoApiTest, OpenWithInvalidOpt) {
     ufifo_init_t init = {};
     init.opt = UFIFO_OPT_MAX;  // Invalid
-    init.lock = UFIFO_LOCK_MUTEX;
     init.alloc.size = 64;
+    init.alloc.lock = UFIFO_LOCK_MUTEX;
 
     int ret = ufifo_open(const_cast<char*>(GenerateName("invalid_opt").c_str()),
                          &init, &fifo_);
@@ -103,8 +103,8 @@ TEST_F(UfifoApiTest, OpenWithInvalidOpt) {
 TEST_F(UfifoApiTest, OpenWithInvalidLock) {
     ufifo_init_t init = {};
     init.opt = UFIFO_OPT_ALLOC;
-    init.lock = UFIFO_LOCK_MAX;  // Invalid
     init.alloc.size = 64;
+    init.alloc.lock = UFIFO_LOCK_MAX;  // Invalid
 
     int ret = ufifo_open(const_cast<char*>(GenerateName("invalid_lock").c_str()),
                          &init, &fifo_);
@@ -114,9 +114,9 @@ TEST_F(UfifoApiTest, OpenWithInvalidLock) {
 TEST_F(UfifoApiTest, OpenWithZeroSize) {
     ufifo_init_t init = {};
     init.opt = UFIFO_OPT_ALLOC;
-    init.lock = UFIFO_LOCK_MUTEX;
     init.alloc.size = 0;  // Invalid
     init.alloc.force = 1;
+    init.alloc.lock = UFIFO_LOCK_MUTEX;
 
     int ret = ufifo_open(const_cast<char*>(GenerateName("zero_size").c_str()),
                          &init, &fifo_);
@@ -284,9 +284,9 @@ protected:
     int CreateRecordFifo(unsigned int size, ufifo_lock_e lock = UFIFO_LOCK_MUTEX) {
         ufifo_init_t init = {};
         init.opt = UFIFO_OPT_ALLOC;
-        init.lock = lock;
         init.alloc.size = size;
         init.alloc.force = 1;
+        init.alloc.lock = lock;
         init.hook.recsize = test_recsize;
         return ufifo_open(const_cast<char*>(GenerateName("record").c_str()),
                           &init, &fifo_);
@@ -405,9 +405,9 @@ protected:
     int CreateTaggedFifo(unsigned int size) {
         ufifo_init_t init = {};
         init.opt = UFIFO_OPT_ALLOC;
-        init.lock = UFIFO_LOCK_MUTEX;
         init.alloc.size = size;
         init.alloc.force = 1;
+        init.alloc.lock = UFIFO_LOCK_MUTEX;
         init.hook.recsize = tagged_recsize;
         init.hook.rectag = tagged_rectag;
         return ufifo_open(const_cast<char*>(GenerateName("tagged").c_str()),
@@ -620,9 +620,9 @@ TEST_F(UfifoMultiInstanceTest, AllocAndAttach) {
     // Producer allocates
     ufifo_init_t init_alloc = {};
     init_alloc.opt = UFIFO_OPT_ALLOC;
-    init_alloc.lock = UFIFO_LOCK_MUTEX;
     init_alloc.alloc.size = 64;
     init_alloc.alloc.force = 1;
+    init_alloc.alloc.lock = UFIFO_LOCK_MUTEX;
 
     std::string name = GenerateName("alloc_attach");
     ASSERT_EQ(0, ufifo_open(const_cast<char*>(name.c_str()), &init_alloc, &producer));
@@ -631,8 +631,6 @@ TEST_F(UfifoMultiInstanceTest, AllocAndAttach) {
     // Consumer attaches
     ufifo_init_t init_attach = {};
     init_attach.opt = UFIFO_OPT_ATTACH;
-    init_attach.lock = UFIFO_LOCK_MUTEX;
-    init_attach.attach.shared = 0;
 
     ASSERT_EQ(0, ufifo_open(const_cast<char*>(name.c_str()), &init_attach, &consumer));
     fifos_.push_back(consumer);
@@ -648,44 +646,6 @@ TEST_F(UfifoMultiInstanceTest, AllocAndAttach) {
     EXPECT_EQ(out, 999);
 }
 
-TEST_F(UfifoMultiInstanceTest, SharedModeIndependentOut) {
-    ufifo_t* producer = nullptr;
-    ufifo_t* consumer1 = nullptr;
-    ufifo_t* consumer2 = nullptr;
-
-    ufifo_init_t init_alloc = {};
-    init_alloc.opt = UFIFO_OPT_ALLOC;
-    init_alloc.lock = UFIFO_LOCK_MUTEX;
-    init_alloc.alloc.size = 64;
-    init_alloc.alloc.force = 1;
-
-    std::string name = GenerateName("shared_mode");
-    ASSERT_EQ(0, ufifo_open(const_cast<char*>(name.c_str()), &init_alloc, &producer));
-    fifos_.push_back(producer);
-
-    // Both consumers attach in shared mode
-    ufifo_init_t init_attach = {};
-    init_attach.opt = UFIFO_OPT_ATTACH;
-    init_attach.lock = UFIFO_LOCK_MUTEX;
-    init_attach.attach.shared = 1;
-
-    ASSERT_EQ(0, ufifo_open(const_cast<char*>(name.c_str()), &init_attach, &consumer1));
-    fifos_.push_back(consumer1);
-
-    ASSERT_EQ(0, ufifo_open(const_cast<char*>(name.c_str()), &init_attach, &consumer2));
-    fifos_.push_back(consumer2);
-
-    // Producer puts
-    int val = 777;
-    ufifo_put(producer, &val, sizeof(val));
-
-    // Both consumers should be able to read the same data
-    int out1, out2;
-    EXPECT_EQ(ufifo_get(consumer1, &out1, sizeof(out1)), sizeof(out1));
-    EXPECT_EQ(ufifo_get(consumer2, &out2, sizeof(out2)), sizeof(out2));
-    EXPECT_EQ(out1, 777);
-    EXPECT_EQ(out2, 777);
-}
 
 // 7.1 SPSC Tests
 class UfifoSPSCTest : public UfifoTestBase {};
@@ -798,50 +758,6 @@ protected:
     }
 };
 
-TEST_F(UfifoSPMCTest, BroadcastSemantics) {
-    ufifo_t* producer = nullptr;
-    ufifo_t* consumer1 = nullptr;
-    ufifo_t* consumer2 = nullptr;
-
-    ufifo_init_t init_alloc = {};
-    init_alloc.opt = UFIFO_OPT_ALLOC;
-    init_alloc.lock = UFIFO_LOCK_MUTEX;
-    init_alloc.alloc.size = 256;
-    init_alloc.alloc.force = 1;
-
-    std::string name = GenerateName();
-    ASSERT_EQ(0, ufifo_open(const_cast<char*>(name.c_str()), &init_alloc, &producer));
-    fifos_.push_back(producer);
-
-    ufifo_init_t init_attach = {};
-    init_attach.opt = UFIFO_OPT_ATTACH;
-    init_attach.lock = UFIFO_LOCK_MUTEX;
-    init_attach.attach.shared = 1;
-
-    ASSERT_EQ(0, ufifo_open(const_cast<char*>(name.c_str()), &init_attach, &consumer1));
-    fifos_.push_back(consumer1);
-    ASSERT_EQ(0, ufifo_open(const_cast<char*>(name.c_str()), &init_attach, &consumer2));
-    fifos_.push_back(consumer2);
-
-    // Producer sends multiple values
-    for (int i = 0; i < 5; i++) {
-        ufifo_put(producer, &i, sizeof(i));
-    }
-
-    // Each consumer should receive all values (broadcast)
-    std::vector<int> recv1, recv2;
-    int val;
-    while (ufifo_get(consumer1, &val, sizeof(val)) > 0) {
-        recv1.push_back(val);
-    }
-    while (ufifo_get(consumer2, &val, sizeof(val)) > 0) {
-        recv2.push_back(val);
-    }
-
-    EXPECT_EQ(recv1.size(), 5u);
-    EXPECT_EQ(recv2.size(), 5u);
-    EXPECT_EQ(recv1, recv2);
-}
 
 // 7.3 MPSC Tests
 class UfifoMPSCTest : public UfifoTestBase {};
@@ -1002,9 +918,9 @@ TEST_F(UfifoEdgeCaseTest, AllocForceOverwrite) {
 
     ufifo_init_t init = {};
     init.opt = UFIFO_OPT_ALLOC;
-    init.lock = UFIFO_LOCK_MUTEX;
     init.alloc.size = 64;
     init.alloc.force = 1;
+    init.alloc.lock = UFIFO_LOCK_MUTEX;
 
     std::string name = GenerateName("force_overwrite");
 
@@ -1029,9 +945,9 @@ TEST_F(UfifoEdgeCaseTest, AllocNoForceReuse) {
 
     ufifo_init_t init = {};
     init.opt = UFIFO_OPT_ALLOC;
-    init.lock = UFIFO_LOCK_MUTEX;
     init.alloc.size = 64;
     init.alloc.force = 1;
+    init.alloc.lock = UFIFO_LOCK_MUTEX;
 
     std::string name = GenerateName("no_force_reuse");
 
@@ -1058,9 +974,9 @@ TEST_F(UfifoEdgeCaseTest, CrossProcessSharing) {
     ufifo_t* fifo = nullptr;
     ufifo_init_t init = {};
     init.opt = UFIFO_OPT_ALLOC;
-    init.lock = UFIFO_LOCK_FDLOCK;  // FDLOCK for cross-process
     init.alloc.size = 64;
     init.alloc.force = 1;
+    init.alloc.lock = UFIFO_LOCK_FDLOCK;  // FDLOCK for cross-process
 
     ASSERT_EQ(0, ufifo_open(const_cast<char*>(name.c_str()), &init, &fifo));
     fifos_.push_back(fifo);
@@ -1071,8 +987,6 @@ TEST_F(UfifoEdgeCaseTest, CrossProcessSharing) {
         ufifo_t* child_fifo = nullptr;
         ufifo_init_t child_init = {};
         child_init.opt = UFIFO_OPT_ATTACH;
-        child_init.lock = UFIFO_LOCK_FDLOCK;
-        child_init.attach.shared = 0;
 
         if (ufifo_open(const_cast<char*>(name.c_str()), &child_init, &child_fifo) == 0) {
             int val;

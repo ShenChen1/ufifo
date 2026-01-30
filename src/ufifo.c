@@ -48,7 +48,6 @@ struct ufifo {
     ufifo_hook_t    hook;
 
     kfifo_t         kfifo;
-    unsigned int    single_out;
 
     int             shm_fd;
     unsigned int    shm_size;
@@ -306,12 +305,17 @@ int ufifo_open(char *name, ufifo_init_t *init, ufifo_t **handle)
 {
     int ret = 0;
     ufifo_t *ufifo = NULL;
+    ufifo_lock_e lock_type = UFIFO_LOCK_NONE;
 
     if (name == NULL || init == NULL) {
         return -EINVAL;
     }
 
-    if (init->opt >= UFIFO_OPT_MAX || init->lock >= UFIFO_LOCK_MAX) {
+    if (init->opt >= UFIFO_OPT_MAX) {
+        return -EINVAL;
+    }
+
+    if (init->opt == UFIFO_OPT_ALLOC && init->alloc.lock >= UFIFO_LOCK_MAX) {
         return -EINVAL;
     }
 
@@ -322,7 +326,8 @@ int ufifo_open(char *name, ufifo_init_t *init, ufifo_t **handle)
 
     strncpy(ufifo->name, name, sizeof(ufifo->name) - 1);
     ret |= __ufifo_hook_init(ufifo, &init->hook);
-    ret |= __ufifo_lock_init(&ufifo->lock, init->lock);
+    lock_type = (init->opt == UFIFO_OPT_ALLOC) ? init->alloc.lock : UFIFO_LOCK_NONE;
+    ret |= __ufifo_lock_init(&ufifo->lock, lock_type);
     if (ret < 0) {
         goto err1;
     }
@@ -337,7 +342,6 @@ int ufifo_open(char *name, ufifo_init_t *init, ufifo_t **handle)
         ufifo->shm_fd = shm_open(name, oflag, (S_IRUSR | S_IWUSR));
         if (ufifo->shm_fd >= 0 && init->alloc.force == 0) {
             init->opt = UFIFO_OPT_ATTACH;
-            init->attach.shared = 0;
         } else {
             oflag = O_RDWR | O_CREAT;
         }
@@ -357,10 +361,6 @@ int ufifo_open(char *name, ufifo_init_t *init, ufifo_t **handle)
         ret = __ufifo_init_from_user(ufifo);
     } else {
         ret = __ufifo_init_from_shm(ufifo);
-        if (init->attach.shared) {
-            ufifo->single_out = *ufifo->kfifo.out;
-            ufifo->kfifo.out = &ufifo->single_out;
-        }
     }
     if (ret < 0) {
         goto err4;
