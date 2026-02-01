@@ -1,23 +1,26 @@
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
-#include <pthread.h>
 #include <assert.h>
 #include <errno.h>
 #include <limits.h>
-#include <unistd.h>
+#include <pthread.h>
 #include <string.h>
 #include <semaphore.h>
+#include <signal.h>
+
+#include <unistd.h>
 #include <sys/mman.h>
-#include <sys/stat.h>       /* For mode constants */
-#include <fcntl.h>          /* For O_* constants */
+#include <sys/stat.h>
+#include <fcntl.h>
 #include <time.h>
+
 #include "kfifo.h"
 #include "log2.h"
 #include "ufifo.h"
 #include "utils.h"
 
-#define UFIFO_DEBUG (0)
+#define UFIFO_DEBUG (1)
 #define UFIFO_MAGIC (0xf1f0f1f0)
 
 #if UFIFO_DEBUG
@@ -28,16 +31,28 @@
 #define UFIFO_CHECK_HANDLE_FUNC(handle)
 #endif
 
-typedef struct ufifo_ctrl {
-    unsigned int    in;
+typedef struct {
     unsigned int    out;
-    unsigned int    mask;
-
-    sem_t           bsem_wr;
+    pid_t           pid;
+    unsigned int    active;
     sem_t           bsem_rd;
+} ufifo_sub_ctrl_t;
 
-    ufifo_lock_e    lock; 
-    pthread_mutex_t mutex;
+typedef struct {
+    unsigned int in;
+    unsigned int out;
+    unsigned int mask;
+
+    ufifo_lock_e        lock;
+    pthread_mutex_t     mutex;
+
+    sem_t               bsem_wr;
+    sem_t               bsem_rd;
+
+    ufifo_data_mode_e   data_mode;
+    unsigned int        max_users;
+    unsigned int        num_users;
+    ufifo_sub_ctrl_t    users[];
 } ufifo_ctrl_t;
 
 struct ufifo {
@@ -45,13 +60,19 @@ struct ufifo {
     unsigned int    magic;
 #endif
     char            name[NAME_MAX];
-    ufifo_hook_t    hook;
+    unsigned int    user_id;
 
+    ufifo_hook_t    hook;
     kfifo_t         kfifo;
+    sem_t          *bsem_wr;
+    sem_t          *bsem_rd;
 
     int             shm_fd;
     unsigned int    shm_size;
     void           *shm_mem;
+
+    int             ctrl_fd;
+    size_t          ctrl_size;
     ufifo_ctrl_t   *ctrl;
 };
 
@@ -65,7 +86,6 @@ static inline int __ufifo_lock_acquire(ufifo_t *ufifo)
 
     ret = pthread_mutex_lock(&ufifo->ctrl->mutex);
     if (ret == EOWNERDEAD) {
-        /* Lock owner crashed, recover the mutex */
         pthread_mutex_consistent(&ufifo->ctrl->mutex);
         ret = 0;
     }
@@ -82,6 +102,53 @@ static inline int __ufifo_lock_release(ufifo_t *ufifo)
     return pthread_mutex_unlock(&ufifo->ctrl->mutex);
 }
 
+static inline size_t __ufifo_ctrl_size(unsigned int max_users)
+{
+    return sizeof(ufifo_ctrl_t) + max_users * sizeof(ufifo_sub_ctrl_t);
+}
+
+static inline int __ufifo_is_shared(ufifo_t *ufifo)
+{
+    return ufifo->ctrl->data_mode == UFIFO_DATA_SHARED;
+}
+
+static int __ufifo_register(ufifo_t *ufifo)
+{
+    ufifo_ctrl_t *ctrl = ufifo->ctrl;
+    unsigned int i;
+
+    __ufifo_lock_acquire(ufifo);
+
+    for (i = 0; i < ctrl->max_users; i++) {
+        if (!ctrl->users[i].active) {
+            ctrl->users[i].out = ctrl->in;
+            ctrl->users[i].pid = getpid();
+            ctrl->users[i].active = 1;
+            ctrl->num_users++;
+            __ufifo_lock_release(ufifo);
+            return i;
+        }
+    }
+
+    __ufifo_lock_release(ufifo);
+    return -ENOSPC;
+}
+
+static void __ufifo_unregister(ufifo_t *ufifo)
+{
+    ufifo_ctrl_t *ctrl = ufifo->ctrl;
+
+    __ufifo_lock_acquire(ufifo);
+
+    if (ufifo->user_id < ctrl->max_users &&
+        ctrl->users[ufifo->user_id].active) {
+        ctrl->users[ufifo->user_id].active = 0;
+        ctrl->num_users--;
+    }
+
+    __ufifo_lock_release(ufifo);
+}
+
 static inline int __ufifo_lock_init(ufifo_t *ufifo, ufifo_lock_e type)
 {
     pthread_mutexattr_t attr;
@@ -93,14 +160,8 @@ static inline int __ufifo_lock_init(ufifo_t *ufifo, ufifo_lock_e type)
     }
 
     pthread_mutexattr_init(&attr);
-
-    if (type == UFIFO_LOCK_THREAD) {
-        pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_PRIVATE);
-    } else if (type == UFIFO_LOCK_PROCESS) {
-        pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
-        pthread_mutexattr_setrobust(&attr, PTHREAD_MUTEX_ROBUST);
-    }
-
+    pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
+    pthread_mutexattr_setrobust(&attr, PTHREAD_MUTEX_ROBUST);
     ret = pthread_mutex_init(&ufifo->ctrl->mutex, &attr);
     pthread_mutexattr_destroy(&attr);
 
@@ -185,52 +246,124 @@ static inline int __ufifo_hook_init(ufifo_t *ufifo, ufifo_hook_t *hook)
 static int __ufifo_init_from_shm(ufifo_t *ufifo)
 {
     int ret = 0;
-    struct stat stat;
+    struct stat st;
+    char ctrl_name[NAME_MAX + 8];
 
-    ret = fstat(ufifo->shm_fd, &stat);
-    if (ret < 0) {
+    snprintf(ctrl_name, sizeof(ctrl_name), "%s_ctrl", ufifo->name);
+    ufifo->ctrl_fd = shm_open(ctrl_name, O_RDWR, (S_IRUSR | S_IWUSR));
+    if (ufifo->ctrl_fd < 0) {
         ret = -errno;
         goto end;
     }
 
-    ufifo->shm_size = stat.st_size;
+    ret = fstat(ufifo->ctrl_fd, &st);
+    if (ret < 0) {
+        ret = -errno;
+        goto err_ctrl_fd;
+    }
+
+    ufifo->ctrl_size = st.st_size;
+    ufifo->ctrl = mmap(NULL, ufifo->ctrl_size, (PROT_READ | PROT_WRITE), MAP_SHARED, ufifo->ctrl_fd, 0);
+    if (ufifo->ctrl == MAP_FAILED) {
+        ret = -errno;
+        goto err_ctrl_fd;
+    }
+
+    ret = fstat(ufifo->shm_fd, &st);
+    if (ret < 0) {
+        ret = -errno;
+        goto err_ctrl_mmap;
+    }
+
+    ufifo->shm_size = st.st_size;
     ufifo->shm_mem = mmap(NULL, ufifo->shm_size, (PROT_READ | PROT_WRITE), MAP_SHARED, ufifo->shm_fd, 0);
-    ufifo->shm_size -= sizeof(ufifo_ctrl_t);
-    ufifo->ctrl = (ufifo_ctrl_t *)((char *)ufifo->shm_mem + ufifo->shm_size);
+    if (ufifo->shm_mem == MAP_FAILED) {
+        ret = -errno;
+        goto err_ctrl_mmap;
+    }
+
     ufifo->kfifo.in = &ufifo->ctrl->in;
     ufifo->kfifo.out = &ufifo->ctrl->out;
     ufifo->kfifo.mask = &ufifo->ctrl->mask;
+    ufifo->bsem_wr = &ufifo->ctrl->bsem_wr;
+    ufifo->bsem_rd = &ufifo->ctrl->bsem_rd;
 
+    return 0;
+
+err_ctrl_mmap:
+    munmap(ufifo->ctrl, ufifo->ctrl_size);
+err_ctrl_fd:
+    close(ufifo->ctrl_fd);
 end:
     return ret;
 }
 
-static int __ufifo_init_from_user(ufifo_t *ufifo)
+static int __ufifo_init_from_user(ufifo_t *ufifo, ufifo_alloc_t *alloc)
 {
     int ret = 0;
+    unsigned int i;
+    char ctrl_name[NAME_MAX + 8];
 
-    if (!ufifo->shm_size) {
+    if (!alloc->size) {
         return -EINVAL;
     }
 
-    ufifo->shm_size = rounddown_pow_of_two(ufifo->shm_size);
-    ufifo->shm_size += sizeof(ufifo_ctrl_t);
-    ret = ftruncate(ufifo->shm_fd, ufifo->shm_size);
-    if (ret < 0) {
+    snprintf(ctrl_name, sizeof(ctrl_name), "%s_ctrl", ufifo->name);
+    ufifo->ctrl_size = __ufifo_ctrl_size(alloc->max_users);
+    ufifo->ctrl_fd = shm_open(ctrl_name, O_RDWR | O_CREAT, (S_IRUSR | S_IWUSR));
+    if (ufifo->ctrl_fd < 0) {
         ret = -errno;
         goto end;
     }
 
+    ret = ftruncate(ufifo->ctrl_fd, ufifo->ctrl_size);
+    if (ret < 0) {
+        ret = -errno;
+        goto err_ctrl_fd;
+    }
+
+    ufifo->ctrl = mmap(NULL, ufifo->ctrl_size, (PROT_READ | PROT_WRITE), MAP_SHARED, ufifo->ctrl_fd, 0);
+    if (ufifo->ctrl == MAP_FAILED) {
+        ret = -errno;
+        goto err_ctrl_fd;
+    }
+
+    ufifo->shm_size = roundup_pow_of_two(alloc->size);
+    ret = ftruncate(ufifo->shm_fd, ufifo->shm_size);
+    if (ret < 0) {
+        ret = -errno;
+        goto err_ctrl_mmap;
+    }
+
     ufifo->shm_mem = mmap(NULL, ufifo->shm_size, (PROT_READ | PROT_WRITE), MAP_SHARED, ufifo->shm_fd, 0);
-    ufifo->shm_size -= sizeof(ufifo_ctrl_t);
-    ufifo->ctrl = (ufifo_ctrl_t *)((char *)ufifo->shm_mem + ufifo->shm_size);
+    if (ufifo->shm_mem == MAP_FAILED) {
+        ret = -errno;
+        goto err_ctrl_mmap;
+    }
+
+    ufifo->ctrl->data_mode = alloc->data_mode;
+    ufifo->ctrl->max_users = alloc->max_users;
+    ufifo->ctrl->num_users = 0;
+    for (i = 0; i < alloc->max_users; i++) {
+        ufifo->ctrl->users[i].active = 0;
+    }
+
     ufifo->kfifo.in = &ufifo->ctrl->in;
     ufifo->kfifo.out = &ufifo->ctrl->out;
     ufifo->kfifo.mask = &ufifo->ctrl->mask;
     ret |= kfifo_init(&ufifo->kfifo, ufifo->shm_size);
-    ret |= __ufifo_bsem_init(&ufifo->ctrl->bsem_wr, 0);
-    ret |= __ufifo_bsem_init(&ufifo->ctrl->bsem_rd, 0);
+    ufifo->bsem_wr = &ufifo->ctrl->bsem_wr;
+    ret |= __ufifo_bsem_init(ufifo->bsem_wr, 0);
+    ufifo->bsem_rd = &ufifo->ctrl->bsem_rd;
+    ret |= __ufifo_bsem_init(ufifo->bsem_rd, 0);
 
+    return ret;
+
+err_ctrl_mmap:
+    munmap(ufifo->ctrl, ufifo->ctrl_size);
+err_ctrl_fd:
+    close(ufifo->ctrl_fd);
+    shm_unlink(ctrl_name);
 end:
     return ret;
 }
@@ -285,12 +418,10 @@ int ufifo_open(char *name, ufifo_init_t *init, ufifo_t **handle)
 
     is_alloc = (init->opt == UFIFO_OPT_ALLOC);
     if (is_alloc) {
-        ufifo->shm_size = init->alloc.size;
-        ret = __ufifo_init_from_user(ufifo);
+        ret = __ufifo_init_from_user(ufifo, &init->alloc);
         if (ret < 0) {
             goto err2;
         }
-        /* Initialize lock only on ALLOC (lock is in shared memory) */
         ret = __ufifo_lock_init(ufifo, init->alloc.lock);
         if (ret < 0) {
             goto err3;
@@ -302,16 +433,39 @@ int ufifo_open(char *name, ufifo_init_t *init, ufifo_t **handle)
         }
     }
 
+    if (__ufifo_is_shared(ufifo)) {
+        ret = __ufifo_register(ufifo);
+        if (ret < 0) {
+            goto err4;
+        }
+        ufifo->user_id = (unsigned int)ret;
+        __ufifo_bsem_deinit(ufifo->bsem_rd);
+        ufifo->bsem_rd = &ufifo->ctrl->users[ufifo->user_id].bsem_rd;
+        ret |= __ufifo_bsem_init(ufifo->bsem_rd, 0);
+        ufifo->kfifo.out = &ufifo->ctrl->users[ufifo->user_id].out;
+    }
+
 #if UFIFO_DEBUG
     ufifo->magic = UFIFO_MAGIC;
 #endif
     *handle = ufifo;
     return 0;
 
+err4:
+    if (is_alloc) {
+        __ufifo_lock_deinit(ufifo);
+    }
 err3:
-    __ufifo_bsem_deinit(&ufifo->ctrl->bsem_wr);
-    __ufifo_bsem_deinit(&ufifo->ctrl->bsem_rd);
-    munmap(ufifo->shm_mem, ufifo->shm_size + sizeof(ufifo_ctrl_t));
+    __ufifo_bsem_deinit(ufifo->bsem_wr);
+    __ufifo_bsem_deinit(ufifo->bsem_rd);
+    munmap(ufifo->shm_mem, ufifo->shm_size);
+    munmap(ufifo->ctrl, ufifo->ctrl_size);
+    close(ufifo->ctrl_fd);
+    if (is_alloc) {
+        char ctrl_name[NAME_MAX + 8];
+        snprintf(ctrl_name, sizeof(ctrl_name), "%s_ctrl", ufifo->name);
+        shm_unlink(ctrl_name);
+    }
 err2:
     close(ufifo->shm_fd);
     if (is_alloc) {
@@ -324,17 +478,28 @@ err1:
 
 static int __ufifo_close(ufifo_t *handle, int destroy)
 {
+    char ctrl_name[NAME_MAX + 8];
+
+    __ufifo_unregister(handle);
     if (destroy) {
+        unsigned int i;
         __ufifo_lock_deinit(handle);
-        __ufifo_bsem_deinit(&handle->ctrl->bsem_wr);
-        __ufifo_bsem_deinit(&handle->ctrl->bsem_rd);
+        __ufifo_bsem_deinit(handle->bsem_wr);
+        for (i = 0; i < handle->ctrl->max_users; i++) {
+            __ufifo_bsem_deinit(&handle->ctrl->users[i].bsem_rd);
+        }
     }
 
-    munmap(handle->shm_mem, handle->shm_size + sizeof(ufifo_ctrl_t));
+    munmap(handle->shm_mem, handle->shm_size);
     close(handle->shm_fd);
+
+    munmap(handle->ctrl, handle->ctrl_size);
+    close(handle->ctrl_fd);
 
     if (destroy) {
         shm_unlink(handle->name);
+        snprintf(ctrl_name, sizeof(ctrl_name), "%s_ctrl", handle->name);
+        shm_unlink(ctrl_name);
     }
     free(handle);
     return 0;
@@ -450,9 +615,9 @@ static unsigned int __ufifo_put(ufifo_t *handle, void *buf, unsigned int size, l
             if (millisec == 0) {
                 ret = -1;
             } else if (millisec == -1) {
-                ret = __ufifo_bsem_wait(&handle->ctrl->bsem_wr, handle);
+                ret = __ufifo_bsem_wait(handle->bsem_wr, handle);
             } else {
-                ret = __ufifo_bsem_timedwait(&handle->ctrl->bsem_wr, handle, millisec);
+                ret = __ufifo_bsem_timedwait(handle->bsem_wr, handle, millisec);
                 millisec = 0;
             }
             if (ret) {
@@ -475,7 +640,18 @@ static unsigned int __ufifo_put(ufifo_t *handle, void *buf, unsigned int size, l
     } else {
         len = kfifo_in(&handle->kfifo, handle->shm_mem, buf, size);
     }
-    __ufifo_bsem_post(&handle->ctrl->bsem_rd);
+
+    if (__ufifo_is_shared(handle)) {
+        unsigned int i;
+        for (i = 0; i < handle->ctrl->max_users; i++) {
+            if (handle->ctrl->users[i].active) {
+                __ufifo_bsem_post(&handle->ctrl->users[i].bsem_rd);
+            }
+        }
+    } else {
+        __ufifo_bsem_post(handle->bsem_rd);
+    }
+
 end:
     __ufifo_lock_release(handle);
 
@@ -512,9 +688,9 @@ static unsigned int __ufifo_get(ufifo_t *handle, void *buf, unsigned int size, l
             if (millisec == 0) {
                 ret = -1;
             } else if (millisec == -1) {
-                ret = __ufifo_bsem_wait(&handle->ctrl->bsem_rd, handle);
+                ret = __ufifo_bsem_wait(handle->bsem_rd, handle);
             } else {
-                ret = __ufifo_bsem_timedwait(&handle->ctrl->bsem_rd, handle, millisec);
+                ret = __ufifo_bsem_timedwait(handle->bsem_rd, handle, millisec);
                 millisec = 0;
             }
             if (ret) {
@@ -538,7 +714,8 @@ static unsigned int __ufifo_get(ufifo_t *handle, void *buf, unsigned int size, l
         len = kfifo_out(&handle->kfifo, handle->shm_mem, buf, size);
     }
 
-    __ufifo_bsem_post(&handle->ctrl->bsem_wr);
+    __ufifo_bsem_post(handle->bsem_wr);
+
 end:
     __ufifo_lock_release(handle);
 
@@ -575,9 +752,9 @@ static unsigned int __ufifo_peek(ufifo_t *handle, void *buf, unsigned int size, 
             if (millisec == 0) {
                 ret = -1;
             } else if (millisec == -1) {
-                ret = __ufifo_bsem_wait(&handle->ctrl->bsem_rd, handle);
+                ret = __ufifo_bsem_wait(handle->bsem_rd, handle);
             } else {
-                ret = __ufifo_bsem_timedwait(&handle->ctrl->bsem_rd, handle, millisec);
+                ret = __ufifo_bsem_timedwait(handle->bsem_rd, handle, millisec);
                 millisec = 0;
             }
             if (ret) {
@@ -600,7 +777,7 @@ static unsigned int __ufifo_peek(ufifo_t *handle, void *buf, unsigned int size, 
         len = kfifo_out_peek(&handle->kfifo, handle->shm_mem, buf, size);
     }
 
-    __ufifo_bsem_post(&handle->ctrl->bsem_wr);
+    __ufifo_bsem_post(handle->bsem_wr);
 end:
     __ufifo_lock_release(handle);
 

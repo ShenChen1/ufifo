@@ -23,10 +23,18 @@ typedef enum {
     UFIFO_LOCK_MAX,
 } ufifo_lock_e;
 
+typedef enum {
+    UFIFO_DATA_SOLE,
+    UFIFO_DATA_SHARED,
+    UFIFO_DATA_MAX,
+} ufifo_data_mode_e;
+
 typedef struct {
-    unsigned int size;
-    unsigned int force;
-    ufifo_lock_e lock;
+    unsigned int        size;
+    unsigned int        force;
+    ufifo_lock_e        lock;
+    ufifo_data_mode_e   data_mode;
+    unsigned int        max_users;
 } ufifo_alloc_t;
 
 typedef struct {
@@ -70,6 +78,7 @@ unsigned int ufifo_peek_block(ufifo_t *handle, void *buf, unsigned int size);
 unsigned int ufifo_peek_timeout(ufifo_t *handle, void *buf, unsigned int size, long millisec);
 int ufifo_oldest(ufifo_t *handle, unsigned int tag);
 int ufifo_newest(ufifo_t *handle, unsigned int tag);
+
 
 #ifdef __cplusplus
 }

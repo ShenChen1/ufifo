@@ -60,6 +60,7 @@ int main(void)
     init.alloc.size = FIFO_SIZE;
     init.alloc.force = 1;
     init.alloc.lock = UFIFO_LOCK_THREAD;
+    init.alloc.max_users = 1;
     init.hook.recsize = recsize;
     ufifo_open("record", &init, &test);
 

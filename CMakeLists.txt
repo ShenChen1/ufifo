@@ -49,6 +49,7 @@ target_compile_options(ufifo_shared PRIVATE -g -Os -Wall -Werror)
 set(EXAMPLES
     bytestream
     nolock
+    pressure
     record
     record-tag
     record-tag-cb

@@ -63,6 +63,7 @@ protected:
         init.alloc.size = size;
         init.alloc.force = 1;
         init.alloc.lock = lock;
+        init.alloc.max_users = 4;
         return ufifo_open(const_cast<char*>(GenerateName("bytestream").c_str()),
                           &init, &fifo_);
     }
@@ -79,6 +80,7 @@ TEST_F(UfifoApiTest, OpenWithNullName) {
     init.opt = UFIFO_OPT_ALLOC;
     init.alloc.size = 64;
     init.alloc.lock = UFIFO_LOCK_THREAD;
+    init.alloc.max_users = 4;
 
     int ret = ufifo_open(nullptr, &init, &fifo_);
     EXPECT_EQ(ret, -EINVAL) << "Should return -EINVAL when name is NULL";
@@ -94,6 +96,7 @@ TEST_F(UfifoApiTest, OpenWithInvalidOpt) {
     init.opt = UFIFO_OPT_MAX;  // Invalid
     init.alloc.size = 64;
     init.alloc.lock = UFIFO_LOCK_THREAD;
+    init.alloc.max_users = 4;
 
     int ret = ufifo_open(const_cast<char*>(GenerateName("invalid_opt").c_str()),
                          &init, &fifo_);
@@ -105,6 +108,7 @@ TEST_F(UfifoApiTest, OpenWithInvalidLock) {
     init.opt = UFIFO_OPT_ALLOC;
     init.alloc.size = 64;
     init.alloc.lock = UFIFO_LOCK_MAX;  // Invalid
+    init.alloc.max_users = 4;
 
     int ret = ufifo_open(const_cast<char*>(GenerateName("invalid_lock").c_str()),
                          &init, &fifo_);
@@ -117,6 +121,7 @@ TEST_F(UfifoApiTest, OpenWithZeroSize) {
     init.alloc.size = 0;  // Invalid
     init.alloc.force = 1;
     init.alloc.lock = UFIFO_LOCK_THREAD;
+    init.alloc.max_users = 4;
 
     int ret = ufifo_open(const_cast<char*>(GenerateName("zero_size").c_str()),
                          &init, &fifo_);
@@ -287,6 +292,7 @@ protected:
         init.alloc.size = size;
         init.alloc.force = 1;
         init.alloc.lock = lock;
+        init.alloc.max_users = 4;
         init.hook.recsize = test_recsize;
         return ufifo_open(const_cast<char*>(GenerateName("record").c_str()),
                           &init, &fifo_);
@@ -408,6 +414,7 @@ protected:
         init.alloc.size = size;
         init.alloc.force = 1;
         init.alloc.lock = UFIFO_LOCK_THREAD;
+        init.alloc.max_users = 4;
         init.hook.recsize = tagged_recsize;
         init.hook.rectag = tagged_rectag;
         return ufifo_open(const_cast<char*>(GenerateName("tagged").c_str()),
@@ -676,6 +683,7 @@ TEST_F(UfifoLockTest, ProcessLockCrashRecovery) {
     init.alloc.size = 64;
     init.alloc.force = 1;
     init.alloc.lock = UFIFO_LOCK_PROCESS;
+    init.alloc.max_users = 4;
 
     ASSERT_EQ(0, ufifo_open(const_cast<char*>(name.c_str()), &init, &fifo_));
 
@@ -741,6 +749,7 @@ TEST_F(UfifoMultiInstanceTest, AllocAndAttach) {
     init_alloc.alloc.size = 64;
     init_alloc.alloc.force = 1;
     init_alloc.alloc.lock = UFIFO_LOCK_THREAD;
+    init_alloc.alloc.max_users = 4;
 
     std::string name = GenerateName("alloc_attach");
     ASSERT_EQ(0, ufifo_open(const_cast<char*>(name.c_str()), &init_alloc, &producer));
@@ -1039,6 +1048,7 @@ TEST_F(UfifoEdgeCaseTest, AllocForceOverwrite) {
     init.alloc.size = 64;
     init.alloc.force = 1;
     init.alloc.lock = UFIFO_LOCK_THREAD;
+    init.alloc.max_users = 4;
 
     std::string name = GenerateName("force_overwrite");
 
@@ -1066,6 +1076,7 @@ TEST_F(UfifoEdgeCaseTest, AllocNoForceReuse) {
     init.alloc.size = 64;
     init.alloc.force = 1;
     init.alloc.lock = UFIFO_LOCK_THREAD;
+    init.alloc.max_users = 4;
 
     std::string name = GenerateName("no_force_reuse");
 
@@ -1095,6 +1106,7 @@ TEST_F(UfifoEdgeCaseTest, CrossProcessSharing) {
     init.alloc.size = 64;
     init.alloc.force = 1;
     init.alloc.lock = UFIFO_LOCK_PROCESS;  // FDLOCK for cross-process
+    init.alloc.max_users = 4;
 
     ASSERT_EQ(0, ufifo_open(const_cast<char*>(name.c_str()), &init, &fifo));
     fifos_.push_back(fifo);

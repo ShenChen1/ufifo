@@ -57,7 +57,7 @@ void *product(void *arg)
         } else {
             ret = ufifo_put_block(test_product, rec, rec->size + sizeof(record_t));
         }
-        printf("-----[%zu]: put end: %u\n", (size_t)arg, ret);
+        printf("-----[%zu]: put end: %u fifo:%u\n", (size_t)arg, ret, ufifo_len(test_product));
         if (ret) {
             assert(ret == rec->size + sizeof(record_t));
             if (rec->index == NUM) {
@@ -84,7 +84,7 @@ void *consume(void *arg)
         } else {
             ret = ufifo_get_block(test_consume, rec, sizeof(buf));
         }
-        printf("-----[%zu]: get end: %u\n", (size_t)arg, ret);
+        printf("-----[%zu]: get end: %u fifo:%u\n", (size_t)arg, ret, ufifo_len(test_consume));
         if (ret != 0) {
             assert(!strcmp("hello", rec->buf));
             if (rec->index == NUM) {
@@ -111,6 +111,7 @@ int main(int argc, char **argv)
     init.alloc.size = FIFO_SIZE;
     init.alloc.force = 1;
     init.alloc.lock = UFIFO_LOCK_THREAD;
+    init.alloc.max_users = 2;
     init.hook.recsize = recsize;
     ufifo_open("pressure", &init, &test_product);
     init.opt = UFIFO_OPT_ATTACH;
