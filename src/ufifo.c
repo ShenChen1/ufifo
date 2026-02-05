@@ -368,22 +368,40 @@ end:
     return ret;
 }
 
+static int __ufifo_init_validate(const ufifo_init_t *init)
+{
+    if (init->opt >= UFIFO_OPT_MAX) {
+        return -EINVAL;
+    }
+
+    if (init->alloc.max_users < 1) {
+        return -EINVAL;
+    }
+
+    if (init->opt == UFIFO_OPT_ALLOC && init->alloc.lock >= UFIFO_LOCK_MAX) {
+        return -EINVAL;
+    }
+
+    if (init->opt == UFIFO_OPT_ALLOC && init->alloc.data_mode >= UFIFO_DATA_MAX) {
+        return -EINVAL;
+    }
+
+    return 0;
+}
+
 int ufifo_open(char *name, ufifo_init_t *init, ufifo_t **handle)
 {
     int ret = 0;
     ufifo_t *ufifo = NULL;
     int is_alloc = 0;
 
-    if (name == NULL || init == NULL) {
+    if (name == NULL || init == NULL || handle == NULL) {
         return -EINVAL;
     }
 
-    if (init->opt >= UFIFO_OPT_MAX) {
-        return -EINVAL;
-    }
-
-    if (init->opt == UFIFO_OPT_ALLOC && init->alloc.lock >= UFIFO_LOCK_MAX) {
-        return -EINVAL;
+    ret = __ufifo_init_validate(init);
+    if (ret < 0) {
+        return ret;
     }
 
     ufifo = calloc(1, sizeof(ufifo_t));
@@ -433,11 +451,11 @@ int ufifo_open(char *name, ufifo_init_t *init, ufifo_t **handle)
         }
     }
 
+    ret = __ufifo_register(ufifo);
+    if (ret < 0) {
+        goto err4;
+    }
     if (__ufifo_is_shared(ufifo)) {
-        ret = __ufifo_register(ufifo);
-        if (ret < 0) {
-            goto err4;
-        }
         ufifo->user_id = (unsigned int)ret;
         __ufifo_bsem_deinit(ufifo->bsem_rd);
         ufifo->bsem_rd = &ufifo->ctrl->users[ufifo->user_id].bsem_rd;
