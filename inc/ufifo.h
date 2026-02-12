@@ -35,10 +35,13 @@ typedef struct {
     ufifo_lock_e        lock;
     ufifo_data_mode_e   data_mode;
     unsigned int        max_users;
+    /* Reserved for future use */
+    unsigned int reserved[11];
 } ufifo_alloc_t;
 
 typedef struct {
     /* Reserved for future use */
+    unsigned int reserved[8];
 } ufifo_attach_t;
 
 typedef struct {
