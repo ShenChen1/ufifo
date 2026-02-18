@@ -1,13 +1,12 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <errno.h>
-#include <string.h>
-#include <assert.h>
 #include "ufifo.h"
 #include "utils.h"
+#include <assert.h>
+#include <errno.h>
+#include <stdio.h>
+#include <string.h>
 
 /* fifo size in elements (bytes) */
-#define FIFO_SIZE	256
+#define FIFO_SIZE 256
 
 static const char *expected_result[] = {
     "a",
@@ -35,7 +34,7 @@ static unsigned int recsize(unsigned char *p1, unsigned int n1, unsigned char *p
     unsigned int size = sizeof(record_t);
 
     if (n1 >= size) {
-        record_t *rec = (record_t*)p1;
+        record_t *rec = (record_t *)p1;
         size = rec->size;
     } else {
         record_t rec;
@@ -54,7 +53,7 @@ static unsigned int rectag(unsigned char *p1, unsigned int n1, unsigned char *p2
     unsigned int size = sizeof(record_t);
 
     if (n1 >= size) {
-        record_t *rec = (record_t*)p1;
+        record_t *rec = (record_t *)p1;
         tag = rec->tag;
     } else {
         record_t rec;
@@ -69,10 +68,10 @@ static unsigned int rectag(unsigned char *p1, unsigned int n1, unsigned char *p2
 
 int main(void)
 {
-    char            buf[100];
-    record_t       *rec = (void *)buf;
-    unsigned int    i;
-    unsigned int    ret;
+    char buf[100];
+    record_t *rec = (void *)buf;
+    unsigned int i;
+    unsigned int ret;
     char hello[] = { "hello" };
 
     printf("record fifo test start\n");
@@ -88,17 +87,19 @@ int main(void)
 
     rec->size = sizeof(hello);
     memcpy(rec->buf, hello, rec->size);
-    assert(ufifo_put(test, rec, sizeof(record_t) + rec->size) == sizeof(record_t) + rec->size);
+    ret = ufifo_put(test, rec, sizeof(record_t) + rec->size);
+    assert(ret == sizeof(record_t) + rec->size);
 
     /* show the size of the next record in the fifo */
     printf("fifo peek len: %u\n", ufifo_peek_len(test));
 
     /* put in variable length data */
     for (i = 0; i < 10; i++) {
-        rec->tag = i % 3 ? : 0xdeadbeef;
+        rec->tag = i % 3 ?: 0xdeadbeef;
         rec->size = i + 1;
         memset(rec->buf, 'a' + i, rec->size);
-        assert(ufifo_put(test, rec, sizeof(record_t) + rec->size) == sizeof(record_t) + rec->size);
+        ret = ufifo_put(test, rec, sizeof(record_t) + rec->size);
+        assert(ret == sizeof(record_t) + rec->size);
     }
 
     /* skip first element of the fifo */
@@ -132,10 +133,11 @@ int main(void)
 
     /* put in variable length data */
     for (i = 0; i < 10; i++) {
-        rec->tag = i % 3 ? : 0xdeadbeef;
+        rec->tag = i % 3 ?: 0xdeadbeef;
         rec->size = i + 1;
         memset(rec->buf, 'a' + i, rec->size);
-        assert(ufifo_put(test, rec, sizeof(record_t) + rec->size) == sizeof(record_t) + rec->size);
+        ret = ufifo_put(test, rec, sizeof(record_t) + rec->size);
+        assert(ret == sizeof(record_t) + rec->size);
     }
 
     /* check the correctness of all values in the fifo */

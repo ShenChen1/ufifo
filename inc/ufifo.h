@@ -30,11 +30,11 @@ typedef enum {
 } ufifo_data_mode_e;
 
 typedef struct {
-    unsigned int        size;
-    unsigned int        force;
-    ufifo_lock_e        lock;
-    ufifo_data_mode_e   data_mode;
-    unsigned int        max_users;
+    unsigned int size;
+    unsigned int force;
+    ufifo_lock_e lock;
+    ufifo_data_mode_e data_mode;
+    unsigned int max_users;
     /* Reserved for future use */
     unsigned int reserved[11];
 } ufifo_alloc_t;
@@ -45,10 +45,10 @@ typedef struct {
 } ufifo_attach_t;
 
 typedef struct {
-    ufifo_recsize_hook_t    recsize;
-    ufifo_rectag_hook_t     rectag;
-    ufifo_recput_hook_t     recput;
-    ufifo_recget_hook_t     recget;
+    ufifo_recsize_hook_t recsize;
+    ufifo_rectag_hook_t rectag;
+    ufifo_recput_hook_t recput;
+    ufifo_recget_hook_t recget;
 } ufifo_hook_t;
 
 typedef struct {
@@ -81,7 +81,6 @@ unsigned int ufifo_peek_block(ufifo_t *handle, void *buf, unsigned int size);
 unsigned int ufifo_peek_timeout(ufifo_t *handle, void *buf, unsigned int size, long millisec);
 int ufifo_oldest(ufifo_t *handle, unsigned int tag);
 int ufifo_newest(ufifo_t *handle, unsigned int tag);
-
 
 #ifdef __cplusplus
 }

@@ -1,10 +1,10 @@
+#include "ufifo.h"
+#include <assert.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <assert.h>
-#include <pthread.h>
 #include <unistd.h>
-#include "ufifo.h"
 
 #define NUM 100000
 #define FIFO_SIZE 128
@@ -24,7 +24,7 @@ static unsigned int recsize(unsigned char *p1, unsigned int n1, unsigned char *p
     unsigned int size = sizeof(record_t);
 
     if (n1 >= size) {
-        record_t *rec = (record_t*)p1;
+        record_t *rec = (record_t *)p1;
         size = rec->size;
     } else {
         record_t rec;
@@ -122,7 +122,7 @@ int main(int argc, char **argv)
         pthread_create(&p[i], NULL, product, (void *)i);
     }
 
-    for (i = 0; i < CONSUMESUM; ++i){
+    for (i = 0; i < CONSUMESUM; ++i) {
         pthread_create(&c[i], NULL, consume, (void *)i);
     }
 

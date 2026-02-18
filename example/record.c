@@ -1,24 +1,14 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <errno.h>
-#include <string.h>
 #include "ufifo.h"
 #include "utils.h"
+#include <errno.h>
+#include <stdio.h>
+#include <string.h>
 
 /* fifo size in elements (bytes) */
-#define FIFO_SIZE	128
+#define FIFO_SIZE 128
 
 static const char *expected_result[] = {
-    "a",
-    "bb",
-    "ccc",
-    "dddd",
-    "eeeee",
-    "ffffff",
-    "ggggggg",
-    "hhhhhhhh",
-    "iiiiiiiii",
-    "jjjjjjjjjj",
+    "a", "bb", "ccc", "dddd", "eeeee", "ffffff", "ggggggg", "hhhhhhhh", "iiiiiiiii", "jjjjjjjjjj",
 };
 
 ufifo_t *test = NULL;
@@ -33,7 +23,7 @@ static unsigned int recsize(unsigned char *p1, unsigned int n1, unsigned char *p
     unsigned int size = sizeof(record_t);
 
     if (n1 >= size) {
-        record_t *rec = (record_t*)p1;
+        record_t *rec = (record_t *)p1;
         size = rec->size;
     } else {
         record_t rec;
@@ -48,10 +38,10 @@ static unsigned int recsize(unsigned char *p1, unsigned int n1, unsigned char *p
 
 int main(void)
 {
-    char            buf[100];
-    record_t       *rec = (void *)buf;
-    unsigned int    i;
-    unsigned int    ret;
+    char buf[100];
+    record_t *rec = (void *)buf;
+    unsigned int i;
+    unsigned int ret;
     char hello[] = { "hello" };
 
     printf("record fifo test start\n");
