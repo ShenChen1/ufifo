@@ -53,3 +53,4 @@ dkms.conf
 
 # Build
 build/ 
+build_cov/

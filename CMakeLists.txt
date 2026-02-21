@@ -3,6 +3,7 @@ project(ufifo VERSION 1.0.0 LANGUAGES C CXX)
 
 # Options
 option(SANITIZER "Enable Address Sanitizer" OFF)
+option(COVERAGE "Enable code coverage with gcov/lcov" OFF)
 
 # Compiler settings
 set(CMAKE_C_STANDARD 99)
@@ -102,3 +103,34 @@ target_include_directories(ufifo_test PRIVATE ${CMAKE_SOURCE_DIR}/inc)
 
 include(GoogleTest)
 gtest_discover_tests(ufifo_test)
+
+# Coverage support
+if(COVERAGE)
+    target_compile_options(ufifo_static PRIVATE --coverage -O0)
+    target_link_options(ufifo_static PRIVATE --coverage)
+    target_compile_options(ufifo_test PRIVATE --coverage -O0)
+    target_link_options(ufifo_test PRIVATE --coverage)
+
+    # example targets also link ufifo_static, need --coverage to resolve gcov symbols
+    foreach(example ${EXAMPLES})
+        target_link_options(${example} PRIVATE --coverage)
+    endforeach()
+
+    find_program(LCOV_PATH lcov REQUIRED)
+    find_program(GENHTML_PATH genhtml REQUIRED)
+
+    add_custom_target(coverage
+        COMMAND ${LCOV_PATH} --zerocounters --directory .
+        COMMAND $<TARGET_FILE:ufifo_test>
+        COMMAND ${LCOV_PATH} --capture --directory . --output-file coverage_raw.info
+            --ignore-errors inconsistent
+        COMMAND ${LCOV_PATH} --extract coverage_raw.info
+            "*/src/*" "*/inc/*"
+            --output-file coverage.info
+            --ignore-errors inconsistent
+        COMMAND ${GENHTML_PATH} coverage.info --output-directory coverage_report
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        DEPENDS ufifo_test
+        COMMENT "Running tests and generating coverage report..."
+    )
+endif()
