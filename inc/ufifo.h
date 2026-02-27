@@ -128,7 +128,7 @@ void ufifo_reset(ufifo_t *handle);
 unsigned int ufifo_len(ufifo_t *handle);
 
 /**
- * @brief Discard the next record (record mode) or all data (byte-stream).
+ * @brief Discard the next record (record mode) or data (byte-stream).
  * @param handle FIFO handle.
  */
 void ufifo_skip(ufifo_t *handle);
@@ -239,6 +239,21 @@ int ufifo_oldest(ufifo_t *handle, unsigned int tag);
  * @return 0 on success, -ESPIPE if tag not found (FIFO drained).
  */
 int ufifo_newest(ufifo_t *handle, unsigned int tag);
+
+/**
+ * @brief Get fd for epoll multiplexing (cross-process safe).
+ *
+ * Returns a socket fd that becomes readable when FIFO state changes
+ * (data written or consumed). Add this fd to epoll to multiplex
+ * multiple FIFOs in a single thread.
+ *
+ * After epoll_wait returns, recv() to clear, then call ufifo_get/ufifo_put
+ * (may return 0 on spurious wake).
+ *
+ * @param handle FIFO handle.
+ * @return fd (>= 0) on success, -1 on failure.
+ */
+int ufifo_get_fd(ufifo_t *handle);
 
 #ifdef __cplusplus
 }
