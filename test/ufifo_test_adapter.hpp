@@ -87,9 +87,14 @@ class UfifoTestAdapter {
 
     virtual ~UfifoTestAdapter()
     {
-        for (auto f : handles_) {
-            if (f)
-                ufifo_destroy(f);
+        for (size_t i = handles_.size(); i > 0; --i) {
+            if (handles_[i - 1]) {
+                if (i - 1 == 0) {
+                    ufifo_destroy(handles_[i - 1]);
+                } else {
+                    ufifo_close(handles_[i - 1]);
+                }
+            }
         }
         handles_.clear();
     }

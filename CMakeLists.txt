@@ -139,9 +139,9 @@ gtest_discover_tests(ufifo_test)
 
 # Coverage support
 if(COVERAGE)
-    target_compile_options(ufifo_static PRIVATE --coverage -O0)
+    target_compile_options(ufifo_static PRIVATE --coverage -fprofile-update=atomic -O0)
     target_link_options(ufifo_static PRIVATE --coverage)
-    target_compile_options(ufifo_test PRIVATE --coverage -O0)
+    target_compile_options(ufifo_test PRIVATE --coverage -fprofile-update=atomic -O0)
     target_link_options(ufifo_test PRIVATE --coverage)
 
     # example targets also link ufifo_static, need --coverage to resolve gcov symbols

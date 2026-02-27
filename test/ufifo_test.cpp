@@ -5,9 +5,11 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <gtest/gtest.h>
 #include <map>
+#include <mutex>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
@@ -186,8 +188,10 @@ class ParameterizedTestBase : public ::testing::TestWithParam<TestParam> {
         const int total_msgs = msgs_per_producer * num_producers;
 
         // Barrier for synchronized start
-        std::atomic<int> ready_count{ 0 };
-        std::atomic<bool> start_flag{ false };
+        std::mutex start_mtx;
+        std::condition_variable start_cv;
+        int ready_count = 0;
+        bool start_flag = false;
         const int total_threads = num_producers + num_consumers;
 
         std::atomic<int> sole_consumed{ 0 };
@@ -196,9 +200,13 @@ class ParameterizedTestBase : public ::testing::TestWithParam<TestParam> {
         // Launch producers
         for (int p = 0; p < num_producers; ++p) {
             threads.emplace_back([&, p]() {
-                ready_count.fetch_add(1, std::memory_order_release);
-                while (!start_flag.load(std::memory_order_acquire))
-                    std::this_thread::yield();
+                {
+                    std::unique_lock<std::mutex> lck(start_mtx);
+                    ready_count++;
+                    if (ready_count == total_threads)
+                        start_cv.notify_all();
+                    start_cv.wait(lck, [&] { return start_flag; });
+                }
 
                 for (int i = 0; i < msgs_per_producer; ++i) {
                     const int val = p * 100000 + i;
@@ -210,9 +218,13 @@ class ParameterizedTestBase : public ::testing::TestWithParam<TestParam> {
         // Launch consumers
         for (int c = 0; c < num_consumers; ++c) {
             threads.emplace_back([&, c]() {
-                ready_count.fetch_add(1, std::memory_order_release);
-                while (!start_flag.load(std::memory_order_acquire))
-                    std::this_thread::yield();
+                {
+                    std::unique_lock<std::mutex> lck(start_mtx);
+                    ready_count++;
+                    if (ready_count == total_threads)
+                        start_cv.notify_all();
+                    start_cv.wait(lck, [&] { return start_flag; });
+                }
 
                 int count = 0;
                 while (true) {
@@ -237,9 +249,12 @@ class ParameterizedTestBase : public ::testing::TestWithParam<TestParam> {
         }
 
         // Wait for all threads ready, then fire
-        while (ready_count.load(std::memory_order_acquire) < total_threads)
-            std::this_thread::yield();
-        start_flag.store(true, std::memory_order_release);
+        {
+            std::unique_lock<std::mutex> lck(start_mtx);
+            start_cv.wait(lck, [&] { return ready_count == total_threads; });
+            start_flag = true;
+        }
+        start_cv.notify_all();
 
         for (auto &t : threads)
             t.join();
@@ -595,9 +610,9 @@ TEST_F(EdgeCaseTest, SharedModeUserLimit)
     EXPECT_NE(0, ufifo_open(const_cast<char *>(name.c_str()), &attach, &c2));
 
     if (c1)
-        ufifo_destroy(c1);
+        ufifo_close(c1);
     if (c2)
-        ufifo_destroy(c2);
+        ufifo_close(c2);
     if (fifo)
         ufifo_destroy(fifo);
 }
