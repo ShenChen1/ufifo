@@ -156,13 +156,13 @@ if(COVERAGE)
         COMMAND ${LCOV_PATH} --zerocounters --directory .
         COMMAND $<TARGET_FILE:ufifo_test>
         COMMAND ${LCOV_PATH} --capture --directory . --output-file coverage_raw.info
-            --ignore-errors inconsistent,negative,empty
+            --ignore-errors mismatch,inconsistent,negative,empty
         COMMAND ${LCOV_PATH} --extract coverage_raw.info
             "*/src/*" "*/inc/*"
             --output-file coverage.info
-            --ignore-errors inconsistent,negative,empty
+            --ignore-errors mismatch,inconsistent,negative,empty
         COMMAND ${GENHTML_PATH} coverage.info --output-directory coverage_report
-            --ignore-errors inconsistent,negative,empty
+            --ignore-errors mismatch,inconsistent,negative,empty
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
         DEPENDS ufifo_test
         COMMENT "Running tests and generating coverage report..."
