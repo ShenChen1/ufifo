@@ -1,0 +1,50 @@
+name: CI
+
+on: [push]
+
+jobs:
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y lcov cmake
+
+      - name: Configure CMake
+        run: cmake -B build -DCOVERAGE=ON
+
+      - name: Build and Run Coverage
+        run: cmake --build build --target coverage -j$(nproc)
+
+      - name: Upload Coverage Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: build/coverage_report/
+
+  sanitizer:
+    name: Sanitizer (${{ matrix.sanitizer }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: ["asan,ubsan", "tsan"]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake
+
+      - name: Configure CMake
+        run: cmake -B build -DSANITIZER=${{ matrix.sanitizer }}
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Run Tests
+        working-directory: build
+        run: ctest --output-on-failure

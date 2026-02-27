@@ -1,0 +1,109 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*' # Trigger on tag push, e.g., v1.0.0
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build and Release for ${{ matrix.artifact_arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            artifact_arch: x86_64
+            target: ""
+            packages: ""
+          - arch: aarch64
+            artifact_arch: arm64
+            target: "aarch64-linux-gnu"
+            packages: "gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu libc6-dev-arm64-cross"
+          - arch: armhf
+            artifact_arch: arm
+            target: "arm-linux-gnueabihf"
+            packages: "gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf binutils-arm-linux-gnueabihf libc6-dev-armhf-cross"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake binutils ${{ matrix.packages }}
+
+      - name: Configure CMake
+        run: |
+          CMAKE_FLAGS=""
+          if [ -n "${{ matrix.target }}" ]; then
+            cat <<EOF > toolchain.cmake
+          set(CMAKE_SYSTEM_NAME Linux)
+          set(CMAKE_SYSTEM_PROCESSOR ${{ matrix.arch }})
+          set(CMAKE_C_COMPILER /usr/bin/${{ matrix.target }}-gcc)
+          set(CMAKE_CXX_COMPILER /usr/bin/${{ matrix.target }}-g++)
+          set(CMAKE_FIND_ROOT_PATH /usr/${{ matrix.target }})
+          set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+          set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+          set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+          EOF
+            CMAKE_FLAGS="-DCMAKE_TOOLCHAIN_FILE=toolchain.cmake"
+          fi
+          cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo $CMAKE_FLAGS
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Separate Debug Info
+        run: |
+          TARGET_PREFIX=""
+          if [ -n "${{ matrix.target }}" ]; then
+            TARGET_PREFIX="${{ matrix.target }}-"
+          fi
+          OBJCOPY=${TARGET_PREFIX}objcopy
+          STRIP=${TARGET_PREFIX}strip
+
+          # Extract debug info from shared library
+          $OBJCOPY --only-keep-debug build/lib/libufifo.so build/lib/libufifo.so.debug
+          
+          # Strip symbols from the shared library
+          $STRIP --strip-debug --strip-unneeded build/lib/libufifo.so
+          
+          # Add a debug link to the shared library pointing to the debug info file
+          $OBJCOPY --add-gnu-debuglink=build/lib/libufifo.so.debug build/lib/libufifo.so
+          
+          # Strip debug symbols from static library
+          $STRIP -g build/lib/libufifo.a
+
+      - name: Package artifacts
+        run: |
+          mkdir -p ufifo-release/include/ufifo
+          mkdir -p ufifo-release/lib
+          mkdir -p ufifo-debug-release/lib
+          
+          # Copy headers
+          cp inc/ufifo.h ufifo-release/include/ufifo/
+          
+          # Copy static and shared libraries
+          cp build/lib/libufifo.a ufifo-release/lib/
+          cp build/lib/libufifo.so ufifo-release/lib/
+          
+          # Copy debug info
+          cp build/lib/libufifo.so.debug ufifo-debug-release/lib/
+          
+          # Create tarballs
+          tar -czvf ufifo-${{ github.ref_name }}-linux-${{ matrix.artifact_arch }}.tar.gz -C ufifo-release include lib
+          tar -czvf ufifo-${{ github.ref_name }}-linux-${{ matrix.artifact_arch }}-dbgsym.tar.gz -C ufifo-debug-release lib
+
+      - name: Upload Release Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ufifo-${{ github.ref_name }}-linux-${{ matrix.artifact_arch }}.tar.gz
+            ufifo-${{ github.ref_name }}-linux-${{ matrix.artifact_arch }}-dbgsym.tar.gz
+          generate_release_notes: true
+          draft: false
+          prerelease: false

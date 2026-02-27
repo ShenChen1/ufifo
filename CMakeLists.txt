@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.14)
 project(ufifo VERSION 1.0.0 LANGUAGES C CXX)
 
 # Options
-option(SANITIZER "Enable Address Sanitizer" OFF)
+set(SANITIZER "" CACHE STRING "Sanitizer to enable: asan, tsan, ubsan (comma-separated, e.g. asan,ubsan)")
 option(COVERAGE "Enable code coverage with gcov/lcov" OFF)
 
 # Compiler settings
@@ -17,12 +17,43 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 # Include directories
 include_directories(${CMAKE_SOURCE_DIR}/inc)
 
-# Common compile options for ufifo targets (applied per-target below)
-
-# Sanitizer support
+# Sanitizer support: parse comma-separated list into individual flags
+set(SANITIZER_COMPILE_FLAGS "")
+set(SANITIZER_LINK_FLAGS "")
 if(SANITIZER)
-    add_compile_options(-fsanitize=address -fno-omit-frame-pointer -fno-common)
-    add_link_options(-fsanitize=address)
+    string(REPLACE "," ";" SANITIZER_LIST "${SANITIZER}")
+    list(FIND SANITIZER_LIST "asan" _has_asan)
+    list(FIND SANITIZER_LIST "tsan" _has_tsan)
+    list(FIND SANITIZER_LIST "ubsan" _has_ubsan)
+
+    # ASan and TSan are mutually exclusive
+    if(NOT _has_asan EQUAL -1 AND NOT _has_tsan EQUAL -1)
+        message(FATAL_ERROR "ASan and TSan cannot be enabled simultaneously")
+    endif()
+
+    if(NOT _has_asan EQUAL -1)
+        list(APPEND SANITIZER_COMPILE_FLAGS -fsanitize=address -fno-omit-frame-pointer -fno-common)
+        list(APPEND SANITIZER_LINK_FLAGS -fsanitize=address)
+    endif()
+    if(NOT _has_tsan EQUAL -1)
+        list(APPEND SANITIZER_COMPILE_FLAGS -fsanitize=thread)
+        list(APPEND SANITIZER_LINK_FLAGS -fsanitize=thread)
+    endif()
+    if(NOT _has_ubsan EQUAL -1)
+        list(APPEND SANITIZER_COMPILE_FLAGS -fsanitize=undefined -fno-omit-frame-pointer)
+        list(APPEND SANITIZER_LINK_FLAGS -fsanitize=undefined)
+    endif()
+
+    add_compile_options(${SANITIZER_COMPILE_FLAGS})
+    add_link_options(${SANITIZER_LINK_FLAGS})
+    message(STATUS "Sanitizer enabled: ${SANITIZER}")
+endif()
+
+# Optimization: use -O1 with sanitizer for accurate stack traces, -Os otherwise
+if(SANITIZER)
+    set(UFIFO_OPT_LEVEL "-O1")
+else()
+    set(UFIFO_OPT_LEVEL "-Os")
 endif()
 
 # Find required libraries
@@ -41,7 +72,7 @@ set_target_properties(ufifo_static PROPERTIES
     OUTPUT_NAME ufifo
     POSITION_INDEPENDENT_CODE ON
 )
-target_compile_options(ufifo_static PRIVATE -g -Os -Wall -Werror)
+target_compile_options(ufifo_static PRIVATE -g ${UFIFO_OPT_LEVEL} -Wall -Werror)
 
 # Create shared library
 add_library(ufifo_shared SHARED ${LIB_SOURCES})
@@ -49,7 +80,7 @@ set_target_properties(ufifo_shared PROPERTIES
     OUTPUT_NAME ufifo
     POSITION_INDEPENDENT_CODE ON
 )
-target_compile_options(ufifo_shared PRIVATE -g -Os -Wall -Werror)
+target_compile_options(ufifo_shared PRIVATE -g ${UFIFO_OPT_LEVEL} -Wall -Werror)
 
 # Example executables
 set(EXAMPLES
@@ -59,11 +90,12 @@ set(EXAMPLES
     record
     record-tag
     record-tag-cb
+    epoll
 )
 
 foreach(example ${EXAMPLES})
     add_executable(${example} example/${example}.c)
-    target_compile_options(${example} PRIVATE -g -Os -Wall -Werror)
+    target_compile_options(${example} PRIVATE -g ${UFIFO_OPT_LEVEL} -Wall -Werror)
     target_link_libraries(${example} PRIVATE ufifo_static ${RT_LIBRARY} ${PTHREAD_LIBRARY})
 endforeach()
 
@@ -100,6 +132,7 @@ target_link_libraries(ufifo_test PRIVATE
     GTest::gtest_main
 )
 target_include_directories(ufifo_test PRIVATE ${CMAKE_SOURCE_DIR}/inc)
+target_compile_options(ufifo_test PRIVATE -g -O0 -Wall -Werror -Wno-error=maybe-uninitialized)
 
 include(GoogleTest)
 gtest_discover_tests(ufifo_test)
@@ -123,12 +156,13 @@ if(COVERAGE)
         COMMAND ${LCOV_PATH} --zerocounters --directory .
         COMMAND $<TARGET_FILE:ufifo_test>
         COMMAND ${LCOV_PATH} --capture --directory . --output-file coverage_raw.info
-            --ignore-errors inconsistent
+            --ignore-errors inconsistent,negative,empty
         COMMAND ${LCOV_PATH} --extract coverage_raw.info
             "*/src/*" "*/inc/*"
             --output-file coverage.info
-            --ignore-errors inconsistent
+            --ignore-errors inconsistent,negative,empty
         COMMAND ${GENHTML_PATH} coverage.info --output-directory coverage_report
+            --ignore-errors inconsistent,negative,empty
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
         DEPENDS ufifo_test
         COMMENT "Running tests and generating coverage report..."
