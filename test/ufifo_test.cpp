@@ -177,10 +177,25 @@ class ParameterizedTestBase : public ::testing::TestWithParam<TestParam> {
     // Unified multi-thread topology runner for SPSC / SPMC / MPSC / MPMC
     void RunTopology(int num_producers, int num_consumers, int msgs_per_producer, int fifo_size)
     {
-        ASSERT_EQ(0, adapter_->Create(fifo_size, UFIFO_LOCK_THREAD));
+        /*
+         * In SHARED mode, every registered handle is an independent consumer
+         * whose `out` pointer must advance, otherwise __ufifo_min_out will
+         * block all puts.
+         *
+         * Handle allocation:
+         *   handles_[0]                     = Create  (producer 0)
+         *   handles_[1 .. num_producers-1]  = Attach  (producer 1..N-1)
+         *   handles_[num_producers .. N-1]  = Attach  (consumer 0..M-1)
+         *
+         * Total users = num_producers + num_consumers.
+         * In SHARED mode, producers call get after put to advance their out.
+         */
+        const bool is_shared = (adapter_->GetMode() == DataMode::SHARED);
+        const int total_handles = num_producers + num_consumers;
 
-        int num_users = std::max(num_producers, num_consumers);
-        for (int i = 0; i < num_users; ++i) {
+        ASSERT_EQ(0, adapter_->Create(fifo_size, UFIFO_LOCK_THREAD, total_handles));
+
+        for (int i = 1; i < total_handles; ++i) {
             ufifo_t *h = nullptr;
             ASSERT_EQ(0, adapter_->Attach(&h));
         }
@@ -197,7 +212,7 @@ class ParameterizedTestBase : public ::testing::TestWithParam<TestParam> {
         std::atomic<int> sole_consumed{ 0 };
         std::vector<std::thread> threads;
 
-        // Launch producers
+        // Launch producers — each uses handles_[p]
         for (int p = 0; p < num_producers; ++p) {
             threads.emplace_back([&, p]() {
                 {
@@ -208,16 +223,32 @@ class ParameterizedTestBase : public ::testing::TestWithParam<TestParam> {
                     start_cv.wait(lck, [&] { return start_flag; });
                 }
 
-                for (int i = 0; i < msgs_per_producer; ++i) {
-                    const int val = p * 100000 + i;
-                    adapter_->PutValue(adapter_->GetHandle(p), val, p, -1);
+                int count = 0;
+                ufifo_t *h = adapter_->GetHandle(p);
+                while (count < msgs_per_producer) {
+                    const int val = p * 100000 + count;
+                    int ret = adapter_->PutValue(h, val, p);
+                    if (ret == 0) {
+                        if (is_shared) {
+                            std::this_thread::yield();
+                            int out = 0;
+                            adapter_->GetValue(h, out);
+                        }
+                        continue;
+                    }
+                    count++;
+                }
+
+                if (is_shared) {
+                    adapter_->Detach(h);
                 }
             });
         }
 
-        // Launch consumers
+        // Launch consumers — each uses handles_[num_producers + c]
         for (int c = 0; c < num_consumers; ++c) {
-            threads.emplace_back([&, c]() {
+            const int handle_idx = num_producers + c;
+            threads.emplace_back([&, c, handle_idx]() {
                 {
                     std::unique_lock<std::mutex> lck(start_mtx);
                     ready_count++;
@@ -227,22 +258,22 @@ class ParameterizedTestBase : public ::testing::TestWithParam<TestParam> {
                 }
 
                 int count = 0;
+                ufifo_t *h = adapter_->GetHandle(handle_idx);
                 while (true) {
-                    if (adapter_->GetMode() == DataMode::SHARED && count >= total_msgs)
+                    if (is_shared && count >= total_msgs)
                         break;
-                    if (adapter_->GetMode() == DataMode::SOLE
-                        && sole_consumed.load(std::memory_order_relaxed) >= total_msgs)
+                    if (!is_shared && sole_consumed.load(std::memory_order_relaxed) >= total_msgs)
                         break;
 
                     int out = 0;
-                    if (adapter_->GetValue(adapter_->GetHandle(c), out, 10) > 0) {
+                    if (adapter_->GetValue(h, out, 10) > 0) {
                         ++count;
-                        if (adapter_->GetMode() == DataMode::SOLE)
+                        if (!is_shared)
                             sole_consumed.fetch_add(1, std::memory_order_relaxed);
                     }
                 }
 
-                if (adapter_->GetMode() == DataMode::SHARED) {
+                if (is_shared) {
                     EXPECT_EQ(total_msgs, count);
                 }
             });
@@ -259,7 +290,7 @@ class ParameterizedTestBase : public ::testing::TestWithParam<TestParam> {
         for (auto &t : threads)
             t.join();
 
-        if (adapter_->GetMode() == DataMode::SOLE) {
+        if (!is_shared) {
             EXPECT_EQ(total_msgs, sole_consumed.load(std::memory_order_relaxed));
         }
     }
@@ -615,6 +646,112 @@ TEST_F(EdgeCaseTest, SharedModeUserLimit)
         ufifo_close(c2);
     if (fifo)
         ufifo_destroy(fifo);
+}
+
+// Issue 1: Fast consumer's put overwrites slow consumer's unconsumed data
+TEST_F(EdgeCaseTest, SharedModePutRespectsMinOut)
+{
+    std::string name = GenerateName("mpsc_minout");
+    ufifo_init_t init = {};
+    init.opt = UFIFO_OPT_ALLOC;
+    init.alloc.size = 256;
+    init.alloc.force = 1;
+    init.alloc.lock = UFIFO_LOCK_THREAD;
+    init.alloc.data_mode = UFIFO_DATA_SHARED;
+    init.alloc.max_users = 2;
+
+    ufifo_t *h1 = nullptr;
+    ASSERT_EQ(0, ufifo_open(const_cast<char *>(name.c_str()), &init, &h1));
+
+    ufifo_t *h2 = nullptr;
+    ufifo_init_t attach = {};
+    attach.opt = UFIFO_OPT_ATTACH;
+    ASSERT_EQ(0, ufifo_open(const_cast<char *>(name.c_str()), &attach, &h2));
+
+    // Step 1: H1 puts 120 bytes of 0xAA → in=120
+    char buf_a[120];
+    memset(buf_a, 0xAA, sizeof(buf_a));
+    ASSERT_EQ(120u, ufifo_put(h1, buf_a, sizeof(buf_a)));
+
+    // Step 2: H1 gets 120 bytes → H1.out=120, H2.out=0
+    char out1[120] = {};
+    ASSERT_EQ(120u, ufifo_get(h1, out1, sizeof(out1)));
+
+    // Step 3: H1 tries to put 200 bytes
+    // own_out unused  = 256 - (120-120) = 256 → WRONG (would pass)
+    // min_out unused  = 256 - (120-0)   = 136 → CORRECT (200 > 136, fails)
+    char buf_b[200];
+    memset(buf_b, 0xBB, sizeof(buf_b));
+    unsigned int ret = ufifo_put(h1, buf_b, sizeof(buf_b));
+    EXPECT_EQ(0u, ret) << "Put 200B should fail: only 136B available (min_out=0)";
+
+    // Step 4: A smaller put (within 136B limit) should succeed
+    char buf_c[100];
+    memset(buf_c, 0xCC, sizeof(buf_c));
+    ret = ufifo_put(h1, buf_c, sizeof(buf_c));
+    EXPECT_EQ(100u, ret) << "Put 100B should succeed: fits within 136B available";
+
+    // Step 5: H2 reads original data — must NOT be corrupted
+    char out2[120] = {};
+    ASSERT_EQ(120u, ufifo_get(h2, out2, sizeof(out2)));
+    EXPECT_EQ(0, memcmp(out2, buf_a, sizeof(buf_a))) << "H2's data must not be corrupted by H1's put";
+
+    ufifo_close(h2);
+    ufifo_destroy(h1);
+}
+
+// Issue 2: Unsigned overflow causes impossible put after repeated put+get cycles
+TEST_F(EdgeCaseTest, SharedModeNoUnsignedOverflow)
+{
+    std::string name = GenerateName("mpsc_nooverflow");
+    ufifo_init_t init = {};
+    init.opt = UFIFO_OPT_ALLOC;
+    init.alloc.size = 256;
+    init.alloc.force = 1;
+    init.alloc.lock = UFIFO_LOCK_THREAD;
+    init.alloc.data_mode = UFIFO_DATA_SHARED;
+    init.alloc.max_users = 2;
+
+    ufifo_t *h1 = nullptr;
+    ASSERT_EQ(0, ufifo_open(const_cast<char *>(name.c_str()), &init, &h1));
+
+    ufifo_t *h2 = nullptr;
+    ufifo_init_t attach = {};
+    attach.opt = UFIFO_OPT_ATTACH;
+    ASSERT_EQ(0, ufifo_open(const_cast<char *>(name.c_str()), &attach, &h2));
+
+    // H1 repeatedly puts 128B then gets 128B. H2 never gets.
+    // Without fix: in keeps growing, unsigned overflow allows infinite puts
+    // With fix: total put capped at 256 (buffer_size - (in - min_out))
+    char data[128];
+    memset(data, 0xAB, sizeof(data));
+    char tmp[128];
+
+    unsigned int total_put = 0;
+    for (int i = 0; i < 10; i++) {
+        unsigned int ret = ufifo_put(h1, data, sizeof(data));
+        if (ret == 0)
+            break;
+        total_put += ret;
+        ufifo_get(h1, tmp, sizeof(tmp));
+    }
+
+    // With fix: total_put = 256 (two puts of 128, then blocked)
+    // Without fix: total_put = 1280 (all 10 puts succeed)
+    EXPECT_LE(total_put, 256u) << "Total put should not exceed buffer size relative to slowest consumer";
+
+    // H2 should be able to read all data that was put
+    unsigned int total_got = 0;
+    while (total_got < total_put) {
+        unsigned int ret = ufifo_get(h2, tmp, sizeof(tmp));
+        if (ret == 0)
+            break;
+        total_got += ret;
+    }
+    EXPECT_EQ(total_put, total_got) << "H2 should read exactly the amount of data that was put";
+
+    ufifo_close(h2);
+    ufifo_destroy(h1);
 }
 
 // =============================================================================

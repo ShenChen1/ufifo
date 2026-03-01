@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <gtest/gtest.h>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -87,6 +88,7 @@ class UfifoTestAdapter {
 
     virtual ~UfifoTestAdapter()
     {
+        std::lock_guard<std::mutex> lock(mutex_);
         for (size_t i = handles_.size(); i > 0; --i) {
             if (handles_[i - 1]) {
                 if (i - 1 == 0) {
@@ -123,9 +125,26 @@ class UfifoTestAdapter {
 
         ufifo_t *fifo = nullptr;
         int ret = ufifo_open(const_cast<char *>(name_.c_str()), &init, &fifo);
-        if (ret == 0)
+        if (ret == 0) {
+            std::lock_guard<std::mutex> lock(mutex_);
             handles_.push_back(fifo);
+        }
         return ret;
+    }
+
+    int Detach(ufifo_t *handle)
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            for (size_t i = 0; i < handles_.size(); i++) {
+                if (handles_[i] == handle) {
+                    handles_[i] = nullptr;
+                    break;
+                }
+            }
+        }
+
+        return ufifo_close(handle);
     }
 
     int Attach(ufifo_t **handle)
@@ -146,8 +165,10 @@ class UfifoTestAdapter {
         }
 
         int ret = ufifo_open(const_cast<char *>(name_.c_str()), &init, handle);
-        if (ret == 0)
+        if (ret == 0) {
+            std::lock_guard<std::mutex> lock(mutex_);
             handles_.push_back(*handle);
+        }
         return ret;
     }
 
@@ -234,12 +255,14 @@ class UfifoTestAdapter {
 
     ufifo_t *GetMainHandle() const
     {
+        std::lock_guard<std::mutex> lock(mutex_);
         return handles_.empty() ? nullptr : handles_[0];
     }
 
     ufifo_t *GetHandle(size_t user_id = 1) const
     {
-        return (handles_.size() > user_id) ? handles_[user_id] : GetMainHandle();
+        std::lock_guard<std::mutex> lock(mutex_);
+        return (handles_.size() > user_id) ? handles_[user_id] : (handles_.empty() ? nullptr : handles_[0]);
     }
 
     DataMode GetMode() const
@@ -256,4 +279,5 @@ class UfifoTestAdapter {
     DataMode mode_;
     std::string name_;
     std::vector<ufifo_t *> handles_;
+    mutable std::mutex mutex_;
 };

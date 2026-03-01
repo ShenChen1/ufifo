@@ -584,11 +584,42 @@ int ufifo_destroy(ufifo_t *handle)
     return __ufifo_close(handle, 1);
 }
 
+/*
+ * Return the out pointer of the slowest (furthest-behind) active consumer.
+ * In SHARED mode, producers must not write past this point.
+ */
+static unsigned int __ufifo_min_out(ufifo_t *handle)
+{
+    unsigned int in_val = *handle->kfifo.in;
+    unsigned int max_distance = 0;
+    unsigned int min_out = in_val;
+    unsigned int i;
+
+    for (i = 0; i < handle->ctrl->max_users; i++) {
+        if (handle->ctrl->users[i].active) {
+            unsigned int distance = in_val - handle->ctrl->users[i].out;
+            if (distance > max_distance) {
+                max_distance = distance;
+                min_out = handle->ctrl->users[i].out;
+            }
+        }
+    }
+
+    return min_out;
+}
+
 static unsigned int __ufifo_unused_len(ufifo_t *handle)
 {
+    unsigned int out;
     unsigned int len;
 
-    len = *handle->kfifo.in - *handle->kfifo.out;
+    if (__ufifo_is_shared(handle)) {
+        out = __ufifo_min_out(handle);
+    } else {
+        out = *handle->kfifo.out;
+    }
+
+    len = *handle->kfifo.in - out;
     return *handle->kfifo.mask + 1 - len;
 }
 
