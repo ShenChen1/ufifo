@@ -1,16 +1,20 @@
+#include "kfifo.h"
+#include "utils.h"
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <errno.h>
-#include "kfifo.h"
-#include "utils.h"
 
 /*
  * internal helper to calculate the unused elements in a fifo
+ *
+ * Called by producer: in is own (relaxed), out is from consumer (acquire).
  */
 static inline unsigned int __kfifo_unused(kfifo_t *fifo)
 {
-    return (*fifo->mask + 1) - (*fifo->in - *fifo->out);
+    unsigned int in = READ_ONCE(fifo->in);
+    unsigned int out = smp_load_acquire(fifo->out);
+    return (*fifo->mask + 1) - (in - out);
 }
 
 /*
@@ -45,11 +49,6 @@ static void __kfifo_copy_in(kfifo_t *fifo, char *base, const char *src, unsigned
 
     memcpy(base + off, src, l);
     memcpy(base, src + l, len - l);
-    /*
-     * make sure that the data in the fifo is up to date before
-     * incrementing the fifo->in index counter
-     */
-    smp_wmb();
 }
 
 unsigned int kfifo_in(kfifo_t *fifo, void *base, const void *buf, unsigned int len)
@@ -60,8 +59,9 @@ unsigned int kfifo_in(kfifo_t *fifo, void *base, const void *buf, unsigned int l
     if (len > l)
         len = l;
 
-    __kfifo_copy_in(fifo, base, buf, len, *fifo->in);
-    *fifo->in += len;
+    unsigned int in = READ_ONCE(fifo->in);
+    __kfifo_copy_in(fifo, base, buf, len, in);
+    smp_store_release(fifo->in, in + len);
     return len;
 }
 
@@ -75,28 +75,29 @@ static void __kfifo_copy_out(kfifo_t *fifo, char *base, char *dst, unsigned int 
 
     memcpy(dst, base + off, l);
     memcpy(dst + l, base, len - l);
-    /*
-     * make sure that the data is copied before
-     * incrementing the fifo->out index counter
-     */
-    smp_wmb();
 }
 
+/*
+ * Consumer reads: in from producer (acquire), out is own (relaxed).
+ */
 unsigned int kfifo_out_peek(kfifo_t *fifo, void *base, void *buf, unsigned int len)
 {
     unsigned int l;
+    unsigned int in = smp_load_acquire(fifo->in);
+    unsigned int out = READ_ONCE(fifo->out);
 
-    l = *fifo->in - *fifo->out;
+    l = in - out;
     if (len > l)
         len = l;
 
-    __kfifo_copy_out(fifo, base, buf, len, *fifo->out);
+    __kfifo_copy_out(fifo, base, buf, len, out);
     return len;
 }
 
 unsigned int kfifo_out(kfifo_t *fifo, void *base, void *buf, unsigned int len)
 {
     len = kfifo_out_peek(fifo, base, buf, len);
-    *fifo->out += len;
+    unsigned int out = READ_ONCE(fifo->out);
+    smp_store_release(fifo->out, out + len);
     return len;
 }
