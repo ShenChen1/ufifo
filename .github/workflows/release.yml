@@ -38,65 +38,24 @@ jobs:
 
       - name: Configure CMake
         run: |
-          CMAKE_FLAGS=""
+          CMAKE_FLAGS="-DUFIFO_SEPARATE_DBGINFO=ON"
           if [ -n "${{ matrix.target }}" ]; then
-            cat <<EOF > toolchain.cmake
-          set(CMAKE_SYSTEM_NAME Linux)
-          set(CMAKE_SYSTEM_PROCESSOR ${{ matrix.arch }})
-          set(CMAKE_C_COMPILER /usr/bin/${{ matrix.target }}-gcc)
-          set(CMAKE_CXX_COMPILER /usr/bin/${{ matrix.target }}-g++)
-          set(CMAKE_FIND_ROOT_PATH /usr/${{ matrix.target }})
-          set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
-          set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
-          set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
-          EOF
-            CMAKE_FLAGS="-DCMAKE_TOOLCHAIN_FILE=toolchain.cmake"
+            CMAKE_FLAGS="$CMAKE_FLAGS -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/${{ matrix.target }}.cmake"
           fi
           cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo $CMAKE_FLAGS
 
       - name: Build
         run: cmake --build build -j$(nproc)
 
-      - name: Separate Debug Info
-        run: |
-          TARGET_PREFIX=""
-          if [ -n "${{ matrix.target }}" ]; then
-            TARGET_PREFIX="${{ matrix.target }}-"
-          fi
-          OBJCOPY=${TARGET_PREFIX}objcopy
-          STRIP=${TARGET_PREFIX}strip
-
-          # Extract debug info from shared library
-          $OBJCOPY --only-keep-debug build/lib/libufifo.so build/lib/libufifo.so.debug
-          
-          # Strip symbols from the shared library
-          $STRIP --strip-debug --strip-unneeded build/lib/libufifo.so
-          
-          # Add a debug link to the shared library pointing to the debug info file
-          $OBJCOPY --add-gnu-debuglink=build/lib/libufifo.so.debug build/lib/libufifo.so
-          
-          # Strip debug symbols from static library
-          $STRIP -g build/lib/libufifo.a
-
       - name: Package artifacts
         run: |
-          mkdir -p ufifo-release/include/ufifo
-          mkdir -p ufifo-release/lib
-          mkdir -p ufifo-debug-release/lib
+          cd build
+          cpack -G TGZ
+          cd ..
           
-          # Copy headers
-          cp inc/ufifo.h ufifo-release/include/ufifo/
-          
-          # Copy static and shared libraries
-          cp build/lib/libufifo.a ufifo-release/lib/
-          cp build/lib/libufifo.so ufifo-release/lib/
-          
-          # Copy debug info
-          cp build/lib/libufifo.so.debug ufifo-debug-release/lib/
-          
-          # Create tarballs
-          tar -czvf ufifo-${{ github.ref_name }}-linux-${{ matrix.artifact_arch }}.tar.gz -C ufifo-release include lib
-          tar -czvf ufifo-${{ github.ref_name }}-linux-${{ matrix.artifact_arch }}-dbgsym.tar.gz -C ufifo-debug-release lib
+          # Rename CPack generated artifacts to match the expected release asset names
+          mv build/ufifo-*-release.tar.gz ufifo-${{ github.ref_name }}-linux-${{ matrix.artifact_arch }}.tar.gz
+          mv build/ufifo-*-dbgsym.tar.gz ufifo-${{ github.ref_name }}-linux-${{ matrix.artifact_arch }}-dbgsym.tar.gz
 
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v2
