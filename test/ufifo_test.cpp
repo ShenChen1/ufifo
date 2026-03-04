@@ -50,6 +50,13 @@ std::string PrintParam(const testing::TestParamInfo<TestParam> &info)
 // =============================================================================
 class UfifoApiTest : public ::testing::Test {};
 
+TEST_F(UfifoApiTest, GetVersion)
+{
+    const char *version = ufifo_get_version();
+    EXPECT_NE(nullptr, version);
+    EXPECT_GT(strlen(version), 0);
+}
+
 TEST_F(UfifoApiTest, OpenWithNullName)
 {
     ufifo_init_t init = {};

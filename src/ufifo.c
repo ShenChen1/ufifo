@@ -972,3 +972,11 @@ int ufifo_get_fd(ufifo_t *handle)
 
     return handle->efd;
 }
+
+const char *ufifo_get_version(void)
+{
+#ifndef UFIFO_VERSION
+#define UFIFO_VERSION "unknown"
+#endif
+    return UFIFO_VERSION;
+}

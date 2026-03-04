@@ -1,6 +1,7 @@
 #include "ufifo.h"
 #include <assert.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -84,6 +85,8 @@ int main()
 {
     pthread_t p;
     pthread_t c;
+
+    printf("ufifo version: %s\n", ufifo_get_version());
 
     ufifo_init_t init = {};
     init.opt = UFIFO_OPT_ALLOC;

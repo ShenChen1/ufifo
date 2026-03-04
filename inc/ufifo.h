@@ -255,6 +255,12 @@ int ufifo_newest(ufifo_t *handle, unsigned int tag);
  */
 int ufifo_get_fd(ufifo_t *handle);
 
+/**
+ * @brief Get the currently linked library's version or git commit hash.
+ * @return Null-terminated version string.
+ */
+const char *ufifo_get_version(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -1,6 +1,19 @@
 cmake_minimum_required(VERSION 3.14)
 project(ufifo VERSION 1.0.0 LANGUAGES C CXX)
 
+# Get git version
+execute_process(
+    COMMAND git describe --tags --always --dirty
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    OUTPUT_VARIABLE UFIFO_GIT_VERSION
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(NOT UFIFO_GIT_VERSION)
+    set(UFIFO_GIT_VERSION "unknown")
+endif()
+add_compile_definitions(UFIFO_VERSION="${UFIFO_GIT_VERSION}")
+
 # Options
 set(SANITIZER "" CACHE STRING "Sanitizer to enable: asan, tsan, ubsan (comma-separated, e.g. asan,ubsan)")
 option(COVERAGE "Enable code coverage with gcov/lcov" OFF)
