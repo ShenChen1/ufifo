@@ -91,6 +91,13 @@ endforeach()
 
 include(GTest)
 
+# Benchmark
+find_package(benchmark REQUIRED)
+if(benchmark_FOUND)
+    add_executable(ufifo_benchmark test/ufifo_benchmark.cpp)
+    target_link_libraries(ufifo_benchmark PRIVATE ufifo_static benchmark::benchmark pthread)
+endif()
+
 # Setup CPack for generating deb, rpm, tar files
 set(CPACK_PACKAGE_NAME "ufifo")
 set(CPACK_PACKAGE_VENDOR "Peter Shen")
