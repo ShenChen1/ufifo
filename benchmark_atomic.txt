@@ -1,0 +1,16 @@
+2026-03-05T16:29:48+00:00
+Running ./build/bin/ufifo_benchmark
+Run on (4 X 2300 MHz CPU s)
+CPU Caches:
+  L1 Data 32 KiB (x4)
+  L1 Instruction 32 KiB (x4)
+  L2 Unified 256 KiB (x4)
+  L3 Unified 46080 KiB (x1)
+Load Average: 0.14, 0.08, 0.12
+--------------------------------------------------------------------------------------------------
+Benchmark                                        Time             CPU   Iterations UserCounters...
+--------------------------------------------------------------------------------------------------
+BM_Ufifo_SPSC_Throughput/64/real_time         7328 ns         4197 ns       160733 bytes_per_second=7.21021Mi/s
+BM_Ufifo_SPSC_Throughput/256/real_time        3862 ns         2086 ns       451216 bytes_per_second=29.5226Mi/s
+BM_Ufifo_SPSC_Throughput/1024/real_time       7202 ns         4210 ns       100000 bytes_per_second=113.384Mi/s
+BM_Ufifo_SPSC_Throughput/4096/real_time       2235 ns         1262 ns       351883 bytes_per_second=429.643Mi/s

@@ -1,0 +1,199 @@
+--- src/kfifo.c
++++ src/kfifo.c
+@@ -1,20 +1,16 @@
+-#include "kfifo.h"
+-#include "utils.h"
+-#include <errno.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <errno.h>
++#include "kfifo.h"
++#include "utils.h"
+
+ /*
+  * internal helper to calculate the unused elements in a fifo
+- *
+- * Called by producer: in is own (relaxed), out is from consumer (acquire).
+  */
+ static inline unsigned int __kfifo_unused(kfifo_t *fifo)
+ {
+-    unsigned int in = READ_ONCE(fifo->in);
+-    unsigned int out = smp_load_acquire(fifo->out);
+-    return (*fifo->mask + 1) - (in - out);
++    return (*fifo->mask + 1) - (*fifo->in - *fifo->out);
+ }
+
+ /*
+@@ -49,6 +45,11 @@ static void __kfifo_copy_in(kfifo_t *fifo, char *base, const char *src, unsigned
+
+     memcpy(base + off, src, l);
+     memcpy(base, src + l, len - l);
++    /*
++     * make sure that the data in the fifo is up to date before
++     * incrementing the fifo->in index counter
++     */
++    smp_wmb();
+ }
+
+ unsigned int kfifo_in(kfifo_t *fifo, void *base, const void *buf, unsigned int len)
+@@ -59,9 +60,8 @@ unsigned int kfifo_in(kfifo_t *fifo, void *base, const void *buf, unsigned int l
+     if (len > l)
+         len = l;
+
+-    unsigned int in = READ_ONCE(fifo->in);
+-    __kfifo_copy_in(fifo, base, buf, len, in);
+-    smp_store_release(fifo->in, in + len);
++    __kfifo_copy_in(fifo, base, buf, len, *fifo->in);
++    *fifo->in += len;
+     return len;
+ }
+
+@@ -75,29 +75,28 @@ static void __kfifo_copy_out(kfifo_t *fifo, char *base, char *dst, unsigned int
+
+     memcpy(dst, base + off, l);
+     memcpy(dst + l, base, len - l);
++    /*
++     * make sure that the data is copied before
++     * incrementing the fifo->out index counter
++     */
++    smp_wmb();
+ }
+
+-/*
+- * Consumer reads: in from producer (acquire), out is own (relaxed).
+- */
+ unsigned int kfifo_out_peek(kfifo_t *fifo, void *base, void *buf, unsigned int len)
+ {
+     unsigned int l;
+-    unsigned int in = smp_load_acquire(fifo->in);
+-    unsigned int out = READ_ONCE(fifo->out);
+
+-    l = in - out;
++    l = *fifo->in - *fifo->out;
+     if (len > l)
+         len = l;
+
+-    __kfifo_copy_out(fifo, base, buf, len, out);
++    __kfifo_copy_out(fifo, base, buf, len, *fifo->out);
+     return len;
+ }
+
+ unsigned int kfifo_out(kfifo_t *fifo, void *base, void *buf, unsigned int len)
+ {
+     len = kfifo_out_peek(fifo, base, buf, len);
+-    unsigned int out = READ_ONCE(fifo->out);
+-    smp_store_release(fifo->out, out + len);
++    *fifo->out += len;
+     return len;
+ }
+--- src/ufifo.c
++++ src/ufifo.c
+@@ -616,16 +616,16 @@ static unsigned int __ufifo_unused_len(ufifo_t *handle)
+     if (__ufifo_is_shared(handle)) {
+         out = __ufifo_min_out(handle);
+     } else {
+-        out = smp_load_acquire(handle->kfifo.out);
++        out = *handle->kfifo.out;
+     }
+
+-    len = READ_ONCE(handle->kfifo.in) - out;
++    len = *handle->kfifo.in - out;
+     return *handle->kfifo.mask + 1 - len;
+ }
+
+ static unsigned int __ufifo_peek_len(ufifo_t *handle, unsigned int offset)
+ {
+-    unsigned int len = smp_load_acquire(handle->kfifo.in) == offset ? 0 : 1;
++    unsigned int len = *handle->kfifo.in == offset ? 0 : 1;
+
+     if (len && handle->hook.recsize) {
+         offset &= *handle->kfifo.mask;
+@@ -721,11 +721,11 @@ static unsigned int __ufifo_put(ufifo_t *handle, void *buf, unsigned int size, l
+         }
+     }
+     if (handle->hook.recput) {
+-        unsigned int in = READ_ONCE(handle->kfifo.in);
+-        len = *handle->kfifo.mask & in;
++        len = *handle->kfifo.mask & *handle->kfifo.in;
+         len = handle->hook.recput(handle->shm_mem + len, *handle->kfifo.mask - len + 1, handle->shm_mem, buf);
+         assert(size == len);
+-        smp_store_release(handle->kfifo.in, in + len);
++        smp_wmb();
++        *handle->kfifo.in += len;
+     } else {
+         len = kfifo_in(&handle->kfifo, handle->shm_mem, buf, size);
+     }
+@@ -773,7 +773,7 @@ static unsigned int __ufifo_get(ufifo_t *handle, void *buf, unsigned int size, l
+
+     __ufifo_lock_acquire(handle);
+     while (1) {
+-        len = __ufifo_peek_len(handle, READ_ONCE(handle->kfifo.out));
++        len = __ufifo_peek_len(handle, *handle->kfifo.out);
+         if (len == 0) {
+             if (millisec == 0) {
+                 ret = -1;
+@@ -792,10 +792,10 @@ static unsigned int __ufifo_get(ufifo_t *handle, void *buf, unsigned int size, l
+     }
+
+     if (handle->hook.recget) {
+-        unsigned int out = READ_ONCE(handle->kfifo.out);
+-        len = *handle->kfifo.mask & out;
++        len = *handle->kfifo.mask & *handle->kfifo.out;
+         len = handle->hook.recget(handle->shm_mem + len, *handle->kfifo.mask - len + 1, handle->shm_mem, buf);
+-        smp_store_release(handle->kfifo.out, out + len);
++        smp_wmb();
++        *handle->kfifo.out += len;
+     } else {
+         size = handle->hook.recsize ? min(size, len) : size;
+         len = kfifo_out(&handle->kfifo, handle->shm_mem, buf, size);
+@@ -835,7 +835,7 @@ static unsigned int __ufifo_peek(ufifo_t *handle, void *buf, unsigned int size,
+
+     __ufifo_lock_acquire(handle);
+     while (1) {
+-        len = __ufifo_peek_len(handle, READ_ONCE(handle->kfifo.out));
++        len = __ufifo_peek_len(handle, *handle->kfifo.out);
+         if (len == 0) {
+             if (millisec == 0) {
+                 ret = -1;
+@@ -854,9 +854,9 @@ static unsigned int __ufifo_peek(ufifo_t *handle, void *buf, unsigned int size,
+     }
+
+     if (handle->hook.recget) {
+-        unsigned int out = READ_ONCE(handle->kfifo.out);
+-        len = *handle->kfifo.mask & out;
++        len = *handle->kfifo.mask & *handle->kfifo.out;
+         len = handle->hook.recget(handle->shm_mem + len, *handle->kfifo.mask - len + 1, handle->shm_mem, buf);
++        smp_wmb();
+     } else {
+         size = handle->hook.recsize ? min(size, len) : size;
+         len = kfifo_out_peek(&handle->kfifo, handle->shm_mem, buf, size);
+--- inc/utils.h
++++ inc/utils.h
+@@ -4,19 +4,14 @@
+ #define ARRAY_SIZE(ary) (sizeof((ary))/sizeof(*(ary)))
+
+ #define container_of(ptr, type, member) \
+-    (type *)((char *)(ptr) - (char *)&((type *)0)->member)
++    (type *)((char *)(ptr) - (char *) &((type *)0)->member)
+
+-#define min(x, y)                      \
+-    ({                                 \
+-        typeof(x) _min1 = (x);         \
+-        typeof(y) _min2 = (y);         \
+-        (void)(&_min1 == &_min2);      \
+-        _min1 < _min2 ? _min1 : _min2; \
+-    })
++#define min(x, y) ({                \
++    typeof(x) _min1 = (x);          \
++    typeof(y) _min2 = (y);          \
++    (void) (&_min1 == &_min2);      \
++    _min1 < _min2 ? _min1 : _min2; })
+
+-#define smp_load_acquire(p)        __atomic_load_n((p), __ATOMIC_ACQUIRE)
+-#define smp_store_release(p, v)    __atomic_store_n((p), (v), __ATOMIC_RELEASE)
+-#define READ_ONCE(p)               __atomic_load_n((p), __ATOMIC_RELAXED)
+-#define WRITE_ONCE(p, v)           __atomic_store_n((p), (v), __ATOMIC_RELAXED)
++#define smp_wmb __sync_synchronize
+
+ #endif /* _UTILS_H_ */
