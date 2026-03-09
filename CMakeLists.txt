@@ -40,7 +40,7 @@ set_target_properties(ufifo_static PROPERTIES
     OUTPUT_NAME ufifo
     POSITION_INDEPENDENT_CODE ON
 )
-target_compile_options(ufifo_static PRIVATE -g ${UFIFO_OPT_LEVEL} -Wall -Werror)
+target_compile_options(ufifo_static PRIVATE -g -Os -Wall -Werror)
 if(COVERAGE)
     ufifo_enable_coverage(ufifo_static)
 endif()
@@ -51,7 +51,7 @@ set_target_properties(ufifo_shared PROPERTIES
     OUTPUT_NAME ufifo
     POSITION_INDEPENDENT_CODE ON
 )
-target_compile_options(ufifo_shared PRIVATE -g ${UFIFO_OPT_LEVEL} -Wall -Werror)
+target_compile_options(ufifo_shared PRIVATE -g -Os -Wall -Werror)
 if(COVERAGE)
     ufifo_enable_coverage(ufifo_shared)
 endif()
@@ -69,7 +69,7 @@ set(EXAMPLES
 
 foreach(example ${EXAMPLES})
     add_executable(${example} example/${example}.c)
-    target_compile_options(${example} PRIVATE -g ${UFIFO_OPT_LEVEL} -Wall -Werror)
+    target_compile_options(${example} PRIVATE -g -Os -Wall -Werror)
     target_link_libraries(${example} PRIVATE ufifo_static ${RT_LIBRARY} ${PTHREAD_LIBRARY})
 endforeach()
 

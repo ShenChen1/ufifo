@@ -26,6 +26,14 @@ typedef unsigned int (*ufifo_recput_hook_t)(unsigned char *p1, unsigned int n1, 
 typedef unsigned int (*ufifo_recget_hook_t)(unsigned char *p1, unsigned int n1, unsigned char *p2, void *arg);
 /** @} */
 
+/** @brief Structured version information. */
+typedef struct {
+    unsigned int major; /**< Major version (ABI-breaking changes). */
+    unsigned int minor; /**< Minor version (backwards-compatible features). */
+    unsigned int patch; /**< Patch version (bug fixes). */
+    char version[32];   /**< Full version string (git tag or commit hash). */
+} ufifo_version_t;
+
 /** @brief FIFO open mode. */
 typedef enum {
     UFIFO_OPT_ALLOC,  /**< Create new shared-memory FIFO (owner). */
@@ -256,10 +264,24 @@ int ufifo_newest(ufifo_t *handle, unsigned int tag);
 int ufifo_get_fd(ufifo_t *handle);
 
 /**
- * @brief Get the currently linked library's version or git commit hash.
- * @return Null-terminated version string.
+ * @brief Get the currently linked library's version string.
+ * @return Null-terminated version string (e.g. "v1.2.3" or git hash).
  */
 const char *ufifo_get_version(void);
+
+/**
+ * @brief Get structured version information.
+ *
+ * When @p handle is NULL, returns the compile-time version of the linked
+ * library itself. When @p handle is non-NULL, returns the version that was
+ * stamped into shared memory when the FIFO was created — useful for
+ * diagnosing cross-process version mismatches.
+ *
+ * @param handle FIFO handle, or NULL to query the library version.
+ * @param ver    [out] Receives the version info.
+ * @return 0 on success, -EINVAL if @p ver is NULL.
+ */
+int ufifo_get_version_info(ufifo_t *handle, ufifo_version_t *ver);
 
 #ifdef __cplusplus
 }

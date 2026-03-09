@@ -31,10 +31,3 @@ if(SANITIZER)
     add_link_options(${SANITIZER_LINK_FLAGS})
     message(STATUS "Sanitizer enabled: ${SANITIZER}")
 endif()
-
-# Optimization: use -O1 with sanitizer for accurate stack traces, -Os otherwise
-if(SANITIZER)
-    set(UFIFO_OPT_LEVEL "-O1" CACHE STRING "Optimization level")
-else()
-    set(UFIFO_OPT_LEVEL "-Os" CACHE STRING "Optimization level")
-endif()

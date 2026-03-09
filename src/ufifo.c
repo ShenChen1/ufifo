@@ -40,6 +40,8 @@ typedef struct {
 } ufifo_sub_ctrl_t;
 
 typedef struct {
+    ufifo_version_t ver;
+
     unsigned int in;
     unsigned int out;
     unsigned int mask;
@@ -77,6 +79,8 @@ struct ufifo {
     ufifo_ctrl_t *ctrl;
 
     int efd; /* UDS notification socket for epoll, -1 if unused */
+
+    ufifo_version_t version; /* Library version snapshot at open time */
 };
 
 /* Process-global sender socket for UDS notifications (lazy init) */
@@ -287,6 +291,25 @@ static inline int __ufifo_hook_init(ufifo_t *ufifo, ufifo_hook_t *hook)
     return 0;
 }
 
+static int __ufifo_version_check(ufifo_ctrl_t *ctrl)
+{
+    ufifo_version_t ver = {};
+    ufifo_get_version_info(NULL, &ver);
+
+    if (ctrl->ver.major != ver.major) {
+        fprintf(stderr,
+                "ufifo: version mismatch (shm=%u.%u.%u, lib=%u.%u.%u)\n",
+                ctrl->ver.major,
+                ctrl->ver.minor,
+                ctrl->ver.patch,
+                ver.major,
+                ver.minor,
+                ver.patch);
+        return -EPROTO;
+    }
+    return 0;
+}
+
 static int __ufifo_init_from_shm(ufifo_t *ufifo)
 {
     int ret = 0;
@@ -311,6 +334,12 @@ static int __ufifo_init_from_shm(ufifo_t *ufifo)
     if (ufifo->ctrl == MAP_FAILED) {
         ret = -errno;
         goto err_ctrl_fd;
+    }
+
+    /* Validate version compatibility before accessing other ctrl fields */
+    ret = __ufifo_version_check(ufifo->ctrl);
+    if (ret < 0) {
+        goto err_ctrl_mmap;
     }
 
     ret = fstat(ufifo->shm_fd, &st);
@@ -392,6 +421,7 @@ static int __ufifo_init_from_user(ufifo_t *ufifo, ufifo_alloc_t *alloc)
         ufifo->ctrl->users[i].active = 0;
     }
 
+    ufifo_get_version_info(NULL, &ufifo->ctrl->ver);
     ufifo->kfifo.in = &ufifo->ctrl->in;
     ufifo->kfifo.out = &ufifo->ctrl->out;
     ufifo->kfifo.mask = &ufifo->ctrl->mask;
@@ -979,4 +1009,31 @@ const char *ufifo_get_version(void)
 #define UFIFO_VERSION "unknown"
 #endif
     return UFIFO_VERSION;
+}
+
+int ufifo_get_version_info(ufifo_t *handle, ufifo_version_t *ver)
+{
+#ifndef UFIFO_VERSION_MAJOR
+#define UFIFO_VERSION_MAJOR 0
+#endif
+#ifndef UFIFO_VERSION_MINOR
+#define UFIFO_VERSION_MINOR 0
+#endif
+#ifndef UFIFO_VERSION_PATCH
+#define UFIFO_VERSION_PATCH 0
+#endif
+    if (ver == NULL) {
+        return -EINVAL;
+    }
+
+    if (handle == NULL) {
+        ver->major = UFIFO_VERSION_MAJOR;
+        ver->minor = UFIFO_VERSION_MINOR;
+        ver->patch = UFIFO_VERSION_PATCH;
+        snprintf(ver->version, sizeof(ver->version), "%s", ufifo_get_version());
+        return 0;
+    }
+
+    memcpy(ver, &handle->ctrl->ver, sizeof(*ver));
+    return 0;
 }
