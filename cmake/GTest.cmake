@@ -24,3 +24,13 @@ endif()
 
 include(GoogleTest)
 gtest_discover_tests(ufifo_test)
+
+# Performance benchmark executable (compiled with -Os for realistic measurement)
+add_executable(ufifo_bench test/ufifo_bench.cpp)
+target_link_libraries(ufifo_bench PRIVATE
+    ufifo_static
+    ${RT_LIBRARY}
+    ${PTHREAD_LIBRARY}
+)
+target_include_directories(ufifo_bench PRIVATE ${CMAKE_SOURCE_DIR}/inc)
+target_compile_options(ufifo_bench PRIVATE -g -Os -Wall -Werror)
