@@ -3,7 +3,7 @@ name: Performance Benchmark
 on:
   push:
     branches:
-      - main
+      - master
   pull_request:
 
 permissions:
@@ -18,9 +18,8 @@ jobs:
 
       - name: Build benchmark
         run: |
-          mkdir -p build && cd build
-          cmake -DCMAKE_BUILD_TYPE=Release ..
-          make ufifo_bench -j$(nproc)
+          cmake -B build
+          cmake --build build --target ufifo_bench -j$(nproc)
 
       - name: Run benchmark
         run: ./build/bin/ufifo_bench 1 --json > benchmark-result.json
@@ -32,7 +31,8 @@ jobs:
           tool: 'customBiggerIsBetter'
           output-file-path: benchmark-result.json
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          auto-push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          auto-push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+          auto-mutate-gh-pages: true
           # Show alert with commit comment on detecting possible performance regression
           alert-threshold: '120%'
           comment-on-alert: true

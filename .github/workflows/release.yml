@@ -42,7 +42,7 @@ jobs:
           if [ -n "${{ matrix.target }}" ]; then
             CMAKE_FLAGS="$CMAKE_FLAGS -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/${{ matrix.target }}.cmake"
           fi
-          cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo $CMAKE_FLAGS
+          cmake -B build $CMAKE_FLAGS
 
       - name: Build
         run: cmake --build build -j$(nproc)

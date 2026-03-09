@@ -23,7 +23,9 @@ if(COVERAGE)
 endif()
 
 include(GoogleTest)
-gtest_discover_tests(ufifo_test)
+if(NOT CMAKE_CROSSCOMPILING OR CMAKE_CROSSCOMPILING_EMULATOR)
+    gtest_discover_tests(ufifo_test)
+endif()
 
 # Performance benchmark executable (compiled with -Os for realistic measurement)
 add_executable(ufifo_bench test/ufifo_bench.cpp)
