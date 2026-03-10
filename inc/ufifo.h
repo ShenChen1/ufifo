@@ -264,6 +264,12 @@ int ufifo_newest(ufifo_t *handle, unsigned int tag);
 int ufifo_get_fd(ufifo_t *handle);
 
 /**
+ * @brief Dump the internal status of the FIFO for debugging.
+ * @param handle FIFO handle.
+ */
+void ufifo_dump(ufifo_t *handle);
+
+/**
  * @brief Get the currently linked library's version string.
  * @return Null-terminated version string (e.g. "v1.2.3" or git hash).
  */

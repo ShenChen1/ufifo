@@ -367,6 +367,36 @@ TEST_F(UfifoApiTest, VersionInfoAttachSeesCreatorVersion)
     ufifo_destroy(creator);
 }
 
+TEST_F(UfifoApiTest, Dump)
+{
+    testing::internal::CaptureStdout();
+    ufifo_dump(nullptr);
+    std::string output = testing::internal::GetCapturedStdout();
+    EXPECT_TRUE(output.find("handle is NULL") != std::string::npos);
+
+    ufifo_init_t init = {};
+    init.opt = UFIFO_OPT_ALLOC;
+    init.alloc.size = 256;
+    init.alloc.force = 1;
+    init.alloc.max_users = 2;
+    init.alloc.data_mode = UFIFO_DATA_SHARED;
+
+    std::string name = GenerateName("dump_test");
+    ufifo_t *fifo = nullptr;
+    ASSERT_EQ(0, ufifo_open(const_cast<char *>(name.c_str()), &init, &fifo));
+
+    int val = 42;
+    ufifo_put(fifo, &val, sizeof(val));
+
+    testing::internal::CaptureStdout();
+    ufifo_dump(fifo);
+    output = testing::internal::GetCapturedStdout();
+    EXPECT_TRUE(output.find("=== ufifo_dump:") != std::string::npos);
+    EXPECT_TRUE(output.find("offset: ") != std::string::npos);
+
+    ufifo_destroy(fifo);
+}
+
 // =============================================================================
 // 2. Base test suite class handling Parametrization
 // =============================================================================

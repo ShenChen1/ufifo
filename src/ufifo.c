@@ -1003,6 +1003,55 @@ int ufifo_get_fd(ufifo_t *handle)
     return handle->efd;
 }
 
+void ufifo_dump(ufifo_t *handle)
+{
+    if (handle == NULL) {
+        printf("ufifo_dump: handle is NULL\n");
+        return;
+    }
+
+    __ufifo_lock_acquire(handle);
+
+    unsigned int mask = *handle->kfifo.mask;
+    unsigned int size = mask + 1;
+    unsigned int in = READ_ONCE(handle->kfifo.in);
+    unsigned int out = READ_ONCE(handle->kfifo.out);
+
+    printf("=== ufifo_dump: %s ===\n", handle->name);
+    printf("Shm fd: %d, Size: %u (Mask: 0x%x)\n", handle->shm_fd, size, mask);
+    printf("Ctrl fd: %d, Max Users: %u, Num Users: %u\n",
+           handle->ctrl_fd,
+           handle->ctrl->max_users,
+           handle->ctrl->num_users);
+
+    printf("Data Mode: %s\n", __ufifo_is_shared(handle) ? "SHARED" : "SOLE");
+
+    ufifo_version_t lib_ver = { 0 };
+    ufifo_get_version_info(NULL, &lib_ver);
+    printf("Lib Version: %u.%u.%u (%s)\n", lib_ver.major, lib_ver.minor, lib_ver.patch, lib_ver.version);
+
+    ufifo_version_t shm_ver = { 0 };
+    ufifo_get_version_info(handle, &shm_ver);
+    printf("Shm Version: %u.%u.%u (%s)\n", shm_ver.major, shm_ver.minor, shm_ver.patch, shm_ver.version);
+
+    const char *lock_modes[] = { "NONE", "THREAD", "PROCESS" };
+    const char *lock_str = (handle->ctrl->lock < UFIFO_LOCK_MAX) ? lock_modes[handle->ctrl->lock] : "UNKNOWN";
+    printf("Lock Mode: %s\n", lock_str);
+
+    printf("Pointers: in = %u (offset: %u), out = %u (offset: %u)\n", in, in & mask, out, out & mask);
+
+    unsigned int i;
+    for (i = 0; i < handle->ctrl->max_users; i++) {
+        if (handle->ctrl->users[i].active) {
+            unsigned int u_out = handle->ctrl->users[i].out;
+            printf("  User[%u]: pid = %d, out = %u (offset: %u)\n", i, handle->ctrl->users[i].pid, u_out, u_out & mask);
+        }
+    }
+    printf("=========================\n");
+
+    __ufifo_lock_release(handle);
+}
+
 const char *ufifo_get_version(void)
 {
 #ifndef UFIFO_VERSION
