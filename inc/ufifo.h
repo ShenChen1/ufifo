@@ -255,13 +255,25 @@ int ufifo_newest(ufifo_t *handle, unsigned int tag);
  * (data written or consumed). Add this fd to epoll to multiplex
  * multiple FIFOs in a single thread.
  *
- * After epoll_wait returns, recv() to clear, then call ufifo_get/ufifo_put
+ * After epoll_wait returns, ufifo_drain_fd() to clear, then call ufifo_get/ufifo_put
  * (may return 0 on spurious wake).
  *
  * @param handle FIFO handle.
  * @return fd (>= 0) on success, -1 on failure.
  */
-int ufifo_get_fd(ufifo_t *handle);
+int ufifo_get_rx_fd(ufifo_t *handle);
+int ufifo_get_tx_fd(ufifo_t *handle);
+
+/**
+ * @brief Drain pending notifications from the epoll file descriptor.
+ *
+ * Clears the underlying socket buffer so that `epoll_wait` doesn't
+ * return immediately on subsequent calls in level-triggered mode.
+ * Should be called after `epoll_wait` returns and before consuming data.
+ *
+ * @param fd epoll file descriptor.
+ */
+int ufifo_drain_fd(int fd);
 
 /**
  * @brief Dump the internal status of the FIFO for debugging.

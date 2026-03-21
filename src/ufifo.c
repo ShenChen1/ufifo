@@ -1,3 +1,4 @@
+#include <asm-generic/errno-base.h>
 #define _GNU_SOURCE
 #include <assert.h>
 #include <errno.h>
@@ -21,16 +22,10 @@
 #include "ufifo.h"
 #include "utils.h"
 
-#define UFIFO_DEBUG (0)
 #define UFIFO_MAGIC (0xf1f0f1f0)
-
-#if UFIFO_DEBUG
 #define UFIFO_CHECK_HANDLE_FUNC(handle) \
     assert((handle));                   \
     assert((handle)->magic == UFIFO_MAGIC);
-#else
-#define UFIFO_CHECK_HANDLE_FUNC(handle)
-#endif
 
 typedef struct {
     unsigned int out;
@@ -59,9 +54,8 @@ typedef struct {
 } ufifo_ctrl_t;
 
 struct ufifo {
-#if UFIFO_DEBUG
     unsigned int magic;
-#endif
+
     char name[NAME_MAX];
     unsigned int user_id;
 
@@ -78,9 +72,8 @@ struct ufifo {
     size_t ctrl_size;
     ufifo_ctrl_t *ctrl;
 
-    int efd; /* UDS notification socket for epoll, -1 if unused */
-
-    ufifo_version_t version; /* Library version snapshot at open time */
+    int rx_efd;
+    int tx_efd;
 };
 
 /* Process-global sender socket for UDS notifications (lazy init) */
@@ -98,18 +91,19 @@ static int __ufifo_get_sender_fd(void)
     return __ufifo_sender_fd;
 }
 
-/* Build abstract-namespace address: \0ufifo_<name>_<user_id> */
-static socklen_t __ufifo_notify_addr(const char *name, unsigned int user_id, struct sockaddr_un *addr)
+/* Build abstract-namespace address */
+static socklen_t __ufifo_notify_addr(const char *name, unsigned int user_id, struct sockaddr_un *addr, int is_rx)
 {
     memset(addr, 0, sizeof(*addr));
     addr->sun_family = AF_UNIX;
     addr->sun_path[0] = '\0';
-    int n = snprintf(addr->sun_path + 1, sizeof(addr->sun_path) - 1, "ufifo_%s_%u", name, user_id);
+    int n =
+        snprintf(addr->sun_path + 1, sizeof(addr->sun_path) - 1, "ufifo_%s_%s_%u", is_rx ? "rx" : "tx", name, user_id);
     return (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 + n);
 }
 
 /* Notify all active users of this FIFO via UDS sendto */
-static void __ufifo_efd_notify(ufifo_t *handle)
+static void __ufifo_efd_notify(ufifo_t *handle, int is_rx)
 {
     int sfd = __ufifo_get_sender_fd();
     if (sfd < 0)
@@ -120,9 +114,18 @@ static void __ufifo_efd_notify(ufifo_t *handle)
     for (i = 0; i < handle->ctrl->max_users; i++) {
         if (!READ_ONCE(&handle->ctrl->users[i].active))
             continue;
-        socklen_t len = __ufifo_notify_addr(handle->name, i, &addr);
+        socklen_t len = __ufifo_notify_addr(handle->name, i, &addr, is_rx);
         sendto(sfd, "1", 1, MSG_DONTWAIT, (struct sockaddr *)&addr, len);
     }
+}
+
+static inline void __ufifo_efd_notify_rx(ufifo_t *handle)
+{
+    __ufifo_efd_notify(handle, 1);
+}
+static inline void __ufifo_efd_notify_tx(ufifo_t *handle)
+{
+    __ufifo_efd_notify(handle, 0);
 }
 
 static inline int __ufifo_lock_acquire(ufifo_t *ufifo)
@@ -482,7 +485,8 @@ int ufifo_open(char *name, ufifo_init_t *init, ufifo_t **handle)
     if (ufifo == NULL) {
         return -ENOMEM;
     }
-    ufifo->efd = -1;
+    ufifo->rx_efd = -1;
+    ufifo->tx_efd = -1;
 
     strncpy(ufifo->name, name, sizeof(ufifo->name) - 1);
     ret |= __ufifo_hook_init(ufifo, &init->hook);
@@ -538,9 +542,7 @@ int ufifo_open(char *name, ufifo_init_t *init, ufifo_t **handle)
         ufifo->kfifo.out = &ufifo->ctrl->users[ufifo->user_id].out;
     }
 
-#if UFIFO_DEBUG
     ufifo->magic = UFIFO_MAGIC;
-#endif
     *handle = ufifo;
     return 0;
 
@@ -573,9 +575,13 @@ static int __ufifo_close(ufifo_t *handle, int destroy)
 {
     char ctrl_name[NAME_MAX + 8];
 
-    if (handle->efd >= 0) {
-        close(handle->efd);
-        handle->efd = -1;
+    if (handle->rx_efd >= 0) {
+        close(handle->rx_efd);
+        handle->rx_efd = -1;
+    }
+    if (handle->tx_efd >= 0) {
+        close(handle->tx_efd);
+        handle->tx_efd = -1;
     }
     __ufifo_unregister(handle);
     if (destroy) {
@@ -773,7 +779,7 @@ static unsigned int __ufifo_put(ufifo_t *handle, void *buf, unsigned int size, l
     } else {
         __ufifo_bsem_post(handle->bsem_rd);
     }
-    __ufifo_efd_notify(handle);
+    __ufifo_efd_notify_rx(handle);
 
 end:
     __ufifo_lock_release(handle);
@@ -835,7 +841,7 @@ static unsigned int __ufifo_get(ufifo_t *handle, void *buf, unsigned int size, l
     }
 
     __ufifo_bsem_post(handle->bsem_wr);
-    __ufifo_efd_notify(handle);
+    __ufifo_efd_notify_tx(handle);
 
 end:
     __ufifo_lock_release(handle);
@@ -975,35 +981,81 @@ int ufifo_newest(ufifo_t *handle, unsigned int tag)
     return ret;
 }
 
-int ufifo_get_fd(ufifo_t *handle)
+static int __ufifo_get_efd(ufifo_t *handle, int is_rx)
 {
+    int ret_fd;
+    __ufifo_lock_acquire(handle);
+
+    int *efd = is_rx ? &handle->rx_efd : &handle->tx_efd;
     struct sockaddr_un addr;
     socklen_t addr_len;
 
-    UFIFO_CHECK_HANDLE_FUNC(handle);
-
-    if (handle->efd >= 0)
-        return handle->efd;
-
-    handle->efd = socket(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-    if (handle->efd < 0)
-        return -1;
-
-    addr_len = __ufifo_notify_addr(handle->name, handle->user_id, &addr);
-    if (bind(handle->efd, (struct sockaddr *)&addr, addr_len) < 0) {
-        close(handle->efd);
-        handle->efd = -1;
-        return -1;
+    if (*efd >= 0) {
+        ret_fd = *efd;
+        goto end;
     }
 
-    /* Pre-arm: if FIFO already has data, send notification to self */
-    if (READ_ONCE(handle->kfifo.in) != READ_ONCE(handle->kfifo.out)) {
+    *efd = socket(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    if (*efd < 0) {
+        ret_fd = -1;
+        goto end;
+    }
+
+    addr_len = __ufifo_notify_addr(handle->name, handle->user_id, &addr, is_rx);
+    if (bind(*efd, (struct sockaddr *)&addr, addr_len) < 0) {
+        close(*efd);
+        *efd = -1;
+        ret_fd = -1;
+        goto end;
+    }
+
+    /* Pre-arm condition: check if we should send a notification to self */
+    int should_arm = 0;
+    if (is_rx) {
+        if (READ_ONCE(handle->kfifo.in) != READ_ONCE(handle->kfifo.out))
+            should_arm = 1;
+    } else {
+        unsigned int len = READ_ONCE(handle->kfifo.in) - READ_ONCE(handle->kfifo.out);
+        unsigned int unused = *handle->kfifo.mask + 1 - len;
+        if (unused > 0)
+            should_arm = 1;
+    }
+
+    if (should_arm) {
         int sfd = __ufifo_get_sender_fd();
         if (sfd >= 0)
             sendto(sfd, "1", 1, MSG_DONTWAIT, (struct sockaddr *)&addr, addr_len);
     }
 
-    return handle->efd;
+    ret_fd = *efd;
+
+end:
+    __ufifo_lock_release(handle);
+    return ret_fd;
+}
+
+int ufifo_get_rx_fd(ufifo_t *handle)
+{
+    UFIFO_CHECK_HANDLE_FUNC(handle);
+    return __ufifo_get_efd(handle, 1);
+}
+
+int ufifo_get_tx_fd(ufifo_t *handle)
+{
+    UFIFO_CHECK_HANDLE_FUNC(handle);
+    return __ufifo_get_efd(handle, 0);
+}
+
+int ufifo_drain_fd(int fd)
+{
+    char buf[128];
+    if (fd < 0) {
+        return -EINVAL;
+    }
+
+    while (recv(fd, buf, sizeof(buf), MSG_DONTWAIT) > 0) {
+    }
+    return 0;
 }
 
 void ufifo_dump(ufifo_t *handle)
@@ -1013,6 +1065,7 @@ void ufifo_dump(ufifo_t *handle)
         return;
     }
 
+    UFIFO_CHECK_HANDLE_FUNC(handle);
     __ufifo_lock_acquire(handle);
 
     unsigned int mask = *handle->kfifo.mask;
@@ -1042,6 +1095,9 @@ void ufifo_dump(ufifo_t *handle)
     printf("Lock Mode: %s\n", lock_str);
 
     printf("Pointers: in = %u (offset: %u), out = %u (offset: %u)\n", in, in & mask, out, out & mask);
+
+    // fd epoll info
+    printf("Rx Efd: %d, Tx Efd: %d\n", handle->rx_efd, handle->tx_efd);
 
     unsigned int i;
     for (i = 0; i < handle->ctrl->max_users; i++) {
@@ -1086,6 +1142,7 @@ int ufifo_get_version_info(ufifo_t *handle, ufifo_version_t *ver)
         return 0;
     }
 
+    UFIFO_CHECK_HANDLE_FUNC(handle);
     memcpy(ver, &handle->ctrl->ver, sizeof(*ver));
     return 0;
 }
