@@ -28,24 +28,25 @@
     assert((handle)->magic == UFIFO_MAGIC);
 
 typedef struct {
-    unsigned int out;
     pid_t pid;
     unsigned int active;
+
+    unsigned int out;
     sem_t bsem_rd;
+    unsigned int waiting_rx;
 } ufifo_sub_ctrl_t;
 
 typedef struct {
     ufifo_version_t ver;
 
     unsigned int in;
-    unsigned int out;
     unsigned int mask;
 
     ufifo_lock_e lock;
     pthread_mutex_t mutex;
 
     sem_t bsem_wr;
-    sem_t bsem_rd;
+    unsigned int waiting_tx;
 
     ufifo_data_mode_e data_mode;
     unsigned int max_users;
@@ -169,20 +170,16 @@ static int __ufifo_register(ufifo_t *ufifo)
     ufifo_ctrl_t *ctrl = ufifo->ctrl;
     unsigned int i;
 
-    __ufifo_lock_acquire(ufifo);
-
     for (i = 0; i < ctrl->max_users; i++) {
         if (!ctrl->users[i].active) {
             ctrl->users[i].out = READ_ONCE(&ctrl->in);
             ctrl->users[i].pid = getpid();
-            smp_store_release(&ctrl->users[i].active, 1);
+            ctrl->users[i].active = 1;
             ctrl->num_users++;
-            __ufifo_lock_release(ufifo);
             return i;
         }
     }
 
-    __ufifo_lock_release(ufifo);
     return -ENOSPC;
 }
 
@@ -190,14 +187,10 @@ static void __ufifo_unregister(ufifo_t *ufifo)
 {
     ufifo_ctrl_t *ctrl = ufifo->ctrl;
 
-    __ufifo_lock_acquire(ufifo);
-
     if (ufifo->user_id < ctrl->max_users && ctrl->users[ufifo->user_id].active) {
-        WRITE_ONCE(&ctrl->users[ufifo->user_id].active, 0);
+        ctrl->users[ufifo->user_id].active = 0;
         ctrl->num_users--;
     }
-
-    __ufifo_lock_release(ufifo);
 }
 
 static inline int __ufifo_lock_init(ufifo_t *ufifo, ufifo_lock_e type)
@@ -358,11 +351,22 @@ static int __ufifo_init_from_shm(ufifo_t *ufifo)
         goto err_ctrl_mmap;
     }
 
+    ret = __ufifo_register(ufifo);
+    if (ret < 0) {
+        goto err_ctrl_mmap;
+    }
+    ufifo->user_id = (unsigned int)ret;
     ufifo->kfifo.in = &ufifo->ctrl->in;
-    ufifo->kfifo.out = &ufifo->ctrl->out;
     ufifo->kfifo.mask = &ufifo->ctrl->mask;
     ufifo->bsem_wr = &ufifo->ctrl->bsem_wr;
-    ufifo->bsem_rd = &ufifo->ctrl->bsem_rd;
+    if (ufifo->ctrl->data_mode == UFIFO_DATA_SHARED) {
+        ufifo->ctrl->users[ufifo->user_id].out = READ_ONCE(&ufifo->ctrl->in);
+        ufifo->kfifo.out = &ufifo->ctrl->users[ufifo->user_id].out;
+        ufifo->bsem_rd = &ufifo->ctrl->users[ufifo->user_id].bsem_rd;
+    } else {
+        ufifo->kfifo.out = &ufifo->ctrl->users[0].out;
+        ufifo->bsem_rd = &ufifo->ctrl->users[0].bsem_rd;
+    }
 
     return 0;
 
@@ -422,16 +426,22 @@ static int __ufifo_init_from_user(ufifo_t *ufifo, ufifo_alloc_t *alloc)
     ufifo->ctrl->num_users = 0;
     for (i = 0; i < alloc->max_users; i++) {
         ufifo->ctrl->users[i].active = 0;
+        __ufifo_bsem_init(&ufifo->ctrl->users[i].bsem_rd, 0);
     }
 
+    ret = __ufifo_register(ufifo);
+    if (ret < 0) {
+        goto err_ctrl_mmap;
+    }
+    ufifo->user_id = (unsigned int)ret;
     ufifo_get_version_info(NULL, &ufifo->ctrl->ver);
     ufifo->kfifo.in = &ufifo->ctrl->in;
-    ufifo->kfifo.out = &ufifo->ctrl->out;
+    ufifo->kfifo.out = &ufifo->ctrl->users[ufifo->user_id].out;
     ufifo->kfifo.mask = &ufifo->ctrl->mask;
     ret |= kfifo_init(&ufifo->kfifo, ufifo->shm_size);
     ufifo->bsem_wr = &ufifo->ctrl->bsem_wr;
     ret |= __ufifo_bsem_init(ufifo->bsem_wr, 0);
-    ufifo->bsem_rd = &ufifo->ctrl->bsem_rd;
+    ufifo->bsem_rd = &ufifo->ctrl->users[ufifo->user_id].bsem_rd;
     ret |= __ufifo_bsem_init(ufifo->bsem_rd, 0);
 
     return ret;
@@ -513,8 +523,7 @@ int ufifo_open(char *name, ufifo_init_t *init, ufifo_t **handle)
         goto err1;
     }
 
-    is_alloc = (init->opt == UFIFO_OPT_ALLOC);
-    if (is_alloc) {
+    if (init->opt == UFIFO_OPT_ALLOC) {
         ret = __ufifo_init_from_user(ufifo, &init->alloc);
         if (ret < 0) {
             goto err2;
@@ -530,26 +539,10 @@ int ufifo_open(char *name, ufifo_init_t *init, ufifo_t **handle)
         }
     }
 
-    ret = __ufifo_register(ufifo);
-    if (ret < 0) {
-        goto err4;
-    }
-    if (__ufifo_is_shared(ufifo)) {
-        ufifo->user_id = (unsigned int)ret;
-        __ufifo_bsem_deinit(ufifo->bsem_rd);
-        ufifo->bsem_rd = &ufifo->ctrl->users[ufifo->user_id].bsem_rd;
-        ret |= __ufifo_bsem_init(ufifo->bsem_rd, 0);
-        ufifo->kfifo.out = &ufifo->ctrl->users[ufifo->user_id].out;
-    }
-
     ufifo->magic = UFIFO_MAGIC;
     *handle = ufifo;
     return 0;
 
-err4:
-    if (is_alloc) {
-        __ufifo_lock_deinit(ufifo);
-    }
 err3:
     __ufifo_bsem_deinit(ufifo->bsem_wr);
     __ufifo_bsem_deinit(ufifo->bsem_rd);
