@@ -4,6 +4,7 @@
 #include <limits.h>
 #include <pthread.h>
 #include <semaphore.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -210,15 +211,81 @@ static inline int __ufifo_is_shared(ufifo_t *ufifo)
     return ufifo->ctrl->data_mode == UFIFO_DATA_SHARED;
 }
 
+/* Forward declarations for bsem helpers used in __ufifo_register slow path */
+static int __ufifo_bsem_init(sem_t *bsem, unsigned int value);
+static int __ufifo_bsem_deinit(sem_t *bsem);
+
+/* OFD (Open File Description) lock helpers for process liveness detection.
+ * Each user slot claims byte range [user_id, user_id+1) on the ctrl shm fd.
+ * Kernel auto-releases when the fd's open file description is closed. */
+
+static int __ufifo_ofd_lock(int fd, unsigned int user_id)
+{
+    struct flock fl = { .l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = user_id, .l_len = 1 };
+    return fcntl(fd, F_OFD_SETLK, &fl);
+}
+
+static int __ufifo_ofd_unlock(int fd, unsigned int user_id)
+{
+    struct flock fl = { .l_type = F_UNLCK, .l_whence = SEEK_SET, .l_start = user_id, .l_len = 1 };
+    return fcntl(fd, F_OFD_SETLK, &fl);
+}
+
+/*
+ * Probe whether user slot belongs to a dead process.
+ * Uses F_OFD_GETLK to query the lock status (zero side-effects).
+ * Returns: 1 = dead (byte range unlocked), 0 = alive or inconclusive.
+ */
+static int __ufifo_is_user_dead(int fd, unsigned int user_id)
+{
+    struct flock fl = { .l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = user_id, .l_len = 1 };
+    if (fcntl(fd, F_OFD_GETLK, &fl) < 0)
+        return 0;                /* cannot query, be conservative */
+    return fl.l_type == F_UNLCK; /* unlocked = holder is dead */
+}
+
+/*
+ * Reap a dead user slot.
+ * Assumes the caller holds ctrl_mutex.
+ */
+static void __ufifo_reap_dead_user(ufifo_ctrl_t *ctrl, unsigned int user_id)
+{
+    if (READ_ONCE(&ctrl->users[user_id].active)) {
+        WRITE_ONCE(&ctrl->users[user_id].active, 0);
+        ctrl->num_users--;
+
+        /* Drain the semaphore instead of destroying it to avoid races */
+        while (sem_trywait(&ctrl->users[user_id].bsem_rd) == 0) {
+            /* do nothing, just decrementing to 0 */
+        }
+    }
+}
+
 static int __ufifo_register(ufifo_t *ufifo)
 {
     ufifo_ctrl_t *ctrl = ufifo->ctrl;
     unsigned int i;
+    pid_t mypid = getpid();
 
     for (i = 0; i < ctrl->max_users; i++) {
         if (!READ_ONCE(&ctrl->users[i].active)) {
-            ctrl->users[i].out = READ_ONCE(&ctrl->in);
-            ctrl->users[i].pid = getpid();
+            WRITE_ONCE(&ctrl->users[i].out, READ_ONCE(&ctrl->in));
+            ctrl->users[i].pid = mypid;
+            __ufifo_ofd_lock(ufifo->ctrl_fd, i);
+            smp_store_release(&ctrl->users[i].active, 1);
+            ctrl->num_users++;
+            return i;
+        }
+    }
+
+    /* Slow path: no slots available. Try to reap dead processes. */
+    for (i = 0; i < ctrl->max_users; i++) {
+        if (READ_ONCE(&ctrl->users[i].active) && __ufifo_is_user_dead(ufifo->ctrl_fd, i)) {
+            __ufifo_reap_dead_user(ctrl, i);
+
+            WRITE_ONCE(&ctrl->users[i].out, READ_ONCE(&ctrl->in));
+            ctrl->users[i].pid = mypid;
+            __ufifo_ofd_lock(ufifo->ctrl_fd, i);
             smp_store_release(&ctrl->users[i].active, 1);
             ctrl->num_users++;
             return i;
@@ -234,6 +301,7 @@ static void __ufifo_unregister(ufifo_t *ufifo)
 
     if (ufifo->user_id < ctrl->max_users && READ_ONCE(&ctrl->users[ufifo->user_id].active)) {
         smp_store_release(&ctrl->users[ufifo->user_id].active, 0);
+        __ufifo_ofd_unlock(ufifo->ctrl_fd, ufifo->user_id);
         ctrl->num_users--;
     }
 }
@@ -784,6 +852,30 @@ unsigned int ufifo_peek_len(ufifo_t *handle)
     return len;
 }
 
+static int __ufifo_try_reap_dead_readers(ufifo_t *handle)
+{
+    int cleaned = 0;
+    unsigned int min_out = __ufifo_min_out(handle);
+    unsigned int i;
+
+    for (i = 0; i < handle->ctrl->max_users; i++) {
+        if (smp_load_acquire(&handle->ctrl->users[i].active)) {
+            unsigned int u_out = smp_load_acquire(&handle->ctrl->users[i].out);
+            /* Targeted check: Only check liveness if this user is the bottleneck */
+            if (u_out == min_out && __ufifo_is_user_dead(handle->ctrl_fd, i)) {
+                __ufifo_ctrl_lock(handle);
+                if (READ_ONCE(&handle->ctrl->users[i].active)) {
+                    __ufifo_reap_dead_user(handle->ctrl, i);
+                    cleaned = 1;
+                }
+                __ufifo_ctrl_unlock(handle);
+            }
+        }
+    }
+
+    return cleaned;
+}
+
 static unsigned int __ufifo_put(ufifo_t *handle, void *buf, unsigned int size, long millisec)
 {
     int ret;
@@ -793,6 +885,13 @@ static unsigned int __ufifo_put(ufifo_t *handle, void *buf, unsigned int size, l
     while (1) {
         len = __ufifo_unused_len(handle);
         if (len < size) {
+            /* Slow path: Check if space is constrained by dead shared readers */
+            if (__ufifo_is_shared(handle)) {
+                if (__ufifo_try_reap_dead_readers(handle)) {
+                    continue; /* Re-evaluate len */
+                }
+            }
+
             if (millisec == 0) {
                 ret = -1;
             } else if (millisec == -1) {
