@@ -26,13 +26,18 @@
     assert((handle));                   \
     assert((handle)->magic == UFIFO_MAGIC);
 
+/* epoll notification state machine: IDLE → REGISTERED → PENDING → REGISTERED */
+#define UFIFO_EFD_IDLE        0  /* no epoll fd registered */
+#define UFIFO_EFD_REGISTERED  1  /* epoll fd registered, no pending notification */
+#define UFIFO_EFD_PENDING     2  /* epoll fd registered, notification sent but not yet drained */
+
 typedef struct {
     pid_t pid;
     unsigned int active;
 
     unsigned int out;
     sem_t bsem_rd;
-    unsigned int waiting_rx;
+    unsigned int efd_rx_flags;  /* per-user RX epoll state (IDLE/REGISTERED/PENDING) */
 } ufifo_sub_ctrl_t;
 
 typedef struct {
@@ -46,7 +51,7 @@ typedef struct {
     pthread_mutex_t data_mutex; /* governed by ufifo_lock_e: protects index movement */
 
     sem_t bsem_wr;
-    unsigned int waiting_tx;
+    unsigned int efd_tx_flags;  /* global TX epoll state (IDLE/REGISTERED/PENDING) */
 
     ufifo_data_mode_e data_mode;
     unsigned int max_users;
@@ -103,8 +108,11 @@ static socklen_t __ufifo_notify_addr(const char *name, unsigned int user_id, str
     return (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 + n);
 }
 
-/* Notify all active users of this FIFO via UDS sendto */
-static void __ufifo_efd_notify(ufifo_t *handle, int is_rx)
+/*
+ * Notify consumers that data is available (called after put).
+ * Skips users without epoll fd registered; coalesces if already pending.
+ */
+static void __ufifo_efd_notify_rx(ufifo_t *handle)
 {
     int sfd = __ufifo_get_sender_fd();
     if (sfd < 0)
@@ -115,18 +123,41 @@ static void __ufifo_efd_notify(ufifo_t *handle, int is_rx)
     for (i = 0; i < handle->ctrl->max_users; i++) {
         if (!READ_ONCE(&handle->ctrl->users[i].active))
             continue;
-        socklen_t len = __ufifo_notify_addr(handle->name, i, &addr, is_rx);
+
+        unsigned int state = smp_load_acquire(&handle->ctrl->users[i].efd_rx_flags);
+        if (state != UFIFO_EFD_REGISTERED)
+            continue; /* IDLE → skip; PENDING → coalesce */
+
+        smp_store_release(&handle->ctrl->users[i].efd_rx_flags, UFIFO_EFD_PENDING);
+        socklen_t len = __ufifo_notify_addr(handle->name, i, &addr, 1);
         sendto(sfd, "1", 1, MSG_DONTWAIT, (struct sockaddr *)&addr, len);
     }
 }
 
-static inline void __ufifo_efd_notify_rx(ufifo_t *handle)
+/*
+ * Notify producers that space is available (called after get).
+ * TX flag is global in ufifo_ctrl_t (like bsem_wr).
+ */
+static void __ufifo_efd_notify_tx(ufifo_t *handle)
 {
-    __ufifo_efd_notify(handle, 1);
-}
-static inline void __ufifo_efd_notify_tx(ufifo_t *handle)
-{
-    __ufifo_efd_notify(handle, 0);
+    unsigned int state = smp_load_acquire(&handle->ctrl->efd_tx_flags);
+    if (state != UFIFO_EFD_REGISTERED)
+        return; /* IDLE → no one registered; PENDING → coalesce */
+
+    smp_store_release(&handle->ctrl->efd_tx_flags, UFIFO_EFD_PENDING);
+
+    int sfd = __ufifo_get_sender_fd();
+    if (sfd < 0)
+        return;
+
+    unsigned int i;
+    struct sockaddr_un addr;
+    for (i = 0; i < handle->ctrl->max_users; i++) {
+        if (!READ_ONCE(&handle->ctrl->users[i].active))
+            continue;
+        socklen_t len = __ufifo_notify_addr(handle->name, i, &addr, 0);
+        sendto(sfd, "1", 1, MSG_DONTWAIT, (struct sockaddr *)&addr, len);
+    }
 }
 
 /* Control-plane lock: always active, protects register/unregister/efd/dump */
@@ -589,10 +620,13 @@ static int __ufifo_close(ufifo_t *handle, int destroy)
     char ctrl_name[NAME_MAX + 8];
 
     if (handle->rx_efd >= 0) {
+        smp_store_release(&handle->ctrl->users[handle->user_id].efd_rx_flags,
+                          UFIFO_EFD_IDLE);
         close(handle->rx_efd);
         handle->rx_efd = -1;
     }
     if (handle->tx_efd >= 0) {
+        smp_store_release(&handle->ctrl->efd_tx_flags, UFIFO_EFD_IDLE);
         close(handle->tx_efd);
         handle->tx_efd = -1;
     }
@@ -1024,6 +1058,13 @@ static int __ufifo_get_efd(ufifo_t *handle, int is_rx)
         goto end;
     }
 
+    /* Mark this user as epoll-registered in shared memory */
+    if (is_rx)
+        smp_store_release(&handle->ctrl->users[handle->user_id].efd_rx_flags,
+                          UFIFO_EFD_REGISTERED);
+    else
+        smp_store_release(&handle->ctrl->efd_tx_flags, UFIFO_EFD_REGISTERED);
+
     /* Pre-arm condition: check if we should send a notification to self */
     int should_arm = 0;
     if (is_rx) {
@@ -1038,8 +1079,15 @@ static int __ufifo_get_efd(ufifo_t *handle, int is_rx)
 
     if (should_arm) {
         int sfd = __ufifo_get_sender_fd();
-        if (sfd >= 0)
+        if (sfd >= 0) {
             sendto(sfd, "1", 1, MSG_DONTWAIT, (struct sockaddr *)&addr, addr_len);
+            /* Pre-arm also sets pending since we just sent a notification */
+            if (is_rx)
+                smp_store_release(&handle->ctrl->users[handle->user_id].efd_rx_flags,
+                                  UFIFO_EFD_PENDING);
+            else
+                smp_store_release(&handle->ctrl->efd_tx_flags, UFIFO_EFD_PENDING);
+        }
     }
 
     ret_fd = *efd;
@@ -1061,15 +1109,26 @@ int ufifo_get_tx_fd(ufifo_t *handle)
     return __ufifo_get_efd(handle, 0);
 }
 
-int ufifo_drain_fd(int fd)
+int ufifo_drain_fd(ufifo_t *handle, int fd)
 {
-    char buf[128];
-    if (fd < 0) {
-        return -EINVAL;
-    }
+    UFIFO_CHECK_HANDLE_FUNC(handle);
 
+    if (fd < 0)
+        return -EINVAL;
+
+    /* Drain socket buffer */
+    char buf[128];
     while (recv(fd, buf, sizeof(buf), MSG_DONTWAIT) > 0) {
     }
+
+    /* Transition: PENDING → REGISTERED (re-arm for next notification) */
+    if (fd == handle->rx_efd) {
+        smp_store_release(&handle->ctrl->users[handle->user_id].efd_rx_flags,
+                          UFIFO_EFD_REGISTERED);
+    } else if (fd == handle->tx_efd) {
+        smp_store_release(&handle->ctrl->efd_tx_flags, UFIFO_EFD_REGISTERED);
+    }
+
     return 0;
 }
 

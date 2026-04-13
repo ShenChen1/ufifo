@@ -135,7 +135,7 @@ int main(void)
 
             // Clear the wake-up signal from socket using library API
             int fd = ufifo_get_rx_fd(readers[client_id]);
-            ufifo_drain_fd(fd);
+            ufifo_drain_fd(readers[client_id], fd);
 
             char buf[64];
             while (ufifo_get(readers[client_id], buf, sizeof(buf)) > 0) {
