@@ -372,11 +372,6 @@ TEST_F(UfifoApiTest, VersionInfoAttachSeesCreatorVersion)
 
 TEST_F(UfifoApiTest, Dump)
 {
-    testing::internal::CaptureStdout();
-    ufifo_dump(nullptr);
-    std::string output = testing::internal::GetCapturedStdout();
-    EXPECT_TRUE(output.find("handle is NULL") != std::string::npos);
-
     ufifo_init_t init = {};
     init.opt = UFIFO_OPT_ALLOC;
     init.alloc.size = 256;
@@ -393,7 +388,7 @@ TEST_F(UfifoApiTest, Dump)
 
     testing::internal::CaptureStdout();
     ufifo_dump(fifo);
-    output = testing::internal::GetCapturedStdout();
+    std::string output = testing::internal::GetCapturedStdout();
     EXPECT_TRUE(output.find("=== ufifo_dump:") != std::string::npos);
     EXPECT_TRUE(output.find("offset: ") != std::string::npos);
 
@@ -1087,7 +1082,7 @@ TEST_P(EpollTest, SingleConsumerWakeup)
     struct epoll_event events[1];
     EXPECT_EQ(1, epoll_wait(epfd, events, 1, 1000));
 
-    ufifo_drain_fd(fd);
+    ufifo_drain_fd(reader, fd);
 
     int out = 0;
     EXPECT_GT(adapter_->GetValue(reader, out), 0);
@@ -1143,7 +1138,7 @@ TEST_P(EpollTest, SharedModeMulticast)
 
     // Each reader should independently get the same value
     for (int i = 0; i < num_readers; i++) {
-        ufifo_drain_fd(fds[i]);
+        ufifo_drain_fd(readers[i], fds[i]);
         int out = 0;
         EXPECT_GT(adapter_->GetValue(readers[i], out), 0);
         EXPECT_EQ(999, out);
@@ -1187,7 +1182,7 @@ TEST_P(EpollTest, MultiplePutDrainAll)
     // Wait for any notification
     struct epoll_event events[1];
     EXPECT_GE(epoll_wait(epfd, events, 1, 1000), 1);
-    ufifo_drain_fd(fd);
+    ufifo_drain_fd(reader, fd);
 
     // Reader drains all
     int received = 0;
@@ -1230,7 +1225,7 @@ TEST_P(EpollTest, ConcurrentProducerEpollConsumer)
             int n = epoll_wait(epfd, evts, 1, 100);
             if (n <= 0)
                 continue;
-            ufifo_drain_fd(fd);
+            ufifo_drain_fd(reader, fd);
 
             int out = 0;
             while (adapter_->GetValue(reader, out) > 0) {
@@ -1296,7 +1291,7 @@ TEST_P(EpollTest, PutWakeupOnGet)
     EXPECT_EQ(0, adapter_->PutValue(writer, 9999));
 
     // Drain all prior notifications from the initial put/get flurry on writer
-    ufifo_drain_fd(writer_fd);
+    ufifo_drain_fd(writer, writer_fd);
 
     // Verify epoll_wait blocks because there is no new activity
     struct epoll_event events[1];
@@ -1312,7 +1307,7 @@ TEST_P(EpollTest, PutWakeupOnGet)
     EXPECT_EQ(1, n);
     EXPECT_EQ(writer_fd, events[0].data.fd);
 
-    ufifo_drain_fd(writer_fd);
+    ufifo_drain_fd(writer, writer_fd);
 
     // With the reader having advanced min_out (its out pointer), the writer should now be able to put again
     EXPECT_GT(adapter_->PutValue(writer, 9999), 0);
@@ -1349,7 +1344,7 @@ TEST_P(EpollTest, SpuriousWakeupSafe)
     struct epoll_event events[1];
     int n = epoll_wait(epfd, events, 1, 200);
     if (n > 0) {
-        ufifo_drain_fd(fd);
+        ufifo_drain_fd(reader, fd);
         int out = 0;
         // Reader should also see the data (SHARED mode — independent out pointers)
         // This is actually valid data for the reader, so consume it

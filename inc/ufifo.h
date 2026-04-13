@@ -269,11 +269,16 @@ int ufifo_get_tx_fd(ufifo_t *handle);
  *
  * Clears the underlying socket buffer so that `epoll_wait` doesn't
  * return immediately on subsequent calls in level-triggered mode.
+ * Also transitions the internal notification state from PENDING back
+ * to REGISTERED, re-arming for the next notification.
+ *
  * Should be called after `epoll_wait` returns and before consuming data.
  *
- * @param fd epoll file descriptor.
+ * @param handle FIFO handle that owns the fd.
+ * @param fd     epoll file descriptor obtained from ufifo_get_rx_fd/ufifo_get_tx_fd.
+ * @return 0 on success, -EINVAL if fd is invalid.
  */
-int ufifo_drain_fd(int fd);
+int ufifo_drain_fd(ufifo_t *handle, int fd);
 
 /**
  * @brief Dump the internal status of the FIFO for debugging.

@@ -1,4 +1,3 @@
-#include <asm-generic/errno-base.h>
 #define _GNU_SOURCE
 #include <assert.h>
 #include <errno.h>
@@ -27,25 +26,32 @@
     assert((handle));                   \
     assert((handle)->magic == UFIFO_MAGIC);
 
+/* epoll notification state machine: IDLE → REGISTERED → PENDING → REGISTERED */
+#define UFIFO_EFD_IDLE        0  /* no epoll fd registered */
+#define UFIFO_EFD_REGISTERED  1  /* epoll fd registered, no pending notification */
+#define UFIFO_EFD_PENDING     2  /* epoll fd registered, notification sent but not yet drained */
+
 typedef struct {
-    unsigned int out;
     pid_t pid;
     unsigned int active;
+
+    unsigned int out;
     sem_t bsem_rd;
+    unsigned int efd_rx_flags;  /* per-user RX epoll state (IDLE/REGISTERED/PENDING) */
 } ufifo_sub_ctrl_t;
 
 typedef struct {
     ufifo_version_t ver;
 
     unsigned int in;
-    unsigned int out;
     unsigned int mask;
 
     ufifo_lock_e lock;
-    pthread_mutex_t mutex;
+    pthread_mutex_t ctrl_mutex; /* always active: protects control data */
+    pthread_mutex_t data_mutex; /* governed by ufifo_lock_e: protects index movement */
 
     sem_t bsem_wr;
-    sem_t bsem_rd;
+    unsigned int efd_tx_flags;  /* global TX epoll state (IDLE/REGISTERED/PENDING) */
 
     ufifo_data_mode_e data_mode;
     unsigned int max_users;
@@ -102,8 +108,11 @@ static socklen_t __ufifo_notify_addr(const char *name, unsigned int user_id, str
     return (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 + n);
 }
 
-/* Notify all active users of this FIFO via UDS sendto */
-static void __ufifo_efd_notify(ufifo_t *handle, int is_rx)
+/*
+ * Notify consumers that data is available (called after put).
+ * Skips users without epoll fd registered; coalesces if already pending.
+ */
+static void __ufifo_efd_notify_rx(ufifo_t *handle)
 {
     int sfd = __ufifo_get_sender_fd();
     if (sfd < 0)
@@ -114,44 +123,79 @@ static void __ufifo_efd_notify(ufifo_t *handle, int is_rx)
     for (i = 0; i < handle->ctrl->max_users; i++) {
         if (!READ_ONCE(&handle->ctrl->users[i].active))
             continue;
-        socklen_t len = __ufifo_notify_addr(handle->name, i, &addr, is_rx);
+
+        unsigned int state = smp_load_acquire(&handle->ctrl->users[i].efd_rx_flags);
+        if (state != UFIFO_EFD_REGISTERED)
+            continue; /* IDLE → skip; PENDING → coalesce */
+
+        smp_store_release(&handle->ctrl->users[i].efd_rx_flags, UFIFO_EFD_PENDING);
+        socklen_t len = __ufifo_notify_addr(handle->name, i, &addr, 1);
         sendto(sfd, "1", 1, MSG_DONTWAIT, (struct sockaddr *)&addr, len);
     }
 }
 
-static inline void __ufifo_efd_notify_rx(ufifo_t *handle)
+/*
+ * Notify producers that space is available (called after get).
+ * TX flag is global in ufifo_ctrl_t (like bsem_wr).
+ */
+static void __ufifo_efd_notify_tx(ufifo_t *handle)
 {
-    __ufifo_efd_notify(handle, 1);
-}
-static inline void __ufifo_efd_notify_tx(ufifo_t *handle)
-{
-    __ufifo_efd_notify(handle, 0);
-}
+    unsigned int state = smp_load_acquire(&handle->ctrl->efd_tx_flags);
+    if (state != UFIFO_EFD_REGISTERED)
+        return; /* IDLE → no one registered; PENDING → coalesce */
 
-static inline int __ufifo_lock_acquire(ufifo_t *ufifo)
-{
-    int ret;
+    smp_store_release(&handle->ctrl->efd_tx_flags, UFIFO_EFD_PENDING);
 
-    if (ufifo->ctrl->lock == UFIFO_LOCK_NONE) {
-        return 0;
+    int sfd = __ufifo_get_sender_fd();
+    if (sfd < 0)
+        return;
+
+    unsigned int i;
+    struct sockaddr_un addr;
+    for (i = 0; i < handle->ctrl->max_users; i++) {
+        if (!READ_ONCE(&handle->ctrl->users[i].active))
+            continue;
+        socklen_t len = __ufifo_notify_addr(handle->name, i, &addr, 0);
+        sendto(sfd, "1", 1, MSG_DONTWAIT, (struct sockaddr *)&addr, len);
     }
+}
 
-    ret = pthread_mutex_lock(&ufifo->ctrl->mutex);
+/* Control-plane lock: always active, protects register/unregister/efd/dump */
+static inline int __ufifo_ctrl_lock(ufifo_t *ufifo)
+{
+    int ret = pthread_mutex_lock(&ufifo->ctrl->ctrl_mutex);
     if (ret == EOWNERDEAD) {
-        pthread_mutex_consistent(&ufifo->ctrl->mutex);
+        pthread_mutex_consistent(&ufifo->ctrl->ctrl_mutex);
         ret = 0;
     }
-
     return ret;
 }
 
-static inline int __ufifo_lock_release(ufifo_t *ufifo)
+static inline int __ufifo_ctrl_unlock(ufifo_t *ufifo)
 {
-    if (ufifo->ctrl->lock == UFIFO_LOCK_NONE) {
-        return 0;
-    }
+    return pthread_mutex_unlock(&ufifo->ctrl->ctrl_mutex);
+}
 
-    return pthread_mutex_unlock(&ufifo->ctrl->mutex);
+/* Data-plane lock: governed by ufifo_lock_e, protects index movement */
+static inline int __ufifo_data_lock(ufifo_t *ufifo)
+{
+    if (ufifo->ctrl->lock == UFIFO_LOCK_NONE)
+        return 0;
+
+    int ret = pthread_mutex_lock(&ufifo->ctrl->data_mutex);
+    if (ret == EOWNERDEAD) {
+        pthread_mutex_consistent(&ufifo->ctrl->data_mutex);
+        ret = 0;
+    }
+    return ret;
+}
+
+static inline int __ufifo_data_unlock(ufifo_t *ufifo)
+{
+    if (ufifo->ctrl->lock == UFIFO_LOCK_NONE)
+        return 0;
+
+    return pthread_mutex_unlock(&ufifo->ctrl->data_mutex);
 }
 
 static inline size_t __ufifo_ctrl_size(unsigned int max_users)
@@ -169,20 +213,16 @@ static int __ufifo_register(ufifo_t *ufifo)
     ufifo_ctrl_t *ctrl = ufifo->ctrl;
     unsigned int i;
 
-    __ufifo_lock_acquire(ufifo);
-
     for (i = 0; i < ctrl->max_users; i++) {
-        if (!ctrl->users[i].active) {
+        if (!READ_ONCE(&ctrl->users[i].active)) {
             ctrl->users[i].out = READ_ONCE(&ctrl->in);
             ctrl->users[i].pid = getpid();
             smp_store_release(&ctrl->users[i].active, 1);
             ctrl->num_users++;
-            __ufifo_lock_release(ufifo);
             return i;
         }
     }
 
-    __ufifo_lock_release(ufifo);
     return -ENOSPC;
 }
 
@@ -190,14 +230,10 @@ static void __ufifo_unregister(ufifo_t *ufifo)
 {
     ufifo_ctrl_t *ctrl = ufifo->ctrl;
 
-    __ufifo_lock_acquire(ufifo);
-
-    if (ufifo->user_id < ctrl->max_users && ctrl->users[ufifo->user_id].active) {
-        WRITE_ONCE(&ctrl->users[ufifo->user_id].active, 0);
+    if (ufifo->user_id < ctrl->max_users && READ_ONCE(&ctrl->users[ufifo->user_id].active)) {
+        smp_store_release(&ctrl->users[ufifo->user_id].active, 0);
         ctrl->num_users--;
     }
-
-    __ufifo_lock_release(ufifo);
 }
 
 static inline int __ufifo_lock_init(ufifo_t *ufifo, ufifo_lock_e type)
@@ -206,26 +242,32 @@ static inline int __ufifo_lock_init(ufifo_t *ufifo, ufifo_lock_e type)
     int ret = 0;
 
     ufifo->ctrl->lock = type;
-    if (type == UFIFO_LOCK_NONE) {
-        return 0;
-    }
 
     pthread_mutexattr_init(&attr);
     pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
     pthread_mutexattr_setrobust(&attr, PTHREAD_MUTEX_ROBUST);
-    ret = pthread_mutex_init(&ufifo->ctrl->mutex, &attr);
-    pthread_mutexattr_destroy(&attr);
 
+    /* ctrl_mutex: always initialized */
+    ret = pthread_mutex_init(&ufifo->ctrl->ctrl_mutex, &attr);
+
+    /* data_mutex: only when locking is requested */
+    if (ret == 0 && type != UFIFO_LOCK_NONE) {
+        ret = pthread_mutex_init(&ufifo->ctrl->data_mutex, &attr);
+    }
+
+    pthread_mutexattr_destroy(&attr);
     return ret;
 }
 
 static inline int __ufifo_lock_deinit(ufifo_t *ufifo)
 {
-    if (ufifo->ctrl->lock == UFIFO_LOCK_NONE) {
-        return 0;
+    int ret = pthread_mutex_destroy(&ufifo->ctrl->ctrl_mutex);
+
+    if (ufifo->ctrl->lock != UFIFO_LOCK_NONE) {
+        ret |= pthread_mutex_destroy(&ufifo->ctrl->data_mutex);
     }
 
-    return pthread_mutex_destroy(&ufifo->ctrl->mutex);
+    return ret;
 }
 
 static int __ufifo_bsem_init(sem_t *bsem, unsigned int value)
@@ -242,9 +284,9 @@ static int __ufifo_bsem_wait(sem_t *bsem, ufifo_t *ufifo)
 {
     int ret;
 
-    __ufifo_lock_release(ufifo);
+    __ufifo_data_unlock(ufifo);
     ret = sem_wait(bsem);
-    __ufifo_lock_acquire(ufifo);
+    __ufifo_data_lock(ufifo);
 
     return ret;
 }
@@ -255,7 +297,7 @@ static int __ufifo_bsem_timedwait(sem_t *bsem, ufifo_t *ufifo, long millisec)
     struct timespec wt;
     struct timespec ts;
 
-    __ufifo_lock_release(ufifo);
+    __ufifo_data_unlock(ufifo);
 
     wt.tv_sec = millisec / 1000;
     wt.tv_nsec = (millisec % 1000) * 1000000;
@@ -274,7 +316,7 @@ static int __ufifo_bsem_timedwait(sem_t *bsem, ufifo_t *ufifo, long millisec)
         ret = ETIMEDOUT;
     }
 
-    __ufifo_lock_acquire(ufifo);
+    __ufifo_data_lock(ufifo);
 
     return ret;
 }
@@ -358,11 +400,24 @@ static int __ufifo_init_from_shm(ufifo_t *ufifo)
         goto err_ctrl_mmap;
     }
 
+    __ufifo_ctrl_lock(ufifo);
+    ret = __ufifo_register(ufifo);
+    __ufifo_ctrl_unlock(ufifo);
+    if (ret < 0) {
+        goto err_ctrl_mmap;
+    }
+    ufifo->user_id = (unsigned int)ret;
     ufifo->kfifo.in = &ufifo->ctrl->in;
-    ufifo->kfifo.out = &ufifo->ctrl->out;
     ufifo->kfifo.mask = &ufifo->ctrl->mask;
     ufifo->bsem_wr = &ufifo->ctrl->bsem_wr;
-    ufifo->bsem_rd = &ufifo->ctrl->bsem_rd;
+    if (ufifo->ctrl->data_mode == UFIFO_DATA_SHARED) {
+        ufifo->ctrl->users[ufifo->user_id].out = READ_ONCE(&ufifo->ctrl->in);
+        ufifo->kfifo.out = &ufifo->ctrl->users[ufifo->user_id].out;
+        ufifo->bsem_rd = &ufifo->ctrl->users[ufifo->user_id].bsem_rd;
+    } else {
+        ufifo->kfifo.out = &ufifo->ctrl->users[0].out;
+        ufifo->bsem_rd = &ufifo->ctrl->users[0].bsem_rd;
+    }
 
     return 0;
 
@@ -422,16 +477,22 @@ static int __ufifo_init_from_user(ufifo_t *ufifo, ufifo_alloc_t *alloc)
     ufifo->ctrl->num_users = 0;
     for (i = 0; i < alloc->max_users; i++) {
         ufifo->ctrl->users[i].active = 0;
+        __ufifo_bsem_init(&ufifo->ctrl->users[i].bsem_rd, 0);
     }
 
+    ret = __ufifo_register(ufifo);
+    if (ret < 0) {
+        goto err_ctrl_mmap;
+    }
+    ufifo->user_id = (unsigned int)ret;
     ufifo_get_version_info(NULL, &ufifo->ctrl->ver);
     ufifo->kfifo.in = &ufifo->ctrl->in;
-    ufifo->kfifo.out = &ufifo->ctrl->out;
+    ufifo->kfifo.out = &ufifo->ctrl->users[ufifo->user_id].out;
     ufifo->kfifo.mask = &ufifo->ctrl->mask;
     ret |= kfifo_init(&ufifo->kfifo, ufifo->shm_size);
     ufifo->bsem_wr = &ufifo->ctrl->bsem_wr;
     ret |= __ufifo_bsem_init(ufifo->bsem_wr, 0);
-    ufifo->bsem_rd = &ufifo->ctrl->bsem_rd;
+    ufifo->bsem_rd = &ufifo->ctrl->users[ufifo->user_id].bsem_rd;
     ret |= __ufifo_bsem_init(ufifo->bsem_rd, 0);
 
     return ret;
@@ -513,8 +574,7 @@ int ufifo_open(char *name, ufifo_init_t *init, ufifo_t **handle)
         goto err1;
     }
 
-    is_alloc = (init->opt == UFIFO_OPT_ALLOC);
-    if (is_alloc) {
+    if (init->opt == UFIFO_OPT_ALLOC) {
         ret = __ufifo_init_from_user(ufifo, &init->alloc);
         if (ret < 0) {
             goto err2;
@@ -530,26 +590,10 @@ int ufifo_open(char *name, ufifo_init_t *init, ufifo_t **handle)
         }
     }
 
-    ret = __ufifo_register(ufifo);
-    if (ret < 0) {
-        goto err4;
-    }
-    if (__ufifo_is_shared(ufifo)) {
-        ufifo->user_id = (unsigned int)ret;
-        __ufifo_bsem_deinit(ufifo->bsem_rd);
-        ufifo->bsem_rd = &ufifo->ctrl->users[ufifo->user_id].bsem_rd;
-        ret |= __ufifo_bsem_init(ufifo->bsem_rd, 0);
-        ufifo->kfifo.out = &ufifo->ctrl->users[ufifo->user_id].out;
-    }
-
     ufifo->magic = UFIFO_MAGIC;
     *handle = ufifo;
     return 0;
 
-err4:
-    if (is_alloc) {
-        __ufifo_lock_deinit(ufifo);
-    }
 err3:
     __ufifo_bsem_deinit(ufifo->bsem_wr);
     __ufifo_bsem_deinit(ufifo->bsem_rd);
@@ -576,14 +620,19 @@ static int __ufifo_close(ufifo_t *handle, int destroy)
     char ctrl_name[NAME_MAX + 8];
 
     if (handle->rx_efd >= 0) {
+        smp_store_release(&handle->ctrl->users[handle->user_id].efd_rx_flags,
+                          UFIFO_EFD_IDLE);
         close(handle->rx_efd);
         handle->rx_efd = -1;
     }
     if (handle->tx_efd >= 0) {
+        smp_store_release(&handle->ctrl->efd_tx_flags, UFIFO_EFD_IDLE);
         close(handle->tx_efd);
         handle->tx_efd = -1;
     }
+    __ufifo_ctrl_lock(handle);
     __ufifo_unregister(handle);
+    __ufifo_ctrl_unlock(handle);
     if (destroy) {
         unsigned int i;
         __ufifo_lock_deinit(handle);
@@ -694,10 +743,10 @@ void ufifo_reset(ufifo_t *handle)
 {
     UFIFO_CHECK_HANDLE_FUNC(handle);
 
-    __ufifo_lock_acquire(handle);
+    __ufifo_data_lock(handle);
     WRITE_ONCE(handle->kfifo.in, 0);
     WRITE_ONCE(handle->kfifo.out, 0);
-    __ufifo_lock_release(handle);
+    __ufifo_data_unlock(handle);
 }
 
 unsigned int ufifo_len(ufifo_t *handle)
@@ -705,9 +754,9 @@ unsigned int ufifo_len(ufifo_t *handle)
     unsigned int len;
     UFIFO_CHECK_HANDLE_FUNC(handle);
 
-    __ufifo_lock_acquire(handle);
+    __ufifo_data_lock(handle);
     len = READ_ONCE(handle->kfifo.in) - READ_ONCE(handle->kfifo.out);
-    __ufifo_lock_release(handle);
+    __ufifo_data_unlock(handle);
 
     return len;
 }
@@ -716,10 +765,10 @@ void ufifo_skip(ufifo_t *handle)
 {
     UFIFO_CHECK_HANDLE_FUNC(handle);
 
-    __ufifo_lock_acquire(handle);
+    __ufifo_data_lock(handle);
     unsigned int out = READ_ONCE(handle->kfifo.out);
     smp_store_release(handle->kfifo.out, out + __ufifo_peek_len(handle, out));
-    __ufifo_lock_release(handle);
+    __ufifo_data_unlock(handle);
 }
 
 unsigned int ufifo_peek_len(ufifo_t *handle)
@@ -727,9 +776,9 @@ unsigned int ufifo_peek_len(ufifo_t *handle)
     unsigned int len;
     UFIFO_CHECK_HANDLE_FUNC(handle);
 
-    __ufifo_lock_acquire(handle);
+    __ufifo_data_lock(handle);
     len = __ufifo_peek_len(handle, READ_ONCE(handle->kfifo.out));
-    __ufifo_lock_release(handle);
+    __ufifo_data_unlock(handle);
 
     return len;
 }
@@ -739,7 +788,7 @@ static unsigned int __ufifo_put(ufifo_t *handle, void *buf, unsigned int size, l
     int ret;
     unsigned int len;
 
-    __ufifo_lock_acquire(handle);
+    __ufifo_data_lock(handle);
     while (1) {
         len = __ufifo_unused_len(handle);
         if (len < size) {
@@ -782,7 +831,7 @@ static unsigned int __ufifo_put(ufifo_t *handle, void *buf, unsigned int size, l
     __ufifo_efd_notify_rx(handle);
 
 end:
-    __ufifo_lock_release(handle);
+    __ufifo_data_unlock(handle);
 
     return len;
 }
@@ -810,7 +859,7 @@ static unsigned int __ufifo_get(ufifo_t *handle, void *buf, unsigned int size, l
     int ret;
     unsigned int len;
 
-    __ufifo_lock_acquire(handle);
+    __ufifo_data_lock(handle);
     while (1) {
         len = __ufifo_peek_len(handle, READ_ONCE(handle->kfifo.out));
         if (len == 0) {
@@ -844,7 +893,7 @@ static unsigned int __ufifo_get(ufifo_t *handle, void *buf, unsigned int size, l
     __ufifo_efd_notify_tx(handle);
 
 end:
-    __ufifo_lock_release(handle);
+    __ufifo_data_unlock(handle);
 
     return len;
 }
@@ -872,7 +921,7 @@ static unsigned int __ufifo_peek(ufifo_t *handle, void *buf, unsigned int size, 
     int ret;
     unsigned int len;
 
-    __ufifo_lock_acquire(handle);
+    __ufifo_data_lock(handle);
     while (1) {
         len = __ufifo_peek_len(handle, READ_ONCE(handle->kfifo.out));
         if (len == 0) {
@@ -903,7 +952,7 @@ static unsigned int __ufifo_peek(ufifo_t *handle, void *buf, unsigned int size, 
 
     __ufifo_bsem_post(handle->bsem_wr);
 end:
-    __ufifo_lock_release(handle);
+    __ufifo_data_unlock(handle);
 
     return len;
 }
@@ -932,7 +981,7 @@ int ufifo_oldest(ufifo_t *handle, unsigned int tag)
     unsigned int len, tmp;
     UFIFO_CHECK_HANDLE_FUNC(handle);
 
-    __ufifo_lock_acquire(handle);
+    __ufifo_data_lock(handle);
     tmp = READ_ONCE(handle->kfifo.out);
     while (1) {
         len = __ufifo_peek_len(handle, tmp);
@@ -947,7 +996,7 @@ int ufifo_oldest(ufifo_t *handle, unsigned int tag)
         tmp += len;
     }
     smp_store_release(handle->kfifo.out, tmp);
-    __ufifo_lock_release(handle);
+    __ufifo_data_unlock(handle);
 
     return ret;
 }
@@ -960,7 +1009,7 @@ int ufifo_newest(ufifo_t *handle, unsigned int tag)
     unsigned int final = 0;
     UFIFO_CHECK_HANDLE_FUNC(handle);
 
-    __ufifo_lock_acquire(handle);
+    __ufifo_data_lock(handle);
     tmp = READ_ONCE(handle->kfifo.out);
     while (1) {
         len = __ufifo_peek_len(handle, tmp);
@@ -976,7 +1025,7 @@ int ufifo_newest(ufifo_t *handle, unsigned int tag)
         tmp += len;
     }
     smp_store_release(handle->kfifo.out, tmp);
-    __ufifo_lock_release(handle);
+    __ufifo_data_unlock(handle);
 
     return ret;
 }
@@ -984,7 +1033,7 @@ int ufifo_newest(ufifo_t *handle, unsigned int tag)
 static int __ufifo_get_efd(ufifo_t *handle, int is_rx)
 {
     int ret_fd;
-    __ufifo_lock_acquire(handle);
+    __ufifo_ctrl_lock(handle);
 
     int *efd = is_rx ? &handle->rx_efd : &handle->tx_efd;
     struct sockaddr_un addr;
@@ -1009,6 +1058,13 @@ static int __ufifo_get_efd(ufifo_t *handle, int is_rx)
         goto end;
     }
 
+    /* Mark this user as epoll-registered in shared memory */
+    if (is_rx)
+        smp_store_release(&handle->ctrl->users[handle->user_id].efd_rx_flags,
+                          UFIFO_EFD_REGISTERED);
+    else
+        smp_store_release(&handle->ctrl->efd_tx_flags, UFIFO_EFD_REGISTERED);
+
     /* Pre-arm condition: check if we should send a notification to self */
     int should_arm = 0;
     if (is_rx) {
@@ -1023,14 +1079,21 @@ static int __ufifo_get_efd(ufifo_t *handle, int is_rx)
 
     if (should_arm) {
         int sfd = __ufifo_get_sender_fd();
-        if (sfd >= 0)
+        if (sfd >= 0) {
             sendto(sfd, "1", 1, MSG_DONTWAIT, (struct sockaddr *)&addr, addr_len);
+            /* Pre-arm also sets pending since we just sent a notification */
+            if (is_rx)
+                smp_store_release(&handle->ctrl->users[handle->user_id].efd_rx_flags,
+                                  UFIFO_EFD_PENDING);
+            else
+                smp_store_release(&handle->ctrl->efd_tx_flags, UFIFO_EFD_PENDING);
+        }
     }
 
     ret_fd = *efd;
 
 end:
-    __ufifo_lock_release(handle);
+    __ufifo_ctrl_unlock(handle);
     return ret_fd;
 }
 
@@ -1046,27 +1109,33 @@ int ufifo_get_tx_fd(ufifo_t *handle)
     return __ufifo_get_efd(handle, 0);
 }
 
-int ufifo_drain_fd(int fd)
+int ufifo_drain_fd(ufifo_t *handle, int fd)
 {
-    char buf[128];
-    if (fd < 0) {
-        return -EINVAL;
-    }
+    UFIFO_CHECK_HANDLE_FUNC(handle);
 
+    if (fd < 0)
+        return -EINVAL;
+
+    /* Drain socket buffer */
+    char buf[128];
     while (recv(fd, buf, sizeof(buf), MSG_DONTWAIT) > 0) {
     }
+
+    /* Transition: PENDING → REGISTERED (re-arm for next notification) */
+    if (fd == handle->rx_efd) {
+        smp_store_release(&handle->ctrl->users[handle->user_id].efd_rx_flags,
+                          UFIFO_EFD_REGISTERED);
+    } else if (fd == handle->tx_efd) {
+        smp_store_release(&handle->ctrl->efd_tx_flags, UFIFO_EFD_REGISTERED);
+    }
+
     return 0;
 }
 
 void ufifo_dump(ufifo_t *handle)
 {
-    if (handle == NULL) {
-        printf("ufifo_dump: handle is NULL\n");
-        return;
-    }
-
     UFIFO_CHECK_HANDLE_FUNC(handle);
-    __ufifo_lock_acquire(handle);
+    __ufifo_ctrl_lock(handle);
 
     unsigned int mask = *handle->kfifo.mask;
     unsigned int size = mask + 1;
@@ -1108,7 +1177,7 @@ void ufifo_dump(ufifo_t *handle)
     }
     printf("=========================\n");
 
-    __ufifo_lock_release(handle);
+    __ufifo_ctrl_unlock(handle);
 }
 
 const char *ufifo_get_version(void)
