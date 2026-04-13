@@ -171,10 +171,10 @@ static int __ufifo_register(ufifo_t *ufifo)
     unsigned int i;
 
     for (i = 0; i < ctrl->max_users; i++) {
-        if (!ctrl->users[i].active) {
+        if (!READ_ONCE(&ctrl->users[i].active)) {
             ctrl->users[i].out = READ_ONCE(&ctrl->in);
             ctrl->users[i].pid = getpid();
-            ctrl->users[i].active = 1;
+            smp_store_release(&ctrl->users[i].active, 1);
             ctrl->num_users++;
             return i;
         }
@@ -187,8 +187,8 @@ static void __ufifo_unregister(ufifo_t *ufifo)
 {
     ufifo_ctrl_t *ctrl = ufifo->ctrl;
 
-    if (ufifo->user_id < ctrl->max_users && ctrl->users[ufifo->user_id].active) {
-        ctrl->users[ufifo->user_id].active = 0;
+    if (ufifo->user_id < ctrl->max_users && READ_ONCE(&ctrl->users[ufifo->user_id].active)) {
+        smp_store_release(&ctrl->users[ufifo->user_id].active, 0);
         ctrl->num_users--;
     }
 }
