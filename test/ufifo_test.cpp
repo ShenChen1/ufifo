@@ -1361,6 +1361,127 @@ INSTANTIATE_TEST_SUITE_P(EpollTests,
                          PrintDataFormat);
 
 // =============================================================================
+// 11. Crash Recovery & Dead Process Reaping Tests
+// =============================================================================
+class UfifoReapTest : public ::testing::Test {
+  protected:
+    std::string name;
+    void SetUp() override
+    {
+        name = GenerateName("reap_test");
+    }
+    void TearDown() override
+    {
+        shm_unlink(name.c_str());
+        shm_unlink((name + "_ctrl").c_str());
+    }
+};
+
+TEST_F(UfifoReapTest, ReapDeadUserOnRegister)
+{
+    ufifo_init_t init = {};
+    init.opt = UFIFO_OPT_ALLOC;
+    init.alloc.size = 1024;
+    init.alloc.max_users = 2; // Only 2 slots
+    init.alloc.data_mode = UFIFO_DATA_SHARED;
+    init.alloc.force = 1;
+
+    ufifo_t *fifo1 = nullptr;
+    ASSERT_EQ(0, ufifo_open(const_cast<char *>(name.c_str()), &init, &fifo1));
+
+    // Slot 0 is taken by fifo1.
+    // Now take Slot 1 via a child process that then dies.
+    pid_t pid = fork();
+    if (pid == 0) {
+        ufifo_init_t attach_init = {};
+        attach_init.opt = UFIFO_OPT_ATTACH;
+        ufifo_t *fifo_child = nullptr;
+        if (ufifo_open(const_cast<char *>(name.c_str()), &attach_init, &fifo_child) == 0) {
+            exit(0);
+        }
+        exit(1);
+    }
+
+    int status;
+    waitpid(pid, &status, 0);
+    ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+
+    // Now try to attach a new one. It should trigger reaping in __ufifo_register because 2 slots were used.
+    ufifo_t *fifo2 = nullptr;
+    ufifo_init_t attach_init = {};
+    attach_init.opt = UFIFO_OPT_ATTACH;
+
+    // This should succeed by reaping the dead child
+    ASSERT_EQ(0, ufifo_open(const_cast<char *>(name.c_str()), &attach_init, &fifo2));
+
+    ufifo_close(fifo2);
+    ufifo_destroy(fifo1);
+}
+
+TEST_F(UfifoReapTest, ReapDeadUserOnPut)
+{
+    ufifo_init_t init = {};
+    init.opt = UFIFO_OPT_ALLOC;
+    init.alloc.size = 64; // Small size to fill quickly
+    init.alloc.max_users = 2;
+    init.alloc.data_mode = UFIFO_DATA_SHARED;
+    init.alloc.force = 1;
+
+    ufifo_t *producer = nullptr;
+    ASSERT_EQ(0, ufifo_open(const_cast<char *>(name.c_str()), &init, &producer));
+
+    // Start a reader process that reads one byte then dies.
+    pid_t pid = fork();
+    if (pid == 0) {
+        ufifo_init_t attach_init = {};
+        attach_init.opt = UFIFO_OPT_ATTACH;
+        ufifo_t *reader = nullptr;
+        if (ufifo_open(const_cast<char *>(name.c_str()), &attach_init, &reader) == 0) {
+            char b;
+            if (ufifo_get_block(reader, &b, 1) == 1) {
+                exit(0);
+            }
+        }
+        exit(1);
+    }
+
+    // Give some time for child to start
+    usleep(100000);
+
+    // Write one byte to let the reader finish and exit.
+    char data = 'A';
+    ASSERT_EQ(1, ufifo_put(producer, &data, 1));
+
+    // In SHARED mode, the producer also has its own 'out' pointer.
+    // To ensure the producer doesn't block itself, we keep its 'out' moving.
+    ufifo_skip(producer);
+
+    int status;
+    waitpid(pid, &status, 0);
+    ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+
+    // Now Slot 0 (producer) is at out=1, Slot 1 (dead child) is at out=1.
+    // in=1.
+    // Fill 63 bytes.
+    char large_buf[64];
+    memset(large_buf, 'B', sizeof(large_buf));
+    ASSERT_EQ(63, ufifo_put(producer, large_buf, 63));
+
+    // After put, in=64.
+    // We must also skip the 63 bytes for Slot 0, otherwise Slot 0 itself will be the bottleneck!
+    for (int i = 0; i < 63; i++)
+        ufifo_skip(producer);
+
+    // Now Slot 0 is at out=64. Slot 1 (dead) is at out=1.
+    // in=64. mask=63. size=64.
+    // unused_len = 64 - (64 - 1) = 1.
+    // Trying to put 2 bytes will now trigger reaping of Slot 1 because it's the ONLY bottleneck.
+    ASSERT_EQ(2, ufifo_put(producer, large_buf, 2));
+
+    ufifo_destroy(producer);
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 int main(int argc, char **argv)
