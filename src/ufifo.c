@@ -27,9 +27,11 @@
     assert((handle)->magic == UFIFO_MAGIC);
 
 /* epoll notification state machine: IDLE → REGISTERED → PENDING → REGISTERED */
-#define UFIFO_EFD_IDLE        0  /* no epoll fd registered */
-#define UFIFO_EFD_REGISTERED  1  /* epoll fd registered, no pending notification */
-#define UFIFO_EFD_PENDING     2  /* epoll fd registered, notification sent but not yet drained */
+enum {
+    UFIFO_EFD_IDLE = 0,       /* no epoll fd registered */
+    UFIFO_EFD_REGISTERED = 1, /* epoll fd registered, no pending notification */
+    UFIFO_EFD_PENDING = 2,    /* epoll fd registered, notification sent but not yet drained */
+};
 
 typedef struct {
     pid_t pid;
@@ -37,7 +39,7 @@ typedef struct {
 
     unsigned int out;
     sem_t bsem_rd;
-    unsigned int efd_rx_flags;  /* per-user RX epoll state (IDLE/REGISTERED/PENDING) */
+    int efd_rx_flag; /* per-user RX epoll state (IDLE/REGISTERED/PENDING) */
 } ufifo_sub_ctrl_t;
 
 typedef struct {
@@ -51,7 +53,7 @@ typedef struct {
     pthread_mutex_t data_mutex; /* governed by ufifo_lock_e: protects index movement */
 
     sem_t bsem_wr;
-    unsigned int efd_tx_flags;  /* global TX epoll state (IDLE/REGISTERED/PENDING) */
+    int efd_tx_flag; /* global TX epoll state (IDLE/REGISTERED/PENDING) */
 
     ufifo_data_mode_e data_mode;
     unsigned int max_users;
@@ -124,11 +126,11 @@ static void __ufifo_efd_notify_rx(ufifo_t *handle)
         if (!READ_ONCE(&handle->ctrl->users[i].active))
             continue;
 
-        unsigned int state = smp_load_acquire(&handle->ctrl->users[i].efd_rx_flags);
+        unsigned int state = smp_load_acquire(&handle->ctrl->users[i].efd_rx_flag);
         if (state != UFIFO_EFD_REGISTERED)
             continue; /* IDLE → skip; PENDING → coalesce */
 
-        smp_store_release(&handle->ctrl->users[i].efd_rx_flags, UFIFO_EFD_PENDING);
+        smp_store_release(&handle->ctrl->users[i].efd_rx_flag, UFIFO_EFD_PENDING);
         socklen_t len = __ufifo_notify_addr(handle->name, i, &addr, 1);
         sendto(sfd, "1", 1, MSG_DONTWAIT, (struct sockaddr *)&addr, len);
     }
@@ -140,11 +142,11 @@ static void __ufifo_efd_notify_rx(ufifo_t *handle)
  */
 static void __ufifo_efd_notify_tx(ufifo_t *handle)
 {
-    unsigned int state = smp_load_acquire(&handle->ctrl->efd_tx_flags);
+    int state = smp_load_acquire(&handle->ctrl->efd_tx_flag);
     if (state != UFIFO_EFD_REGISTERED)
         return; /* IDLE → no one registered; PENDING → coalesce */
 
-    smp_store_release(&handle->ctrl->efd_tx_flags, UFIFO_EFD_PENDING);
+    smp_store_release(&handle->ctrl->efd_tx_flag, UFIFO_EFD_PENDING);
 
     int sfd = __ufifo_get_sender_fd();
     if (sfd < 0)
@@ -620,13 +622,12 @@ static int __ufifo_close(ufifo_t *handle, int destroy)
     char ctrl_name[NAME_MAX + 8];
 
     if (handle->rx_efd >= 0) {
-        smp_store_release(&handle->ctrl->users[handle->user_id].efd_rx_flags,
-                          UFIFO_EFD_IDLE);
+        smp_store_release(&handle->ctrl->users[handle->user_id].efd_rx_flag, UFIFO_EFD_IDLE);
         close(handle->rx_efd);
         handle->rx_efd = -1;
     }
     if (handle->tx_efd >= 0) {
-        smp_store_release(&handle->ctrl->efd_tx_flags, UFIFO_EFD_IDLE);
+        smp_store_release(&handle->ctrl->efd_tx_flag, UFIFO_EFD_IDLE);
         close(handle->tx_efd);
         handle->tx_efd = -1;
     }
@@ -1036,6 +1037,7 @@ static int __ufifo_get_efd(ufifo_t *handle, int is_rx)
     __ufifo_ctrl_lock(handle);
 
     int *efd = is_rx ? &handle->rx_efd : &handle->tx_efd;
+    int *efd_flags;
     struct sockaddr_un addr;
     socklen_t addr_len;
 
@@ -1059,11 +1061,8 @@ static int __ufifo_get_efd(ufifo_t *handle, int is_rx)
     }
 
     /* Mark this user as epoll-registered in shared memory */
-    if (is_rx)
-        smp_store_release(&handle->ctrl->users[handle->user_id].efd_rx_flags,
-                          UFIFO_EFD_REGISTERED);
-    else
-        smp_store_release(&handle->ctrl->efd_tx_flags, UFIFO_EFD_REGISTERED);
+    efd_flags = is_rx ? &handle->ctrl->users[handle->user_id].efd_rx_flag : &handle->ctrl->efd_tx_flag;
+    smp_store_release(efd_flags, UFIFO_EFD_REGISTERED);
 
     /* Pre-arm condition: check if we should send a notification to self */
     int should_arm = 0;
@@ -1082,11 +1081,7 @@ static int __ufifo_get_efd(ufifo_t *handle, int is_rx)
         if (sfd >= 0) {
             sendto(sfd, "1", 1, MSG_DONTWAIT, (struct sockaddr *)&addr, addr_len);
             /* Pre-arm also sets pending since we just sent a notification */
-            if (is_rx)
-                smp_store_release(&handle->ctrl->users[handle->user_id].efd_rx_flags,
-                                  UFIFO_EFD_PENDING);
-            else
-                smp_store_release(&handle->ctrl->efd_tx_flags, UFIFO_EFD_PENDING);
+            smp_store_release(efd_flags, UFIFO_EFD_PENDING);
         }
     }
 
@@ -1109,27 +1104,30 @@ int ufifo_get_tx_fd(ufifo_t *handle)
     return __ufifo_get_efd(handle, 0);
 }
 
-int ufifo_drain_fd(ufifo_t *handle, int fd)
+static int __ufifo_drain_efd(int fd, int *efd_flags)
 {
-    UFIFO_CHECK_HANDLE_FUNC(handle);
-
     if (fd < 0)
         return -EINVAL;
 
-    /* Drain socket buffer */
     char buf[128];
     while (recv(fd, buf, sizeof(buf), MSG_DONTWAIT) > 0) {
     }
 
     /* Transition: PENDING → REGISTERED (re-arm for next notification) */
-    if (fd == handle->rx_efd) {
-        smp_store_release(&handle->ctrl->users[handle->user_id].efd_rx_flags,
-                          UFIFO_EFD_REGISTERED);
-    } else if (fd == handle->tx_efd) {
-        smp_store_release(&handle->ctrl->efd_tx_flags, UFIFO_EFD_REGISTERED);
-    }
-
+    smp_store_release(efd_flags, UFIFO_EFD_REGISTERED);
     return 0;
+}
+
+int ufifo_drain_rx_fd(ufifo_t *handle)
+{
+    UFIFO_CHECK_HANDLE_FUNC(handle);
+    return __ufifo_drain_efd(handle->rx_efd, &handle->ctrl->users[handle->user_id].efd_rx_flag);
+}
+
+int ufifo_drain_tx_fd(ufifo_t *handle)
+{
+    UFIFO_CHECK_HANDLE_FUNC(handle);
+    return __ufifo_drain_efd(handle->tx_efd, &handle->ctrl->efd_tx_flag);
 }
 
 void ufifo_dump(ufifo_t *handle)
