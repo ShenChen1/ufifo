@@ -25,6 +25,14 @@
 #include <unistd.h>
 #include <vector>
 
+#if defined(__linux__)
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+#include <pthread.h>
+#include <sched.h>
+#endif
+
 extern "C" {
 #include "ufifo.h"
 }
@@ -52,6 +60,53 @@ struct BenchResult {
 };
 
 static bool g_json_output = false;
+
+static bool g_pin_threads = true;
+static std::vector<int> g_available_cpus;
+
+static void init_affinity()
+{
+#if defined(__linux__)
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    if (sched_getaffinity(0, sizeof(cpu_set_t), &cpuset) == 0) {
+        for (int i = 0; i < CPU_SETSIZE; i++) {
+            if (CPU_ISSET(i, &cpuset)) {
+                g_available_cpus.push_back(i);
+            }
+        }
+    }
+    if (g_available_cpus.empty()) {
+        g_available_cpus.push_back(0);
+    }
+#endif
+}
+
+static void pin_current_thread(int logical_idx)
+{
+#if defined(__linux__)
+    if (!g_pin_threads || g_available_cpus.empty())
+        return;
+    int phys_id = g_available_cpus[logical_idx % g_available_cpus.size()];
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(phys_id, &cpuset);
+    pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+#endif
+}
+
+static void pin_thread(std::thread &t, int logical_idx)
+{
+#if defined(__linux__)
+    if (!g_pin_threads || g_available_cpus.empty())
+        return;
+    int phys_id = g_available_cpus[logical_idx % g_available_cpus.size()];
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(phys_id, &cpuset);
+    pthread_setaffinity_np(t.native_handle(), sizeof(cpu_set_t), &cpuset);
+#endif
+}
 
 static void print_result(const BenchResult &r)
 {
@@ -196,6 +251,7 @@ static BenchResult bench_spsc(int data_size, ufifo_lock_e lock, int total_items)
         }
         producer_done.store(true, std::memory_order_release);
     });
+    pin_thread(producer, 0);
 
     std::thread consumer([&]() {
         int count = 0;
@@ -207,6 +263,7 @@ static BenchResult bench_spsc(int data_size, ufifo_lock_e lock, int total_items)
             }
         }
     });
+    pin_thread(consumer, 1);
 
     producer.join();
     consumer.join();
@@ -336,6 +393,7 @@ static BenchResult bench_mpsc(int data_size, int num_producers, int items_per_pr
                 }
             }
         });
+        pin_thread(threads.back(), p + 1);
     }
 
     // Consumer
@@ -349,6 +407,7 @@ static BenchResult bench_mpsc(int data_size, int num_producers, int items_per_pr
             }
         }
     });
+    pin_thread(threads.back(), 0);
 
     for (auto &t : threads)
         t.join();
@@ -383,7 +442,7 @@ static BenchResult bench_shared_spsc(int data_size, int total_items)
     init.opt = UFIFO_OPT_ALLOC;
     init.alloc.size = FIFO_SIZE;
     init.alloc.force = 1;
-    init.alloc.lock = UFIFO_LOCK_THREAD;
+    init.alloc.lock = UFIFO_LOCK_NONE;
     init.alloc.data_mode = UFIFO_DATA_SHARED;
     init.alloc.max_users = 2;
 
@@ -412,6 +471,7 @@ static BenchResult bench_shared_spsc(int data_size, int total_items)
             }
         }
     });
+    pin_thread(prod_thread, 0);
 
     std::thread cons_thread([&]() {
         int count = 0;
@@ -423,6 +483,7 @@ static BenchResult bench_shared_spsc(int data_size, int total_items)
             }
         }
     });
+    pin_thread(cons_thread, 1);
 
     prod_thread.join();
     cons_thread.join();
@@ -454,6 +515,8 @@ int main(int argc, char **argv)
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--json") == 0) {
             g_json_output = true;
+        } else if (strcmp(argv[i], "--no-pin") == 0) {
+            g_pin_threads = false;
         } else {
             scale = atoi(argv[i]);
             if (scale < 1)
@@ -461,8 +524,30 @@ int main(int argc, char **argv)
         }
     }
 
-    if (!g_json_output)
-        printf("\n=== ufifo Performance Benchmark (scale=%d) ===\n\n", scale);
+    if (g_pin_threads) {
+        init_affinity();
+        pin_current_thread(0);
+    }
+
+    if (!g_json_output) {
+        printf("\n=== ufifo Performance Benchmark (scale=%d) ===\n", scale);
+        printf("System Info:\n");
+        printf("  Hardware Concurrency (Total system CPUs): %u\n", std::thread::hardware_concurrency());
+#if defined(__linux__)
+        printf("  Thread Pinning (Affinity): %s\n", g_pin_threads ? "Enabled" : "Disabled");
+        printf("  Available logical CPUs for this process: %zu\n", g_available_cpus.size());
+        if (g_pin_threads && !g_available_cpus.empty()) {
+            printf("  Available CPU IDs: [");
+            for (size_t i = 0; i < g_available_cpus.size(); ++i) {
+                printf("%d%s", g_available_cpus[i], (i == g_available_cpus.size() - 1) ? "" : ", ");
+            }
+            printf("]\n");
+        }
+#else
+        printf("  Thread Pinning (Affinity): Disabled (Unsupported OS)\n");
+#endif
+        printf("\n");
+    }
 
     std::vector<BenchResult> results;
 
@@ -553,10 +638,11 @@ int main(int argc, char **argv)
         printf("=== Summary: %zu benchmarks completed ===\n\n", results.size());
         printf("Key metrics to compare before/after the commit:\n");
         printf("  - PingPong/nolock/4B: isolates barrier-only cost (highest expected improvement)\n");
-        printf("  - SPSC/nolock/*: realistic SPSC throughput (5-15%% improvement expected on x86)\n");
+        printf("  - SPSC/nolock/*: realistic SPSC throughput (5-15%% improvement expected)\n");
         printf("  - SPSC/locked/*: mutex-dominated path (<3%% improvement expected)\n");
         printf("  - Burst/nolock/*: sequential fill-drain without contention\n");
-        printf("  - MPSC/*: multi-producer contention (mutex-dominated)\n\n");
+        printf("  - MPSC/*: multi-producer contention (mutex-dominated)\n");
+        printf("  - SharedSPSC/*: shared-mode broadcast (no improvement expected)\n\n");
     } else {
         print_json(results);
     }

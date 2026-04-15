@@ -23,7 +23,7 @@ jobs:
           cmake --build build --target ufifo_bench -j$(nproc)
 
       - name: Run benchmark
-        run: ./build/bin/ufifo_bench 1 --json > benchmark-result.json
+        run: ./build/bin/ufifo_bench 1 --no-pin --json > benchmark-result.json
 
       - name: Store benchmark result
         uses: benchmark-action/github-action-benchmark@v1
