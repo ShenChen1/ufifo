@@ -45,6 +45,7 @@ typedef struct {
 
 typedef struct {
     ufifo_version_t ver;
+    unsigned int init_done; /* 0 = initializing, 1 = ready (atomic) */
 
     unsigned int in;
     unsigned int mask;
@@ -242,6 +243,28 @@ static int __ufifo_is_user_dead(int fd, unsigned int user_id)
     if (fcntl(fd, F_OFD_GETLK, &fl) < 0)
         return 0;                /* cannot query, be conservative */
     return fl.l_type == F_UNLCK; /* unlocked = holder is dead */
+}
+
+/* Init-phase synchronization lock on data shm fd.
+ * Uses OFD lock on byte 0 — independent of user-slot locks on ctrl fd.
+ * ALLOC holds exclusive lock during init; ATTACH blocks on shared lock. */
+
+static int __ufifo_init_lock(int fd)
+{
+    struct flock fl = { .l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = 0, .l_len = 1 };
+    return fcntl(fd, F_OFD_SETLK, &fl);
+}
+
+static int __ufifo_init_wait(int fd)
+{
+    struct flock fl = { .l_type = F_RDLCK, .l_whence = SEEK_SET, .l_start = 0, .l_len = 1 };
+    return fcntl(fd, F_OFD_SETLKW, &fl);
+}
+
+static int __ufifo_init_unlock(int fd)
+{
+    struct flock fl = { .l_type = F_UNLCK, .l_whence = SEEK_SET, .l_start = 0, .l_len = 1 };
+    return fcntl(fd, F_OFD_SETLK, &fl);
 }
 
 /*
@@ -451,11 +474,17 @@ static int __ufifo_init_from_shm(ufifo_t *ufifo)
         goto err_ctrl_fd;
     }
 
-    /* Validate version compatibility before accessing other ctrl fields */
-    ret = __ufifo_version_check(ufifo->ctrl);
-    if (ret < 0) {
+    /* OFD init lock already released by ufifo_open at this point.
+     * Check if the creator finished initialization (crash detection). */
+    if (!smp_load_acquire(&ufifo->ctrl->init_done)) {
+        ret = -EIO; /* Creator crashed during initialization */
         goto err_ctrl_mmap;
     }
+
+    /* Validate version compatibility before accessing other ctrl fields */
+    ret = __ufifo_version_check(ufifo->ctrl);
+    if (ret < 0)
+        goto err_ctrl_mmap;
 
     ret = fstat(ufifo->shm_fd, &st);
     if (ret < 0) {
@@ -473,15 +502,14 @@ static int __ufifo_init_from_shm(ufifo_t *ufifo)
     __ufifo_ctrl_lock(ufifo);
     ret = __ufifo_register(ufifo);
     __ufifo_ctrl_unlock(ufifo);
-    if (ret < 0) {
-        goto err_ctrl_mmap;
-    }
+    if (ret < 0)
+        goto err_data_mmap;
     ufifo->user_id = (unsigned int)ret;
     ufifo->kfifo.in = &ufifo->ctrl->in;
     ufifo->kfifo.mask = &ufifo->ctrl->mask;
     ufifo->bsem_wr = &ufifo->ctrl->bsem_wr;
-    if (ufifo->ctrl->data_mode == UFIFO_DATA_SHARED) {
-        ufifo->ctrl->users[ufifo->user_id].out = READ_ONCE(&ufifo->ctrl->in);
+    if (__ufifo_is_shared(ufifo)) {
+        WRITE_ONCE(&ufifo->ctrl->users[ufifo->user_id].out, READ_ONCE(&ufifo->ctrl->in));
         ufifo->kfifo.out = &ufifo->ctrl->users[ufifo->user_id].out;
         ufifo->bsem_rd = &ufifo->ctrl->users[ufifo->user_id].bsem_rd;
     } else {
@@ -491,6 +519,8 @@ static int __ufifo_init_from_shm(ufifo_t *ufifo)
 
     return 0;
 
+err_data_mmap:
+    munmap(ufifo->shm_mem, ufifo->shm_size);
 err_ctrl_mmap:
     munmap(ufifo->ctrl, ufifo->ctrl_size);
 err_ctrl_fd:
@@ -505,10 +535,10 @@ static int __ufifo_init_from_user(ufifo_t *ufifo, ufifo_alloc_t *alloc)
     unsigned int i;
     char ctrl_name[NAME_MAX + 8];
 
-    if (!alloc->size) {
+    if (!alloc->size)
         return -EINVAL;
-    }
 
+    /* --- ctrl shm --- */
     snprintf(ctrl_name, sizeof(ctrl_name), "%s_ctrl", ufifo->name);
     ufifo->ctrl_size = __ufifo_ctrl_size(alloc->max_users);
     ufifo->ctrl_fd = shm_open(ctrl_name, O_RDWR | O_CREAT, (S_IRUSR | S_IWUSR));
@@ -529,19 +559,15 @@ static int __ufifo_init_from_user(ufifo_t *ufifo, ufifo_alloc_t *alloc)
         goto err_ctrl_fd;
     }
 
-    ufifo->shm_size = roundup_pow_of_two(alloc->size);
-    ret = ftruncate(ufifo->shm_fd, ufifo->shm_size);
-    if (ret < 0) {
-        ret = -errno;
-        goto err_ctrl_mmap;
-    }
+    /* Step 1: Mark as not-ready (critical for force re-init) */
+    WRITE_ONCE(&ufifo->ctrl->init_done, 0);
 
-    ufifo->shm_mem = mmap(NULL, ufifo->shm_size, (PROT_READ | PROT_WRITE), MAP_SHARED, ufifo->shm_fd, 0);
-    if (ufifo->shm_mem == MAP_FAILED) {
-        ret = -errno;
+    /* Step 2: Mutex FIRST — must be ready before any ATTACH could use them */
+    ret = __ufifo_lock_init(ufifo, alloc->lock);
+    if (ret < 0)
         goto err_ctrl_mmap;
-    }
 
+    /* Step 3: Ctrl fields */
     ufifo->ctrl->data_mode = alloc->data_mode;
     ufifo->ctrl->max_users = alloc->max_users;
     ufifo->ctrl->num_users = 0;
@@ -550,23 +576,53 @@ static int __ufifo_init_from_user(ufifo_t *ufifo, ufifo_alloc_t *alloc)
         __ufifo_bsem_init(&ufifo->ctrl->users[i].bsem_rd, 0);
     }
 
-    ret = __ufifo_register(ufifo);
+    /* Step 4: Data shm */
+    ufifo->shm_size = roundup_pow_of_two(alloc->size);
+    ret = ftruncate(ufifo->shm_fd, ufifo->shm_size);
     if (ret < 0) {
-        goto err_ctrl_mmap;
+        ret = -errno;
+        goto err_lock;
     }
+
+    ufifo->shm_mem = mmap(NULL, ufifo->shm_size, (PROT_READ | PROT_WRITE), MAP_SHARED, ufifo->shm_fd, 0);
+    if (ufifo->shm_mem == MAP_FAILED) {
+        ret = -errno;
+        goto err_lock;
+    }
+
+    /* Step 5: Register (under ctrl_lock for defensive correctness) */
+    __ufifo_ctrl_lock(ufifo);
+    ret = __ufifo_register(ufifo);
+    __ufifo_ctrl_unlock(ufifo);
+    if (ret < 0)
+        goto err_data_mmap;
     ufifo->user_id = (unsigned int)ret;
-    ufifo_get_version_info(NULL, &ufifo->ctrl->ver);
+
+    /* Step 6: kfifo + bsem */
     ufifo->kfifo.in = &ufifo->ctrl->in;
     ufifo->kfifo.out = &ufifo->ctrl->users[ufifo->user_id].out;
     ufifo->kfifo.mask = &ufifo->ctrl->mask;
-    ret |= kfifo_init(&ufifo->kfifo, ufifo->shm_size);
+    ret = kfifo_init(&ufifo->kfifo, ufifo->shm_size);
+    if (ret < 0)
+        goto err_register;
     ufifo->bsem_wr = &ufifo->ctrl->bsem_wr;
-    ret |= __ufifo_bsem_init(ufifo->bsem_wr, 0);
+    __ufifo_bsem_init(ufifo->bsem_wr, 0);
     ufifo->bsem_rd = &ufifo->ctrl->users[ufifo->user_id].bsem_rd;
-    ret |= __ufifo_bsem_init(ufifo->bsem_rd, 0);
 
-    return ret;
+    /* Step 7: Version + signal ready (MUST BE LAST) */
+    ufifo_get_version_info(NULL, &ufifo->ctrl->ver);
+    smp_store_release(&ufifo->ctrl->init_done, 1);
 
+    return 0;
+
+err_register:
+    __ufifo_ctrl_lock(ufifo);
+    __ufifo_unregister(ufifo);
+    __ufifo_ctrl_unlock(ufifo);
+err_data_mmap:
+    munmap(ufifo->shm_mem, ufifo->shm_size);
+err_lock:
+    __ufifo_lock_deinit(ufifo);
 err_ctrl_mmap:
     munmap(ufifo->ctrl, ufifo->ctrl_size);
 err_ctrl_fd:
@@ -603,83 +659,77 @@ int ufifo_open(char *name, ufifo_init_t *init, ufifo_t **handle)
     ufifo_t *ufifo = NULL;
     int is_alloc = 0;
 
-    if (name == NULL || init == NULL || handle == NULL) {
+    if (name == NULL || init == NULL || handle == NULL)
         return -EINVAL;
-    }
 
     ret = __ufifo_init_validate(init);
-    if (ret < 0) {
+    if (ret < 0)
         return ret;
-    }
 
     ufifo = calloc(1, sizeof(ufifo_t));
-    if (ufifo == NULL) {
+    if (ufifo == NULL)
         return -ENOMEM;
-    }
     ufifo->rx_efd = -1;
     ufifo->tx_efd = -1;
 
     strncpy(ufifo->name, name, sizeof(ufifo->name) - 1);
-    ret |= __ufifo_hook_init(ufifo, &init->hook);
-    if (ret < 0) {
+    ret = __ufifo_hook_init(ufifo, &init->hook);
+    if (ret < 0)
         goto err1;
-    }
 
-    int oflag = O_RDWR;
+    /* --- Phase 1: Open/create data shm atomically --- */
     if (init->opt == UFIFO_OPT_ALLOC) {
-        ufifo->shm_fd = shm_open(name, oflag, (S_IRUSR | S_IWUSR));
-        if (ufifo->shm_fd >= 0 && init->alloc.force == 0) {
-            init->opt = UFIFO_OPT_ATTACH;
+        if (init->alloc.force) {
+            /* Force: open-or-create, will overwrite via ftruncate */
+            ufifo->shm_fd = shm_open(name, O_RDWR | O_CREAT, (S_IRUSR | S_IWUSR));
         } else {
-            oflag = O_RDWR | O_CREAT;
+            /* Non-force: atomic create. EEXIST -> degrade to ATTACH */
+            ufifo->shm_fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, (S_IRUSR | S_IWUSR));
+            if (ufifo->shm_fd < 0 && errno == EEXIST) {
+                init->opt = UFIFO_OPT_ATTACH;
+                ufifo->shm_fd = shm_open(name, O_RDWR, (S_IRUSR | S_IWUSR));
+            }
         }
-        if (ufifo->shm_fd >= 0) {
-            close(ufifo->shm_fd);
-        }
+    } else {
+        ufifo->shm_fd = shm_open(name, O_RDWR, (S_IRUSR | S_IWUSR));
     }
-
-    ufifo->shm_fd = shm_open(name, oflag, (S_IRUSR | S_IWUSR));
     if (ufifo->shm_fd < 0) {
         ret = -errno;
         goto err1;
     }
 
+    /* --- Phase 2: Synchronize with init lock on data shm fd --- */
     if (init->opt == UFIFO_OPT_ALLOC) {
+        is_alloc = 1;
+        /* Exclusive lock: prevent ATTACH from reading half-init ctrl */
+        if (__ufifo_init_lock(ufifo->shm_fd) < 0) {
+            ret = -errno;
+            goto err2;
+        }
         ret = __ufifo_init_from_user(ufifo, &init->alloc);
-        if (ret < 0) {
+        __ufifo_init_unlock(ufifo->shm_fd);
+        if (ret < 0)
             goto err2;
-        }
-        ret = __ufifo_lock_init(ufifo, init->alloc.lock);
-        if (ret < 0) {
-            goto err3;
-        }
     } else {
-        ret = __ufifo_init_from_shm(ufifo);
-        if (ret < 0) {
+        /* Shared lock: blocks until ALLOC releases exclusive lock */
+        if (__ufifo_init_wait(ufifo->shm_fd) < 0) {
+            ret = -errno;
             goto err2;
         }
+        __ufifo_init_unlock(ufifo->shm_fd);
+        ret = __ufifo_init_from_shm(ufifo);
+        if (ret < 0)
+            goto err2;
     }
 
     ufifo->magic = UFIFO_MAGIC;
     *handle = ufifo;
     return 0;
 
-err3:
-    __ufifo_bsem_deinit(ufifo->bsem_wr);
-    __ufifo_bsem_deinit(ufifo->bsem_rd);
-    munmap(ufifo->shm_mem, ufifo->shm_size);
-    munmap(ufifo->ctrl, ufifo->ctrl_size);
-    close(ufifo->ctrl_fd);
-    if (is_alloc) {
-        char ctrl_name[NAME_MAX + 8];
-        snprintf(ctrl_name, sizeof(ctrl_name), "%s_ctrl", ufifo->name);
-        shm_unlink(ctrl_name);
-    }
 err2:
     close(ufifo->shm_fd);
-    if (is_alloc) {
+    if (is_alloc)
         shm_unlink(ufifo->name);
-    }
 err1:
     free(ufifo);
     return ret;
@@ -855,14 +905,11 @@ unsigned int ufifo_peek_len(ufifo_t *handle)
 static int __ufifo_try_reap_dead_readers(ufifo_t *handle)
 {
     int cleaned = 0;
-    unsigned int min_out = __ufifo_min_out(handle);
     unsigned int i;
 
     for (i = 0; i < handle->ctrl->max_users; i++) {
         if (smp_load_acquire(&handle->ctrl->users[i].active)) {
-            unsigned int u_out = smp_load_acquire(&handle->ctrl->users[i].out);
-            /* Targeted check: Only check liveness if this user is the bottleneck */
-            if (u_out == min_out && __ufifo_is_user_dead(handle->ctrl_fd, i)) {
+            if (__ufifo_is_user_dead(handle->ctrl_fd, i)) {
                 __ufifo_ctrl_lock(handle);
                 if (READ_ONCE(&handle->ctrl->users[i].active)) {
                     __ufifo_reap_dead_user(handle->ctrl, i);
