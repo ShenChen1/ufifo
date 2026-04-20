@@ -264,6 +264,10 @@ TEST_F(UfifoApiTest, VersionMismatchViaRawShm)
     fake_ver.patch = 77;
     snprintf(fake_ver.version, sizeof(fake_ver.version), "v99.88.77-fake");
     memcpy(ctrl_mem, &fake_ver, sizeof(fake_ver));
+
+    unsigned int *init_done = (unsigned int *)((char *)ctrl_mem + sizeof(fake_ver));
+    *init_done = 1;
+
     munmap(ctrl_mem, ctrl_size);
 
     // 3. Try ATTACH — version check should reject with -EPROTO

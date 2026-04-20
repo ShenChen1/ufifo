@@ -908,6 +908,8 @@ static int __ufifo_try_reap_dead_readers(ufifo_t *handle)
     unsigned int i;
 
     for (i = 0; i < handle->ctrl->max_users; i++) {
+        if (i == handle->user_id)
+            continue;
         if (smp_load_acquire(&handle->ctrl->users[i].active)) {
             if (__ufifo_is_user_dead(handle->ctrl_fd, i)) {
                 __ufifo_ctrl_lock(handle);
