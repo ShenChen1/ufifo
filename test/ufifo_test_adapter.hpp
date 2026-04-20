@@ -16,6 +16,7 @@ enum class DataMode { SOLE, SHARED };
 struct TestParam {
     DataFormat format;
     DataMode mode;
+    ufifo_lock_e lock;
 };
 
 // Record structure for Record/Tag mode tests
@@ -82,8 +83,8 @@ unsigned int tagged_rectag(unsigned char *p1, unsigned int n1, unsigned char *p2
 
 class UfifoTestAdapter {
   public:
-    UfifoTestAdapter(DataFormat format, DataMode mode, const std::string &name)
-        : format_(format), mode_(mode), name_(name)
+    UfifoTestAdapter(DataFormat format, DataMode mode, ufifo_lock_e lock, const std::string &name)
+        : format_(format), mode_(mode), lock_(lock), name_(name)
     {}
 
     virtual ~UfifoTestAdapter()
@@ -273,10 +274,15 @@ class UfifoTestAdapter {
     {
         return format_;
     }
+    ufifo_lock_e GetLock() const
+    {
+        return lock_;
+    }
 
   protected:
     DataFormat format_;
     DataMode mode_;
+    ufifo_lock_e lock_;
     std::string name_;
     std::vector<ufifo_t *> handles_;
     mutable std::mutex mutex_;

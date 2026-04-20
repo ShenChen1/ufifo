@@ -338,7 +338,9 @@ static inline int __ufifo_lock_init(ufifo_t *ufifo, ufifo_lock_e type)
 
     pthread_mutexattr_init(&attr);
     pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
-    pthread_mutexattr_setrobust(&attr, PTHREAD_MUTEX_ROBUST);
+    if (type == UFIFO_LOCK_PROCESS) {
+        pthread_mutexattr_setrobust(&attr, PTHREAD_MUTEX_ROBUST);
+    }
 
     /* ctrl_mutex: always initialized */
     ret = pthread_mutex_init(&ufifo->ctrl->ctrl_mutex, &attr);

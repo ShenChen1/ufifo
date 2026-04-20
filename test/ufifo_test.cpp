@@ -31,11 +31,26 @@ std::string GenerateName(const char *prefix)
 }
 
 // All Combinations
-const TestParam ALL_COMBINATIONS[] = {
-    { DataFormat::BYTESTREAM, DataMode::SOLE }, { DataFormat::RECORD, DataMode::SOLE },
-    { DataFormat::TAG, DataMode::SOLE },        { DataFormat::BYTESTREAM, DataMode::SHARED },
-    { DataFormat::RECORD, DataMode::SHARED },   { DataFormat::TAG, DataMode::SHARED }
-};
+const TestParam ALL_COMBINATIONS[] = { { DataFormat::BYTESTREAM, DataMode::SOLE, UFIFO_LOCK_NONE },
+                                       { DataFormat::RECORD, DataMode::SOLE, UFIFO_LOCK_NONE },
+                                       { DataFormat::TAG, DataMode::SOLE, UFIFO_LOCK_NONE },
+                                       { DataFormat::BYTESTREAM, DataMode::SHARED, UFIFO_LOCK_NONE },
+                                       { DataFormat::RECORD, DataMode::SHARED, UFIFO_LOCK_NONE },
+                                       { DataFormat::TAG, DataMode::SHARED, UFIFO_LOCK_NONE },
+
+                                       { DataFormat::BYTESTREAM, DataMode::SOLE, UFIFO_LOCK_THREAD },
+                                       { DataFormat::RECORD, DataMode::SOLE, UFIFO_LOCK_THREAD },
+                                       { DataFormat::TAG, DataMode::SOLE, UFIFO_LOCK_THREAD },
+                                       { DataFormat::BYTESTREAM, DataMode::SHARED, UFIFO_LOCK_THREAD },
+                                       { DataFormat::RECORD, DataMode::SHARED, UFIFO_LOCK_THREAD },
+                                       { DataFormat::TAG, DataMode::SHARED, UFIFO_LOCK_THREAD },
+
+                                       { DataFormat::BYTESTREAM, DataMode::SOLE, UFIFO_LOCK_PROCESS },
+                                       { DataFormat::RECORD, DataMode::SOLE, UFIFO_LOCK_PROCESS },
+                                       { DataFormat::TAG, DataMode::SOLE, UFIFO_LOCK_PROCESS },
+                                       { DataFormat::BYTESTREAM, DataMode::SHARED, UFIFO_LOCK_PROCESS },
+                                       { DataFormat::RECORD, DataMode::SHARED, UFIFO_LOCK_PROCESS },
+                                       { DataFormat::TAG, DataMode::SHARED, UFIFO_LOCK_PROCESS } };
 
 std::string PrintParam(const testing::TestParamInfo<TestParam> &info)
 {
@@ -44,11 +59,15 @@ std::string PrintParam(const testing::TestParamInfo<TestParam> &info)
                                                                   { DataFormat::TAG, "Tag" } };
     static const std::map<DataMode, std::string> mode_map = { { DataMode::SOLE, "Sole" },
                                                               { DataMode::SHARED, "Shared" } };
+    static const std::map<ufifo_lock_e, std::string> lock_map = { { UFIFO_LOCK_NONE, "NoLock" },
+                                                                  { UFIFO_LOCK_THREAD, "ThreadLock" },
+                                                                  { UFIFO_LOCK_PROCESS, "ProcessLock" } };
 
     std::string format_str = format_map.count(info.param.format) ? format_map.at(info.param.format) : "Unknown";
     std::string mode_str = mode_map.count(info.param.mode) ? mode_map.at(info.param.mode) : "Unknown";
+    std::string lock_str = lock_map.count(info.param.lock) ? lock_map.at(info.param.lock) : "Unknown";
 
-    return format_str + "_" + mode_str;
+    return format_str + "_" + mode_str + "_" + lock_str;
 }
 
 // =============================================================================
@@ -411,12 +430,24 @@ class ParameterizedTestBase : public ::testing::TestWithParam<TestParam> {
     {
         const auto param = GetParam();
         name_ = GenerateName("ut");
-        adapter_ = std::make_unique<UfifoTestAdapter>(param.format, param.mode, name_);
+        adapter_ = std::make_unique<UfifoTestAdapter>(param.format, param.mode, param.lock, name_);
     }
 
     // Unified multi-thread topology runner for SPSC / SPMC / MPSC / MPMC
     void RunTopology(int num_producers, int num_consumers, int msgs_per_producer, int fifo_size)
     {
+        const auto param = GetParam();
+        const bool is_shared = (adapter_->GetMode() == DataMode::SHARED);
+
+        if (param.lock == UFIFO_LOCK_NONE) {
+            if (num_producers > 1) {
+                GTEST_SKIP() << "UFIFO_LOCK_NONE does not support multiple producers";
+            }
+            if (num_consumers > 1 && !is_shared) {
+                GTEST_SKIP() << "UFIFO_LOCK_NONE does not support multiple consumers in SOLE mode";
+            }
+        }
+
         /*
          * In SHARED mode, every registered handle is an independent consumer
          * whose `out` pointer must advance, otherwise __ufifo_min_out will
@@ -430,10 +461,9 @@ class ParameterizedTestBase : public ::testing::TestWithParam<TestParam> {
          * Total users = num_producers + num_consumers.
          * In SHARED mode, producers call get after put to advance their out.
          */
-        const bool is_shared = (adapter_->GetMode() == DataMode::SHARED);
         const int total_handles = num_producers + num_consumers;
 
-        ASSERT_EQ(0, adapter_->Create(fifo_size, UFIFO_LOCK_THREAD, total_handles));
+        ASSERT_EQ(0, adapter_->Create(fifo_size, adapter_->GetLock(), total_handles));
 
         for (int i = 1; i < total_handles; ++i) {
             ufifo_t *h = nullptr;
@@ -1008,7 +1038,7 @@ class EpollTest : public ::testing::TestWithParam<DataFormat> {
     void SetUp() override
     {
         name_ = GenerateName("epoll");
-        adapter_ = std::make_unique<UfifoTestAdapter>(GetParam(), DataMode::SHARED, name_);
+        adapter_ = std::make_unique<UfifoTestAdapter>(GetParam(), DataMode::SHARED, UFIFO_LOCK_THREAD, name_);
     }
 };
 
@@ -1388,6 +1418,7 @@ TEST_F(UfifoReapTest, ReapDeadUserOnRegister)
     init.alloc.size = 1024;
     init.alloc.max_users = 2; // Only 2 slots
     init.alloc.data_mode = UFIFO_DATA_SHARED;
+    init.alloc.lock = UFIFO_LOCK_PROCESS;
     init.alloc.force = 1;
 
     ufifo_t *fifo1 = nullptr;
@@ -1429,6 +1460,7 @@ TEST_F(UfifoReapTest, ReapDeadUserOnPut)
     init.alloc.size = 64; // Small size to fill quickly
     init.alloc.max_users = 2;
     init.alloc.data_mode = UFIFO_DATA_SHARED;
+    init.alloc.lock = UFIFO_LOCK_PROCESS;
     init.alloc.force = 1;
 
     ufifo_t *producer = nullptr;
