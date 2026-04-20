@@ -31,7 +31,11 @@ find_library(PTHREAD_LIBRARY pthread)
 # Library source files
 set(LIB_SOURCES
     src/kfifo.c
-    src/ufifo.c
+    src/ufifo_opts.c
+    src/ufifo_sync.c
+    src/ufifo_epoll.c
+    src/ufifo_init.c
+    src/ufifo_info.c
 )
 
 # Create static library
