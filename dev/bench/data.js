@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776708489429,
+  "lastUpdate": 1776708588193,
   "repoUrl": "https://github.com/ShenChen1/ufifo",
   "entries": {
     "ufifo Performance Benchmark": [
@@ -3600,6 +3600,246 @@ window.BENCHMARK_DATA = {
             "value": 4913442,
             "unit": "ops/sec",
             "extra": "Latency: 203.5 ns/op, Bandwidth: 4798.28 MB/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "peterchenshen@gmail.com",
+            "name": "Peter Shen",
+            "username": "ShenChen1"
+          },
+          "committer": {
+            "email": "peterchenshen@gmail.com",
+            "name": "Peter Shen",
+            "username": "ShenChen1"
+          },
+          "distinct": true,
+          "id": "123859b3b51fff384d551a0b627d2682caacebf4",
+          "message": "refactor: split ufifo.c into smaller specialized modules\n\nThis change resolves the excessive size of `ufifo.c` by modularizing its responsibilities into focused, single-responsibility files without modifying the public API:\n- `ufifo_sync.c`: Synchronization primitives (mutexes, semaphores, file locks).\n- `ufifo_epoll.c`: epoll notification and socket communications.\n- `ufifo_init.c`: Shared memory allocation, attaching, and user registration.\n- `ufifo_info.c`: Diagnostic dumps and version queries.\n- `ufifo_opts.c`: Core data access operations (put, get, peek, etc.).\n- `ufifo_internal.h`: Internal declarations shared across these new modules.\n\nThe changes preserve 100% ABI and API compatibility while significantly improving code readability and maintainability. All existing tests continue to pass.",
+          "timestamp": "2026-04-20T18:07:10Z",
+          "tree_id": "46822d3704188cd47e8a78bd5529714b8765c401",
+          "url": "https://github.com/ShenChen1/ufifo/commit/123859b3b51fff384d551a0b627d2682caacebf4"
+        },
+        "date": 1776708587773,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "PingPong/nolock/4B",
+            "value": 31183203,
+            "unit": "ops/sec",
+            "extra": "Latency: 32.1 ns/op, Bandwidth: 118.95 MB/s"
+          },
+          {
+            "name": "PingPong/nolock/64B",
+            "value": 32101860,
+            "unit": "ops/sec",
+            "extra": "Latency: 31.2 ns/op, Bandwidth: 1959.34 MB/s"
+          },
+          {
+            "name": "PingPong/nolock/256B",
+            "value": 27203301,
+            "unit": "ops/sec",
+            "extra": "Latency: 36.8 ns/op, Bandwidth: 6641.43 MB/s"
+          },
+          {
+            "name": "PingPong/nolock/1024B",
+            "value": 22624185,
+            "unit": "ops/sec",
+            "extra": "Latency: 44.2 ns/op, Bandwidth: 22093.93 MB/s"
+          },
+          {
+            "name": "PingPong/nolock/4096B",
+            "value": 11894853,
+            "unit": "ops/sec",
+            "extra": "Latency: 84.1 ns/op, Bandwidth: 46464.27 MB/s"
+          },
+          {
+            "name": "PingPong/locked/4B",
+            "value": 25321283,
+            "unit": "ops/sec",
+            "extra": "Latency: 39.5 ns/op, Bandwidth: 96.59 MB/s"
+          },
+          {
+            "name": "PingPong/locked/64B",
+            "value": 25596743,
+            "unit": "ops/sec",
+            "extra": "Latency: 39.1 ns/op, Bandwidth: 1562.30 MB/s"
+          },
+          {
+            "name": "PingPong/locked/256B",
+            "value": 22791588,
+            "unit": "ops/sec",
+            "extra": "Latency: 43.9 ns/op, Bandwidth: 5564.35 MB/s"
+          },
+          {
+            "name": "PingPong/locked/1024B",
+            "value": 19413240,
+            "unit": "ops/sec",
+            "extra": "Latency: 51.5 ns/op, Bandwidth: 18958.24 MB/s"
+          },
+          {
+            "name": "PingPong/locked/4096B",
+            "value": 11299420,
+            "unit": "ops/sec",
+            "extra": "Latency: 88.5 ns/op, Bandwidth: 44138.36 MB/s"
+          },
+          {
+            "name": "SPSC/nolock/4B",
+            "value": 10744455,
+            "unit": "ops/sec",
+            "extra": "Latency: 93.1 ns/op, Bandwidth: 40.99 MB/s"
+          },
+          {
+            "name": "SPSC/nolock/64B",
+            "value": 15869680,
+            "unit": "ops/sec",
+            "extra": "Latency: 63.0 ns/op, Bandwidth: 968.61 MB/s"
+          },
+          {
+            "name": "SPSC/nolock/256B",
+            "value": 18623600,
+            "unit": "ops/sec",
+            "extra": "Latency: 53.7 ns/op, Bandwidth: 4546.78 MB/s"
+          },
+          {
+            "name": "SPSC/nolock/1024B",
+            "value": 9860036,
+            "unit": "ops/sec",
+            "extra": "Latency: 101.4 ns/op, Bandwidth: 9628.94 MB/s"
+          },
+          {
+            "name": "SPSC/locked/4B",
+            "value": 5704544,
+            "unit": "ops/sec",
+            "extra": "Latency: 175.3 ns/op, Bandwidth: 21.76 MB/s"
+          },
+          {
+            "name": "SPSC/locked/64B",
+            "value": 4163195,
+            "unit": "ops/sec",
+            "extra": "Latency: 240.2 ns/op, Bandwidth: 254.10 MB/s"
+          },
+          {
+            "name": "SPSC/locked/256B",
+            "value": 4032341,
+            "unit": "ops/sec",
+            "extra": "Latency: 248.0 ns/op, Bandwidth: 984.46 MB/s"
+          },
+          {
+            "name": "SPSC/locked/1024B",
+            "value": 2767967,
+            "unit": "ops/sec",
+            "extra": "Latency: 361.3 ns/op, Bandwidth: 2703.09 MB/s"
+          },
+          {
+            "name": "Burst/nolock/4B",
+            "value": 31327754,
+            "unit": "ops/sec",
+            "extra": "Latency: 31.9 ns/op, Bandwidth: 119.51 MB/s"
+          },
+          {
+            "name": "Burst/nolock/64B",
+            "value": 31716534,
+            "unit": "ops/sec",
+            "extra": "Latency: 31.5 ns/op, Bandwidth: 1935.82 MB/s"
+          },
+          {
+            "name": "Burst/nolock/256B",
+            "value": 27203346,
+            "unit": "ops/sec",
+            "extra": "Latency: 36.8 ns/op, Bandwidth: 6641.44 MB/s"
+          },
+          {
+            "name": "Burst/nolock/1024B",
+            "value": 22332793,
+            "unit": "ops/sec",
+            "extra": "Latency: 44.8 ns/op, Bandwidth: 21809.37 MB/s"
+          },
+          {
+            "name": "Burst/locked/4B",
+            "value": 25611227,
+            "unit": "ops/sec",
+            "extra": "Latency: 39.0 ns/op, Bandwidth: 97.70 MB/s"
+          },
+          {
+            "name": "Burst/locked/64B",
+            "value": 25866389,
+            "unit": "ops/sec",
+            "extra": "Latency: 38.7 ns/op, Bandwidth: 1578.76 MB/s"
+          },
+          {
+            "name": "Burst/locked/256B",
+            "value": 22994937,
+            "unit": "ops/sec",
+            "extra": "Latency: 43.5 ns/op, Bandwidth: 5614.00 MB/s"
+          },
+          {
+            "name": "Burst/locked/1024B",
+            "value": 19418345,
+            "unit": "ops/sec",
+            "extra": "Latency: 51.5 ns/op, Bandwidth: 18963.23 MB/s"
+          },
+          {
+            "name": "MPSC/2P/4B",
+            "value": 4093251,
+            "unit": "ops/sec",
+            "extra": "Latency: 244.3 ns/op, Bandwidth: 15.61 MB/s"
+          },
+          {
+            "name": "MPSC/2P/64B",
+            "value": 4313460,
+            "unit": "ops/sec",
+            "extra": "Latency: 231.8 ns/op, Bandwidth: 263.27 MB/s"
+          },
+          {
+            "name": "MPSC/2P/256B",
+            "value": 3522391,
+            "unit": "ops/sec",
+            "extra": "Latency: 283.9 ns/op, Bandwidth: 859.96 MB/s"
+          },
+          {
+            "name": "MPSC/4P/4B",
+            "value": 4021323,
+            "unit": "ops/sec",
+            "extra": "Latency: 248.7 ns/op, Bandwidth: 15.34 MB/s"
+          },
+          {
+            "name": "MPSC/4P/64B",
+            "value": 3801102,
+            "unit": "ops/sec",
+            "extra": "Latency: 263.1 ns/op, Bandwidth: 232.00 MB/s"
+          },
+          {
+            "name": "MPSC/4P/256B",
+            "value": 3491677,
+            "unit": "ops/sec",
+            "extra": "Latency: 286.4 ns/op, Bandwidth: 852.46 MB/s"
+          },
+          {
+            "name": "SharedSPSC/4B",
+            "value": 9805607,
+            "unit": "ops/sec",
+            "extra": "Latency: 102.0 ns/op, Bandwidth: 37.41 MB/s"
+          },
+          {
+            "name": "SharedSPSC/64B",
+            "value": 8881580,
+            "unit": "ops/sec",
+            "extra": "Latency: 112.6 ns/op, Bandwidth: 542.09 MB/s"
+          },
+          {
+            "name": "SharedSPSC/256B",
+            "value": 9134961,
+            "unit": "ops/sec",
+            "extra": "Latency: 109.5 ns/op, Bandwidth: 2230.22 MB/s"
+          },
+          {
+            "name": "SharedSPSC/1024B",
+            "value": 6728529,
+            "unit": "ops/sec",
+            "extra": "Latency: 148.6 ns/op, Bandwidth: 6570.83 MB/s"
           }
         ]
       }
