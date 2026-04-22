@@ -10,14 +10,12 @@ static unsigned int __ufifo_min_out(ufifo_t *handle)
     unsigned int min_out = in_val;
     unsigned int i;
 
-    for (i = 0; i < handle->ctrl->max_users; i++) {
-        if (smp_load_acquire(&handle->ctrl->users[i].active)) {
-            unsigned int u_out = smp_load_acquire(&handle->ctrl->users[i].out);
-            unsigned int distance = in_val - u_out;
-            if (distance > max_distance) {
-                max_distance = distance;
-                min_out = u_out;
-            }
+    ufifo_for_each_active_user(handle, i) {
+        unsigned int u_out = smp_load_acquire(&handle->ctrl->users[i].out);
+        unsigned int distance = in_val - u_out;
+        if (distance > max_distance) {
+            max_distance = distance;
+            min_out = u_out;
         }
     }
 
@@ -118,18 +116,16 @@ static int __ufifo_try_reap_dead_readers(ufifo_t *handle)
     int cleaned = 0;
     unsigned int i;
 
-    for (i = 0; i < handle->ctrl->max_users; i++) {
+    ufifo_for_each_active_user(handle, i) {
         if (i == handle->user_id)
             continue;
-        if (smp_load_acquire(&handle->ctrl->users[i].active)) {
-            if (__ufifo_is_user_dead(handle->ctrl_fd, i)) {
-                __ufifo_ctrl_lock(handle);
-                if (READ_ONCE(&handle->ctrl->users[i].active)) {
-                    __ufifo_reap_dead_user(handle, i);
-                    cleaned = 1;
-                }
-                __ufifo_ctrl_unlock(handle);
+        if (__ufifo_is_user_dead(handle->ctrl_fd, i)) {
+            __ufifo_ctrl_lock(handle);
+            if (READ_ONCE(&handle->ctrl->users[i].active)) {
+                __ufifo_reap_dead_user(handle, i);
+                cleaned = 1;
             }
+            __ufifo_ctrl_unlock(handle);
         }
     }
 
@@ -180,10 +176,8 @@ static unsigned int __ufifo_put(ufifo_t *handle, void *buf, unsigned int size, l
 
     if (__ufifo_is_shared(handle)) {
         unsigned int i;
-        for (i = 0; i < handle->ctrl->max_users; i++) {
-            if (READ_ONCE(&handle->ctrl->users[i].active)) {
-                __ufifo_bsem_post(&handle->ctrl->users[i].bsem_rd);
-            }
+        ufifo_for_each_active_user(handle, i) {
+            __ufifo_bsem_post(&handle->ctrl->users[i].bsem_rd);
         }
     } else {
         __ufifo_bsem_post(handle->bsem_rd);

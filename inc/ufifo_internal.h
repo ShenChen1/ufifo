@@ -9,6 +9,7 @@
 #include "kfifo.h"
 #include "ufifo.h"
 #include "ufifo_layout.h"
+#include "utils.h"
 
 #define UFIFO_MAGIC (0xf1f0f1f0)
 #define UFIFO_CHECK_HANDLE_FUNC(handle) \
@@ -37,6 +38,41 @@ struct ufifo {
     int rx_efd;
     int tx_efd;
 };
+
+static inline unsigned int *__ufifo_get_active_ids(ufifo_t *handle)
+{
+    ufifo_ctrl_t *ctrl = handle->ctrl;
+    return (unsigned int *)&ctrl->users[ctrl->max_users];
+}
+
+static inline void __ufifo_active_list_add(ufifo_t *handle, unsigned int user_id)
+{
+    ufifo_ctrl_t *ctrl = handle->ctrl;
+    unsigned int *ids = __ufifo_get_active_ids(handle);
+    ids[ctrl->num_users] = user_id;
+    smp_store_release(&ctrl->users[user_id].active, 1);
+    smp_store_release(&ctrl->num_users, ctrl->num_users + 1);
+}
+
+static inline void __ufifo_active_list_remove(ufifo_t *handle, unsigned int user_id)
+{
+    ufifo_ctrl_t *ctrl = handle->ctrl;
+    smp_store_release(&ctrl->users[user_id].active, 0);
+    unsigned int *ids = __ufifo_get_active_ids(handle);
+    unsigned int n = ctrl->num_users;
+    for (unsigned int j = 0; j < n; j++) {
+        if (ids[j] == user_id) {
+            ids[j] = ids[n - 1];
+            break;
+        }
+    }
+    smp_store_release(&ctrl->num_users, n - 1);
+}
+
+#define ufifo_for_each_active_user(handle, i)                                                                        \
+    for (unsigned int __n = READ_ONCE(&(handle)->ctrl->num_users), *__ids = __ufifo_get_active_ids(handle), __j = 0; \
+         __j < __n && ((i) = READ_ONCE(&__ids[__j]), 1);                                                             \
+         __j++)
 
 /* ufifo_sync.c */
 int __ufifo_ctrl_lock(ufifo_t *handle);

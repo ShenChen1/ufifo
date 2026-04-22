@@ -14,6 +14,11 @@
 #include "log2.h"
 #include "utils.h"
 
+static inline size_t __ufifo_ctrl_total_size(unsigned int max_users)
+{
+    return sizeof(ufifo_ctrl_t) + max_users * sizeof(ufifo_sub_ctrl_t) + max_users * sizeof(unsigned int);
+}
+
 int __ufifo_is_shared(ufifo_t *handle)
 {
     return handle->ctrl->data_mode == UFIFO_DATA_SHARED;
@@ -24,8 +29,7 @@ void __ufifo_reap_dead_user(ufifo_t *handle, unsigned int user_id)
     ufifo_ctrl_t *ctrl = handle->ctrl;
 
     if (READ_ONCE(&ctrl->users[user_id].active)) {
-        WRITE_ONCE(&ctrl->users[user_id].active, 0);
-        ctrl->num_users--;
+        __ufifo_active_list_remove(handle, user_id);
 
         while (sem_trywait(&ctrl->users[user_id].bsem_rd) == 0) {
         }
@@ -43,8 +47,7 @@ int __ufifo_register(ufifo_t *handle)
             WRITE_ONCE(&ctrl->users[i].out, READ_ONCE(&ctrl->in));
             ctrl->users[i].pid = mypid;
             __ufifo_ofd_lock(handle->ctrl_fd, i);
-            smp_store_release(&ctrl->users[i].active, 1);
-            ctrl->num_users++;
+            __ufifo_active_list_add(handle, i);
             return i;
         }
     }
@@ -56,8 +59,7 @@ int __ufifo_register(ufifo_t *handle)
             WRITE_ONCE(&ctrl->users[i].out, READ_ONCE(&ctrl->in));
             ctrl->users[i].pid = mypid;
             __ufifo_ofd_lock(handle->ctrl_fd, i);
-            smp_store_release(&ctrl->users[i].active, 1);
-            ctrl->num_users++;
+            __ufifo_active_list_add(handle, i);
             return i;
         }
     }
@@ -70,9 +72,8 @@ static void __ufifo_unregister(ufifo_t *handle)
     ufifo_ctrl_t *ctrl = handle->ctrl;
 
     if (handle->user_id < ctrl->max_users && READ_ONCE(&ctrl->users[handle->user_id].active)) {
-        smp_store_release(&ctrl->users[handle->user_id].active, 0);
+        __ufifo_active_list_remove(handle, handle->user_id);
         __ufifo_ofd_unlock(handle->ctrl_fd, handle->user_id);
-        ctrl->num_users--;
     }
 }
 
@@ -192,7 +193,7 @@ static int __ufifo_init_from_user(ufifo_t *handle, ufifo_alloc_t *alloc)
         return -EINVAL;
 
     snprintf(ctrl_name, sizeof(ctrl_name), "%s_ctrl", handle->name);
-    handle->ctrl_size = sizeof(ufifo_ctrl_t) + alloc->max_users * sizeof(ufifo_sub_ctrl_t);
+    handle->ctrl_size = __ufifo_ctrl_total_size(alloc->max_users);
     handle->ctrl_fd = shm_open(ctrl_name, O_RDWR | O_CREAT, (S_IRUSR | S_IWUSR));
     if (handle->ctrl_fd < 0) {
         ret = -errno;

@@ -51,10 +51,7 @@ void __ufifo_efd_notify_rx(ufifo_t *handle)
 
     unsigned int i;
     struct sockaddr_un addr;
-    for (i = 0; i < handle->ctrl->max_users; i++) {
-        if (!READ_ONCE(&handle->ctrl->users[i].active))
-            continue;
-
+    ufifo_for_each_active_user(handle, i) {
         unsigned int state = smp_load_acquire(&handle->ctrl->users[i].efd_rx_flag);
         if (state != UFIFO_EFD_REGISTERED)
             continue; /* IDLE → skip; PENDING → coalesce */
@@ -79,9 +76,7 @@ void __ufifo_efd_notify_tx(ufifo_t *handle)
 
     unsigned int i;
     struct sockaddr_un addr;
-    for (i = 0; i < handle->ctrl->max_users; i++) {
-        if (!READ_ONCE(&handle->ctrl->users[i].active))
-            continue;
+    ufifo_for_each_active_user(handle, i) {
         socklen_t len = __ufifo_notify_addr(handle->name, i, &addr, 0);
         sendto(sfd, "1", 1, MSG_DONTWAIT, (struct sockaddr *)&addr, len);
     }
