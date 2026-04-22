@@ -1,4 +1,14 @@
 #include "ufifo_internal.h"
+#include <errno.h>
+#include <pthread.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+
+#include "utils.h"
 
 /* epoll notification state machine: IDLE → REGISTERED → PENDING → REGISTERED */
 enum {

@@ -1,39 +1,43 @@
 #include "ufifo_internal.h"
+#include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <time.h>
 
-int __ufifo_ctrl_lock(ufifo_t *ufifo)
+int __ufifo_ctrl_lock(ufifo_t *handle)
 {
-    int ret = pthread_mutex_lock(&ufifo->ctrl->ctrl_mutex);
+    int ret = pthread_mutex_lock(&handle->ctrl->ctrl_mutex);
     if (ret == EOWNERDEAD) {
-        pthread_mutex_consistent(&ufifo->ctrl->ctrl_mutex);
+        pthread_mutex_consistent(&handle->ctrl->ctrl_mutex);
         ret = 0;
     }
     return ret;
 }
 
-int __ufifo_ctrl_unlock(ufifo_t *ufifo)
+int __ufifo_ctrl_unlock(ufifo_t *handle)
 {
-    return pthread_mutex_unlock(&ufifo->ctrl->ctrl_mutex);
+    return pthread_mutex_unlock(&handle->ctrl->ctrl_mutex);
 }
 
-int __ufifo_data_lock(ufifo_t *ufifo)
+int __ufifo_data_lock(ufifo_t *handle)
 {
-    if (ufifo->ctrl->lock == UFIFO_LOCK_NONE)
+    if (handle->ctrl->lock == UFIFO_LOCK_NONE)
         return 0;
 
-    int ret = pthread_mutex_lock(&ufifo->ctrl->data_mutex);
+    int ret = pthread_mutex_lock(&handle->ctrl->data_mutex);
     if (ret == EOWNERDEAD) {
-        pthread_mutex_consistent(&ufifo->ctrl->data_mutex);
+        pthread_mutex_consistent(&handle->ctrl->data_mutex);
         ret = 0;
     }
     return ret;
 }
 
-int __ufifo_data_unlock(ufifo_t *ufifo)
+int __ufifo_data_unlock(ufifo_t *handle)
 {
-    if (ufifo->ctrl->lock == UFIFO_LOCK_NONE)
+    if (handle->ctrl->lock == UFIFO_LOCK_NONE)
         return 0;
 
-    return pthread_mutex_unlock(&ufifo->ctrl->data_mutex);
+    return pthread_mutex_unlock(&handle->ctrl->data_mutex);
 }
 
 int __ufifo_ofd_lock(int fd, unsigned int user_id)
@@ -74,12 +78,12 @@ int __ufifo_init_unlock(int fd)
     return fcntl(fd, F_OFD_SETLK, &fl);
 }
 
-int __ufifo_lock_init(ufifo_t *ufifo, ufifo_lock_e type)
+int __ufifo_lock_init(ufifo_t *handle, ufifo_lock_e type)
 {
     pthread_mutexattr_t attr;
     int ret = 0;
 
-    ufifo->ctrl->lock = type;
+    handle->ctrl->lock = type;
 
     pthread_mutexattr_init(&attr);
     pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
@@ -88,23 +92,23 @@ int __ufifo_lock_init(ufifo_t *ufifo, ufifo_lock_e type)
     }
 
     /* ctrl_mutex: always initialized */
-    ret = pthread_mutex_init(&ufifo->ctrl->ctrl_mutex, &attr);
+    ret = pthread_mutex_init(&handle->ctrl->ctrl_mutex, &attr);
 
     /* data_mutex: only when locking is requested */
     if (ret == 0 && type != UFIFO_LOCK_NONE) {
-        ret = pthread_mutex_init(&ufifo->ctrl->data_mutex, &attr);
+        ret = pthread_mutex_init(&handle->ctrl->data_mutex, &attr);
     }
 
     pthread_mutexattr_destroy(&attr);
     return ret;
 }
 
-int __ufifo_lock_deinit(ufifo_t *ufifo)
+int __ufifo_lock_deinit(ufifo_t *handle)
 {
-    int ret = pthread_mutex_destroy(&ufifo->ctrl->ctrl_mutex);
+    int ret = pthread_mutex_destroy(&handle->ctrl->ctrl_mutex);
 
-    if (ufifo->ctrl->lock != UFIFO_LOCK_NONE) {
-        ret |= pthread_mutex_destroy(&ufifo->ctrl->data_mutex);
+    if (handle->ctrl->lock != UFIFO_LOCK_NONE) {
+        ret |= pthread_mutex_destroy(&handle->ctrl->data_mutex);
     }
 
     return ret;
@@ -120,24 +124,24 @@ int __ufifo_bsem_deinit(sem_t *bsem)
     return sem_destroy(bsem);
 }
 
-int __ufifo_bsem_wait(sem_t *bsem, ufifo_t *ufifo)
+int __ufifo_bsem_wait(sem_t *bsem, ufifo_t *handle)
 {
     int ret;
 
-    __ufifo_data_unlock(ufifo);
+    __ufifo_data_unlock(handle);
     ret = sem_wait(bsem);
-    __ufifo_data_lock(ufifo);
+    __ufifo_data_lock(handle);
 
     return ret;
 }
 
-int __ufifo_bsem_timedwait(sem_t *bsem, ufifo_t *ufifo, long millisec)
+int __ufifo_bsem_timedwait(sem_t *bsem, ufifo_t *handle, long millisec)
 {
     int ret;
     struct timespec wt;
     struct timespec ts;
 
-    __ufifo_data_unlock(ufifo);
+    __ufifo_data_unlock(handle);
 
     wt.tv_sec = millisec / 1000;
     wt.tv_nsec = (millisec % 1000) * 1000000;
@@ -156,7 +160,7 @@ int __ufifo_bsem_timedwait(sem_t *bsem, ufifo_t *ufifo, long millisec)
         ret = ETIMEDOUT;
     }
 
-    __ufifo_data_lock(ufifo);
+    __ufifo_data_lock(handle);
 
     return ret;
 }

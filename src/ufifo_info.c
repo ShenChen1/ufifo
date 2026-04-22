@@ -1,4 +1,10 @@
 #include "ufifo_internal.h"
+#include <errno.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "utils.h"
 
 void ufifo_dump(ufifo_t *handle)
 {

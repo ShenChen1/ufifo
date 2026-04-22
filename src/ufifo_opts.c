@@ -1,4 +1,7 @@
 #include "ufifo_internal.h"
+#include <errno.h>
+
+#include "utils.h"
 
 static unsigned int __ufifo_min_out(ufifo_t *handle)
 {
@@ -122,7 +125,7 @@ static int __ufifo_try_reap_dead_readers(ufifo_t *handle)
             if (__ufifo_is_user_dead(handle->ctrl_fd, i)) {
                 __ufifo_ctrl_lock(handle);
                 if (READ_ONCE(&handle->ctrl->users[i].active)) {
-                    __ufifo_reap_dead_user(handle->ctrl, i);
+                    __ufifo_reap_dead_user(handle, i);
                     cleaned = 1;
                 }
                 __ufifo_ctrl_unlock(handle);
@@ -386,5 +389,3 @@ int ufifo_newest(ufifo_t *handle, unsigned int tag)
 
     return ret;
 }
-
-
