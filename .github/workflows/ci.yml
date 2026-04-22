@@ -31,7 +31,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        sanitizer: ["asan,ubsan", "tsan"]
+        sanitizer: ["asan,ubsan", "tsan", "lsan"]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
