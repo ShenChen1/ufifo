@@ -145,13 +145,13 @@ end:
 
 int ufifo_get_rx_fd(ufifo_t *handle)
 {
-    UFIFO_CHECK_HANDLE_FUNC(handle);
+    UFIFO_CHECK_HANDLE(handle, -EINVAL);
     return __ufifo_get_efd(handle, 1);
 }
 
 int ufifo_get_tx_fd(ufifo_t *handle)
 {
-    UFIFO_CHECK_HANDLE_FUNC(handle);
+    UFIFO_CHECK_HANDLE(handle, -EINVAL);
     return __ufifo_get_efd(handle, 0);
 }
 
@@ -171,12 +171,12 @@ static int __ufifo_drain_efd(int fd, int *efd_flags)
 
 int ufifo_drain_rx_fd(ufifo_t *handle)
 {
-    UFIFO_CHECK_HANDLE_FUNC(handle);
+    UFIFO_CHECK_HANDLE(handle, -EINVAL);
     return __ufifo_drain_efd(handle->rx_efd, &handle->ctrl->users[handle->user_id].efd_rx_flag);
 }
 
 int ufifo_drain_tx_fd(ufifo_t *handle)
 {
-    UFIFO_CHECK_HANDLE_FUNC(handle);
+    UFIFO_CHECK_HANDLE(handle, -EINVAL);
     return __ufifo_drain_efd(handle->tx_efd, &handle->ctrl->efd_tx_flag);
 }

@@ -8,7 +8,7 @@
 
 void ufifo_dump(ufifo_t *handle)
 {
-    UFIFO_CHECK_HANDLE_FUNC(handle);
+    UFIFO_CHECK_HANDLE(handle);
     __ufifo_ctrl_lock(handle);
 
     unsigned int mask = *handle->kfifo.mask;
@@ -83,7 +83,8 @@ int ufifo_get_version_info(ufifo_t *handle, ufifo_version_t *ver)
         return 0;
     }
 
-    UFIFO_CHECK_HANDLE_FUNC(handle);
+    UFIFO_CHECK_HANDLE(handle, -EINVAL);
     memcpy(ver, &handle->ctrl->ver, sizeof(*ver));
     return 0;
 }
+

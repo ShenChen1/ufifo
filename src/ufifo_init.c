@@ -418,12 +418,12 @@ static int __ufifo_close(ufifo_t *handle, int destroy)
 
 int ufifo_close(ufifo_t *handle)
 {
-    UFIFO_CHECK_HANDLE_FUNC(handle);
+    UFIFO_CHECK_HANDLE(handle, -EINVAL);
     return __ufifo_close(handle, 0);
 }
 
 int ufifo_destroy(ufifo_t *handle)
 {
-    UFIFO_CHECK_HANDLE_FUNC(handle);
+    UFIFO_CHECK_HANDLE(handle, -EINVAL);
     return __ufifo_close(handle, 1);
 }

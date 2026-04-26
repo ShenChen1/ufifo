@@ -2,9 +2,7 @@
 #define UFIFO_INTERNAL_H
 
 #define _GNU_SOURCE
-#include <assert.h>
 #include <limits.h>
-#include <semaphore.h>
 
 #include "kfifo.h"
 #include "ufifo.h"
@@ -12,9 +10,12 @@
 #include "utils.h"
 
 #define UFIFO_MAGIC (0xf1f0f1f0)
-#define UFIFO_CHECK_HANDLE_FUNC(handle) \
-    assert((handle));                   \
-    assert((handle)->magic == UFIFO_MAGIC);
+#define UFIFO_CHECK_HANDLE(handle, ...)                     \
+    do {                                                    \
+        if (!(handle) || (handle)->magic != UFIFO_MAGIC) {  \
+            return __VA_ARGS__;                             \
+        }                                                   \
+    } while (0)
 
 struct ufifo {
     unsigned int magic;
