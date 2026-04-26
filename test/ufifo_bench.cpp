@@ -38,7 +38,7 @@ extern "C" {
 }
 
 static constexpr unsigned int FIFO_SIZE = 65536; // 64 KB ring buffer
-static constexpr int WARMUP_ITERS = 1000;
+static constexpr int WARMUP_ITERS = 5000;
 
 // Unique name generator
 static std::atomic<int> g_name_counter{ 0 };
@@ -316,10 +316,12 @@ static BenchResult bench_burst(int data_size, ufifo_lock_e lock, int rounds)
         items_per_burst = 1;
 
     // Warmup
-    for (int i = 0; i < items_per_burst; i++)
-        ufifo_put(fifo, wbuf.data(), data_size);
-    for (int i = 0; i < items_per_burst; i++)
-        ufifo_get(fifo, rbuf.data(), data_size);
+    for (int w = 0; w < WARMUP_ITERS / items_per_burst + 1; w++) {
+        for (int i = 0; i < items_per_burst; i++)
+            ufifo_put(fifo, wbuf.data(), data_size);
+        for (int i = 0; i < items_per_burst; i++)
+            ufifo_get(fifo, rbuf.data(), data_size);
+    }
 
     long long total_ops = 0;
     auto start = std::chrono::high_resolution_clock::now();
@@ -377,6 +379,12 @@ static BenchResult bench_mpsc(int data_size, int num_producers, int items_per_pr
     int total_items = num_producers * items_per_producer;
     std::vector<char> wbuf(data_size, 0xDD);
     std::vector<char> rbuf(data_size, 0);
+
+    // Warmup
+    for (int i = 0; i < WARMUP_ITERS; i++) {
+        ufifo_put(fifo, wbuf.data(), data_size);
+        ufifo_get(fifo, rbuf.data(), data_size);
+    }
 
     auto start = std::chrono::high_resolution_clock::now();
 
@@ -456,6 +464,33 @@ static BenchResult bench_shared_spsc(int data_size, int total_items)
 
     std::vector<char> wbuf(data_size, 0xEE);
     std::vector<char> rbuf(data_size, 0);
+
+    // Warmup
+    std::thread prod_warmup([&]() {
+        int count = 0;
+        while (count < WARMUP_ITERS) {
+            if (ufifo_put(producer, wbuf.data(), data_size) > 0) {
+                ufifo_get(producer, rbuf.data(), data_size);
+                count++;
+            } else {
+                std::this_thread::yield();
+            }
+        }
+    });
+
+    std::thread cons_warmup([&]() {
+        int count = 0;
+        while (count < WARMUP_ITERS) {
+            if (ufifo_get(consumer, rbuf.data(), data_size) > 0) {
+                count++;
+            } else {
+                std::this_thread::yield();
+            }
+        }
+    });
+
+    prod_warmup.join();
+    cons_warmup.join();
 
     auto start = std::chrono::high_resolution_clock::now();
 
@@ -555,6 +590,7 @@ int main(int argc, char **argv)
     if (!g_json_output)
         printf("[1] Single-thread Ping-Pong (put+get round-trip, zero contention)\n");
     print_header();
+    // Short fast-path for nolock to avoid thermal throttling, longer for locked
     int pp_iters = 500000 * scale;
     for (int sz : { 4, 64, 256, 1024, 4096 }) {
         auto r = bench_pingpong(sz, UFIFO_LOCK_NONE, pp_iters);
@@ -562,7 +598,7 @@ int main(int argc, char **argv)
         results.push_back(r);
     }
     for (int sz : { 4, 64, 256, 1024, 4096 }) {
-        auto r = bench_pingpong(sz, UFIFO_LOCK_THREAD, pp_iters);
+        auto r = bench_pingpong(sz, UFIFO_LOCK_THREAD, pp_iters * 4); // Smoother variance
         print_result(r);
         results.push_back(r);
     }
@@ -580,7 +616,8 @@ int main(int argc, char **argv)
         results.push_back(r);
     }
     for (int sz : { 4, 64, 256, 1024 }) {
-        auto r = bench_spsc(sz, UFIFO_LOCK_THREAD, spsc_items);
+        // Multi-threaded locked needs longer runs to offset thread-spawn overhead
+        auto r = bench_spsc(sz, UFIFO_LOCK_THREAD, spsc_items * 3);
         print_result(r);
         results.push_back(r);
     }
@@ -598,7 +635,7 @@ int main(int argc, char **argv)
         results.push_back(r);
     }
     for (int sz : { 4, 64, 256, 1024 }) {
-        auto r = bench_burst(sz, UFIFO_LOCK_THREAD, burst_rounds);
+        auto r = bench_burst(sz, UFIFO_LOCK_THREAD, burst_rounds * 4);
         print_result(r);
         results.push_back(r);
     }
@@ -609,7 +646,8 @@ int main(int argc, char **argv)
     if (!g_json_output)
         printf("[4] MPSC Throughput (multi-producer, single consumer)\n");
     print_header();
-    int mpsc_per_prod = 200000 * scale;
+    // Heavy contention, runs longer to smooth out variance
+    int mpsc_per_prod = 500000 * scale;
     for (int sz : { 4, 64, 256 }) {
         auto r = bench_mpsc(sz, 2, mpsc_per_prod);
         print_result(r);
@@ -627,7 +665,7 @@ int main(int argc, char **argv)
     if (!g_json_output)
         printf("[5] Shared-mode SPSC Throughput (broadcast mode)\n");
     print_header();
-    int shared_items = 200000 * scale;
+    int shared_items = 500000 * scale;
     for (int sz : { 4, 64, 256, 1024 }) {
         auto r = bench_shared_spsc(sz, shared_items);
         print_result(r);
