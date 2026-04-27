@@ -47,7 +47,7 @@ jobs:
 
       - name: Run Tests
         working-directory: build
-        run: ctest --output-on-failure
+        run: ctest --output-on-failure --timeout 300
 
   docs:
     name: Build Documentation
@@ -70,3 +70,30 @@ jobs:
         with:
           name: api-docs
           path: build/docs/html/
+
+  test-install:
+    name: Test Installation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_INSTALL_PREFIX=install_test
+
+      - name: Build and Install
+        run: |
+          cmake --build build -j$(nproc)
+          cmake --build build --target install
+
+      - name: Verify Artifacts
+        run: |
+          ls -R install_test/
+          test -f install_test/lib/libufifo.a
+          test -f install_test/lib/libufifo.so
+          test -L install_test/lib/libufifo.so.0
+          test -f install_test/include/ufifo/ufifo.h
+          test -f install_test/lib/pkgconfig/ufifo.pc

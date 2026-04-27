@@ -66,3 +66,27 @@ jobs:
           generate_release_notes: true
           draft: false
           prerelease: false
+
+  release-docs:
+    name: Build and Release API Docs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake doxygen
+
+      - name: Configure CMake
+        run: cmake -B build
+
+      - name: Build Documentation
+        run: cmake --build build --target doc
+
+      - name: Package Documentation
+        run: tar -czvf ufifo-${{ github.ref_name }}-api-docs.tar.gz -C build/docs/html .
+
+      - name: Upload Release Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ufifo-${{ github.ref_name }}-api-docs.tar.gz

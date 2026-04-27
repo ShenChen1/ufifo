@@ -10,6 +10,14 @@
 extern "C" {
 #endif
 
+#ifndef UFIFO_API
+#if defined __GNUC__ && __GNUC__ >= 4
+  #define UFIFO_API __attribute__ ((visibility ("default")))
+#else
+  #define UFIFO_API
+#endif
+#endif
+
 /**
  * @brief Hook callbacks for record-oriented mode.
  *
@@ -99,54 +107,54 @@ typedef struct ufifo ufifo_t;
  * @param handle [out] Receives the created FIFO handle on success.
  * @return 0 on success, negative errno on failure.
  */
-int ufifo_open(const char *name, const ufifo_init_t *init, ufifo_t **handle);
+UFIFO_API int ufifo_open(const char *name, const ufifo_init_t *init, ufifo_t **handle);
 
 /**
  * @brief Close handle (detach only, shared memory persists).
  * @param handle FIFO handle to close.
  * @return 0 on success.
  */
-int ufifo_close(ufifo_t *handle);
+UFIFO_API int ufifo_close(ufifo_t *handle);
 
 /**
  * @brief Destroy handle and unlink the underlying shared memory.
  * @param handle FIFO handle to destroy.
  * @return 0 on success.
  */
-int ufifo_destroy(ufifo_t *handle);
+UFIFO_API int ufifo_destroy(ufifo_t *handle);
 
 /**
  * @brief Get total buffer capacity.
  * @param handle FIFO handle.
  * @return Buffer size in bytes.
  */
-unsigned int ufifo_size(ufifo_t *handle);
+UFIFO_API unsigned int ufifo_size(ufifo_t *handle);
 
 /**
  * @brief Reset all read/write pointers to zero (clear data).
  * @param handle FIFO handle.
  */
-void ufifo_reset(ufifo_t *handle);
+UFIFO_API void ufifo_reset(ufifo_t *handle);
 
 /**
  * @brief Get bytes of data currently stored.
  * @param handle FIFO handle.
  * @return Number of bytes used.
  */
-unsigned int ufifo_len(ufifo_t *handle);
+UFIFO_API unsigned int ufifo_len(ufifo_t *handle);
 
 /**
  * @brief Discard the next record (record mode) or data (byte-stream).
  * @param handle FIFO handle.
  */
-void ufifo_skip(ufifo_t *handle);
+UFIFO_API void ufifo_skip(ufifo_t *handle);
 
 /**
  * @brief Get byte-length of the next record.
  * @param handle FIFO handle.
  * @return Record size in bytes, 0 if FIFO is empty.
  */
-unsigned int ufifo_peek_len(ufifo_t *handle);
+UFIFO_API unsigned int ufifo_peek_len(ufifo_t *handle);
 
 /**
  * @brief Non-blocking write.
@@ -155,7 +163,7 @@ unsigned int ufifo_peek_len(ufifo_t *handle);
  * @param size   Number of bytes to write.
  * @return Bytes written, 0 if FIFO is full.
  */
-unsigned int ufifo_put(ufifo_t *handle, void *buf, unsigned int size);
+UFIFO_API unsigned int ufifo_put(ufifo_t *handle, void *buf, unsigned int size);
 
 /**
  * @brief Blocking write — waits indefinitely for space.
@@ -164,7 +172,7 @@ unsigned int ufifo_put(ufifo_t *handle, void *buf, unsigned int size);
  * @param size   Number of bytes to write.
  * @return Bytes written.
  */
-unsigned int ufifo_put_block(ufifo_t *handle, void *buf, unsigned int size);
+UFIFO_API unsigned int ufifo_put_block(ufifo_t *handle, void *buf, unsigned int size);
 
 /**
  * @brief Timed write.
@@ -174,7 +182,7 @@ unsigned int ufifo_put_block(ufifo_t *handle, void *buf, unsigned int size);
  * @param millisec Timeout in milliseconds.
  * @return Bytes written, 0 on timeout.
  */
-unsigned int ufifo_put_timeout(ufifo_t *handle, void *buf, unsigned int size, long millisec);
+UFIFO_API unsigned int ufifo_put_timeout(ufifo_t *handle, void *buf, unsigned int size, long millisec);
 
 /**
  * @brief Non-blocking read.
@@ -183,7 +191,7 @@ unsigned int ufifo_put_timeout(ufifo_t *handle, void *buf, unsigned int size, lo
  * @param size   Buffer capacity in bytes.
  * @return Bytes read, 0 if FIFO is empty.
  */
-unsigned int ufifo_get(ufifo_t *handle, void *buf, unsigned int size);
+UFIFO_API unsigned int ufifo_get(ufifo_t *handle, void *buf, unsigned int size);
 
 /**
  * @brief Blocking read — waits indefinitely for data.
@@ -192,7 +200,7 @@ unsigned int ufifo_get(ufifo_t *handle, void *buf, unsigned int size);
  * @param size   Buffer capacity in bytes.
  * @return Bytes read.
  */
-unsigned int ufifo_get_block(ufifo_t *handle, void *buf, unsigned int size);
+UFIFO_API unsigned int ufifo_get_block(ufifo_t *handle, void *buf, unsigned int size);
 
 /**
  * @brief Timed read.
@@ -202,7 +210,7 @@ unsigned int ufifo_get_block(ufifo_t *handle, void *buf, unsigned int size);
  * @param millisec Timeout in milliseconds.
  * @return Bytes read, 0 on timeout.
  */
-unsigned int ufifo_get_timeout(ufifo_t *handle, void *buf, unsigned int size, long millisec);
+UFIFO_API unsigned int ufifo_get_timeout(ufifo_t *handle, void *buf, unsigned int size, long millisec);
 
 /**
  * @brief Non-blocking peek (read without consuming).
@@ -211,7 +219,7 @@ unsigned int ufifo_get_timeout(ufifo_t *handle, void *buf, unsigned int size, lo
  * @param size   Buffer capacity in bytes.
  * @return Bytes read, 0 if FIFO is empty.
  */
-unsigned int ufifo_peek(ufifo_t *handle, void *buf, unsigned int size);
+UFIFO_API unsigned int ufifo_peek(ufifo_t *handle, void *buf, unsigned int size);
 
 /**
  * @brief Blocking peek — waits indefinitely for data.
@@ -220,7 +228,7 @@ unsigned int ufifo_peek(ufifo_t *handle, void *buf, unsigned int size);
  * @param size   Buffer capacity in bytes.
  * @return Bytes read.
  */
-unsigned int ufifo_peek_block(ufifo_t *handle, void *buf, unsigned int size);
+UFIFO_API unsigned int ufifo_peek_block(ufifo_t *handle, void *buf, unsigned int size);
 
 /**
  * @brief Timed peek (read without consuming).
@@ -230,7 +238,7 @@ unsigned int ufifo_peek_block(ufifo_t *handle, void *buf, unsigned int size);
  * @param millisec Timeout in milliseconds.
  * @return Bytes read, 0 on timeout.
  */
-unsigned int ufifo_peek_timeout(ufifo_t *handle, void *buf, unsigned int size, long millisec);
+UFIFO_API unsigned int ufifo_peek_timeout(ufifo_t *handle, void *buf, unsigned int size, long millisec);
 
 /**
  * @brief Seek to oldest record matching @p tag.
@@ -238,7 +246,7 @@ unsigned int ufifo_peek_timeout(ufifo_t *handle, void *buf, unsigned int size, l
  * @param tag    Tag value to search for.
  * @return 0 on success, -ESPIPE if tag not found (FIFO drained).
  */
-int ufifo_oldest(ufifo_t *handle, unsigned int tag);
+UFIFO_API int ufifo_oldest(ufifo_t *handle, unsigned int tag);
 
 /**
  * @brief Seek to newest record matching @p tag, discarding older ones.
@@ -246,7 +254,7 @@ int ufifo_oldest(ufifo_t *handle, unsigned int tag);
  * @param tag    Tag value to search for.
  * @return 0 on success, -ESPIPE if tag not found (FIFO drained).
  */
-int ufifo_newest(ufifo_t *handle, unsigned int tag);
+UFIFO_API int ufifo_newest(ufifo_t *handle, unsigned int tag);
 
 /**
  * @brief Get fd for epoll multiplexing (cross-process safe).
@@ -261,8 +269,8 @@ int ufifo_newest(ufifo_t *handle, unsigned int tag);
  * @param handle FIFO handle.
  * @return fd (>= 0) on success, -1 on failure.
  */
-int ufifo_get_rx_fd(ufifo_t *handle);
-int ufifo_get_tx_fd(ufifo_t *handle);
+UFIFO_API int ufifo_get_rx_fd(ufifo_t *handle);
+UFIFO_API int ufifo_get_tx_fd(ufifo_t *handle);
 
 /**
  * @brief Drain pending RX/TX notifications from the epoll file descriptor.
@@ -277,20 +285,20 @@ int ufifo_get_tx_fd(ufifo_t *handle);
  * @param handle FIFO handle.
  * @return 0 on success, -EINVAL if no epoll fd has been registered.
  */
-int ufifo_drain_rx_fd(ufifo_t *handle);
-int ufifo_drain_tx_fd(ufifo_t *handle);
+UFIFO_API int ufifo_drain_rx_fd(ufifo_t *handle);
+UFIFO_API int ufifo_drain_tx_fd(ufifo_t *handle);
 
 /**
  * @brief Dump the internal status of the FIFO for debugging.
  * @param handle FIFO handle.
  */
-void ufifo_dump(ufifo_t *handle);
+UFIFO_API void ufifo_dump(ufifo_t *handle);
 
 /**
  * @brief Get the currently linked library's version string.
  * @return Null-terminated version string (e.g. "v1.2.3" or git hash).
  */
-const char *ufifo_get_version(void);
+UFIFO_API const char *ufifo_get_version(void);
 
 /**
  * @brief Get structured version information.
@@ -304,7 +312,7 @@ const char *ufifo_get_version(void);
  * @param ver    [out] Receives the version info.
  * @return 0 on success, -EINVAL if @p ver is NULL.
  */
-int ufifo_get_version_info(ufifo_t *handle, ufifo_version_t *ver);
+UFIFO_API int ufifo_get_version_info(ufifo_t *handle, ufifo_version_t *ver);
 
 #ifdef __cplusplus
 }

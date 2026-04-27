@@ -57,9 +57,11 @@ endif()
 add_library(ufifo_shared SHARED ${LIB_SOURCES})
 set_target_properties(ufifo_shared PROPERTIES
     OUTPUT_NAME ufifo
+    VERSION ${UFIFO_VERSION_MAJOR}.${UFIFO_VERSION_MINOR}.${UFIFO_VERSION_PATCH}
+    SOVERSION ${UFIFO_VERSION_MAJOR}
     POSITION_INDEPENDENT_CODE ON
 )
-target_compile_options(ufifo_shared PRIVATE -g -Os -Wall -Werror)
+target_compile_options(ufifo_shared PRIVATE -g -Os -Wall -Werror -fvisibility=hidden)
 if(COVERAGE)
     ufifo_enable_coverage(ufifo_shared)
 endif()
@@ -92,6 +94,12 @@ configure_file(
 install(FILES inc/ufifo.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/ufifo
     COMPONENT release
+)
+
+install(TARGETS ufifo_shared ufifo_static
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT release
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT release
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT release
 )
 
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/ufifo.pc
