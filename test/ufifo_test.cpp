@@ -96,7 +96,7 @@ TEST_F(UfifoApiTest, OpenWithNullName)
 TEST_F(UfifoApiTest, OpenWithNullInit)
 {
     ufifo_t *fifo = nullptr;
-    EXPECT_NE(0, ufifo_open(const_cast<char *>("test"), nullptr, &fifo));
+    EXPECT_NE(0, ufifo_open("test", nullptr, &fifo));
 }
 
 TEST_F(UfifoApiTest, OpenWithInvalidOpt)
@@ -108,7 +108,7 @@ TEST_F(UfifoApiTest, OpenWithInvalidOpt)
     init.alloc.max_users = 1;
     std::string name = GenerateName("invalid_opt");
     ufifo_t *fifo = nullptr;
-    EXPECT_NE(0, ufifo_open(const_cast<char *>(name.c_str()), &init, &fifo));
+    EXPECT_NE(0, ufifo_open(name.c_str(), &init, &fifo));
 }
 
 TEST_F(UfifoApiTest, OpenWithInvalidLock)
@@ -121,7 +121,7 @@ TEST_F(UfifoApiTest, OpenWithInvalidLock)
     init.alloc.max_users = 1;
     std::string name = GenerateName("invalid_lock");
     ufifo_t *fifo = nullptr;
-    EXPECT_NE(0, ufifo_open(const_cast<char *>(name.c_str()), &init, &fifo));
+    EXPECT_NE(0, ufifo_open(name.c_str(), &init, &fifo));
 }
 
 TEST_F(UfifoApiTest, OpenWithZeroSize)
@@ -133,7 +133,7 @@ TEST_F(UfifoApiTest, OpenWithZeroSize)
     init.alloc.max_users = 1;
     std::string name = GenerateName("zero_size");
     ufifo_t *fifo = nullptr;
-    EXPECT_NE(0, ufifo_open(const_cast<char *>(name.c_str()), &init, &fifo));
+    EXPECT_NE(0, ufifo_open(name.c_str(), &init, &fifo));
 }
 
 TEST_F(UfifoApiTest, OpenWithNullHandle)
@@ -144,7 +144,7 @@ TEST_F(UfifoApiTest, OpenWithNullHandle)
     init.alloc.force = 1;
     init.alloc.max_users = 1;
     std::string name = GenerateName("null_handle");
-    EXPECT_NE(0, ufifo_open(const_cast<char *>(name.c_str()), &init, nullptr));
+    EXPECT_NE(0, ufifo_open(name.c_str(), &init, nullptr));
 }
 
 TEST_F(UfifoApiTest, OpenWithEmptyName)
@@ -155,7 +155,7 @@ TEST_F(UfifoApiTest, OpenWithEmptyName)
     init.alloc.force = 1;
     init.alloc.max_users = 1;
     ufifo_t *fifo = nullptr;
-    EXPECT_NE(0, ufifo_open(const_cast<char *>(""), &init, &fifo));
+    EXPECT_NE(0, ufifo_open("", &init, &fifo));
 }
 
 TEST_F(UfifoApiTest, OpenWithInvalidDataMode)
@@ -168,7 +168,7 @@ TEST_F(UfifoApiTest, OpenWithInvalidDataMode)
     init.alloc.max_users = 1;
     std::string name = GenerateName("invalid_mode");
     ufifo_t *fifo = nullptr;
-    EXPECT_NE(0, ufifo_open(const_cast<char *>(name.c_str()), &init, &fifo));
+    EXPECT_NE(0, ufifo_open(name.c_str(), &init, &fifo));
 }
 
 TEST_F(UfifoApiTest, OpenWithZeroMaxUsers)
@@ -180,7 +180,7 @@ TEST_F(UfifoApiTest, OpenWithZeroMaxUsers)
     init.alloc.max_users = 0;
     std::string name = GenerateName("zero_users");
     ufifo_t *fifo = nullptr;
-    EXPECT_NE(0, ufifo_open(const_cast<char *>(name.c_str()), &init, &fifo));
+    EXPECT_NE(0, ufifo_open(name.c_str(), &init, &fifo));
 }
 
 TEST_F(UfifoApiTest, AttachNonExistent)
@@ -188,7 +188,7 @@ TEST_F(UfifoApiTest, AttachNonExistent)
     ufifo_init_t init = {};
     init.opt = UFIFO_OPT_ATTACH;
     ufifo_t *fifo = nullptr;
-    EXPECT_NE(0, ufifo_open(const_cast<char *>("nonexistent_fifo_xyz"), &init, &fifo));
+    EXPECT_NE(0, ufifo_open("nonexistent_fifo_xyz", &init, &fifo));
 }
 
 // Version compatibility: mismatched major version should fail with -EPROTO
@@ -204,7 +204,7 @@ TEST_F(UfifoApiTest, VersionMismatchMajor)
     init.alloc.max_users = 2;
 
     ufifo_t *fifo = nullptr;
-    ASSERT_EQ(0, ufifo_open(const_cast<char *>(name.c_str()), &init, &fifo));
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &fifo));
 
     /*
      * Tamper with version_major in shared memory ctrl via fork.
@@ -239,7 +239,7 @@ TEST_F(UfifoApiTest, VersionMismatchMajor)
         ufifo_init_t att = {};
         att.opt = UFIFO_OPT_ATTACH;
         ufifo_t *h = nullptr;
-        int ret = ufifo_open(const_cast<char *>(name.c_str()), &att, &h);
+        int ret = ufifo_open(name.c_str(), &att, &h);
         _exit(ret == -EPROTO ? 0 : 2);
     } else {
         ASSERT_GT(pid, 0);
@@ -293,7 +293,7 @@ TEST_F(UfifoApiTest, VersionMismatchViaRawShm)
     ufifo_init_t init = {};
     init.opt = UFIFO_OPT_ATTACH;
     ufifo_t *fifo = nullptr;
-    EXPECT_EQ(-EPROTO, ufifo_open(const_cast<char *>(name.c_str()), &init, &fifo));
+    EXPECT_EQ(-EPROTO, ufifo_open(name.c_str(), &init, &fifo));
     EXPECT_EQ(nullptr, fifo);
 
     // 4. Cleanup shm
@@ -314,7 +314,7 @@ TEST_F(UfifoApiTest, VersionInfoNullVer)
     init.alloc.max_users = 1;
 
     ufifo_t *fifo = nullptr;
-    ASSERT_EQ(0, ufifo_open(const_cast<char *>(name.c_str()), &init, &fifo));
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &fifo));
     EXPECT_EQ(-EINVAL, ufifo_get_version_info(fifo, nullptr));
     ufifo_destroy(fifo);
 }
@@ -342,7 +342,7 @@ TEST_F(UfifoApiTest, VersionInfoHandleMatchesLib)
     init.alloc.max_users = 2;
 
     ufifo_t *fifo = nullptr;
-    ASSERT_EQ(0, ufifo_open(const_cast<char *>(name.c_str()), &init, &fifo));
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &fifo));
 
     ufifo_version_t lib_ver = {};
     ufifo_version_t handle_ver = {};
@@ -371,12 +371,12 @@ TEST_F(UfifoApiTest, VersionInfoAttachSeesCreatorVersion)
     init.alloc.max_users = 2;
 
     ufifo_t *creator = nullptr;
-    ASSERT_EQ(0, ufifo_open(const_cast<char *>(name.c_str()), &init, &creator));
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &creator));
 
     ufifo_init_t attach = {};
     attach.opt = UFIFO_OPT_ATTACH;
     ufifo_t *client = nullptr;
-    ASSERT_EQ(0, ufifo_open(const_cast<char *>(name.c_str()), &attach, &client));
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &attach, &client));
 
     ufifo_version_t creator_ver = {};
     ufifo_version_t client_ver = {};
@@ -404,7 +404,7 @@ TEST_F(UfifoApiTest, Dump)
 
     std::string name = GenerateName("dump_test");
     ufifo_t *fifo = nullptr;
-    ASSERT_EQ(0, ufifo_open(const_cast<char *>(name.c_str()), &init, &fifo));
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &fifo));
 
     int val = 42;
     ufifo_put(fifo, &val, sizeof(val));
@@ -746,7 +746,7 @@ class TagSpecificTest : public ::testing::Test {
         init.hook.recsize = tagged_recsize;
         init.hook.rectag = tagged_rectag;
 
-        ufifo_open(const_cast<char *>(name_.c_str()), &init, &fifo_);
+        ufifo_open(name_.c_str(), &init, &fifo_);
     }
 
     void TearDown() override
@@ -844,13 +844,13 @@ TEST_F(EdgeCaseTest, AllocForceOverwrite)
     init.alloc.max_users = 1;
 
     ufifo_t *fifo = nullptr;
-    ASSERT_EQ(0, ufifo_open(const_cast<char *>(name.c_str()), &init, &fifo));
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &fifo));
     int val = 99;
     ufifo_put(fifo, &val, sizeof(val));
     ufifo_destroy(fifo);
 
     init.alloc.size = 128; // Force overwrite with different parameters
-    ASSERT_EQ(0, ufifo_open(const_cast<char *>(name.c_str()), &init, &fifo));
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &fifo));
     EXPECT_EQ(0u, ufifo_len(fifo));
     ufifo_destroy(fifo);
 }
@@ -867,7 +867,7 @@ TEST_F(EdgeCaseTest, ProcessLockCrashRecovery)
     init.alloc.max_users = 2;
 
     ufifo_t *fifo = nullptr;
-    ASSERT_EQ(0, ufifo_open(const_cast<char *>(name.c_str()), &init, &fifo));
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &fifo));
 
     pid_t pid = fork();
     if (pid == 0) {
@@ -900,15 +900,15 @@ TEST_F(EdgeCaseTest, SharedModeUserLimit)
     init.alloc.max_users = 2;
 
     ufifo_t *fifo = nullptr;
-    ASSERT_EQ(0, ufifo_open(const_cast<char *>(name.c_str()), &init, &fifo));
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &fifo));
 
     ufifo_t *c1 = nullptr;
     ufifo_init_t attach = {};
     attach.opt = UFIFO_OPT_ATTACH;
-    ASSERT_EQ(0, ufifo_open(const_cast<char *>(name.c_str()), &attach, &c1));
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &attach, &c1));
 
     ufifo_t *c2 = nullptr;
-    EXPECT_NE(0, ufifo_open(const_cast<char *>(name.c_str()), &attach, &c2));
+    EXPECT_NE(0, ufifo_open(name.c_str(), &attach, &c2));
 
     if (c1)
         ufifo_close(c1);
@@ -931,12 +931,12 @@ TEST_F(EdgeCaseTest, SharedModePutRespectsMinOut)
     init.alloc.max_users = 2;
 
     ufifo_t *h1 = nullptr;
-    ASSERT_EQ(0, ufifo_open(const_cast<char *>(name.c_str()), &init, &h1));
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &h1));
 
     ufifo_t *h2 = nullptr;
     ufifo_init_t attach = {};
     attach.opt = UFIFO_OPT_ATTACH;
-    ASSERT_EQ(0, ufifo_open(const_cast<char *>(name.c_str()), &attach, &h2));
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &attach, &h2));
 
     // Step 1: H1 puts 120 bytes of 0xAA → in=120
     char buf_a[120];
@@ -983,12 +983,12 @@ TEST_F(EdgeCaseTest, SharedModeNoUnsignedOverflow)
     init.alloc.max_users = 2;
 
     ufifo_t *h1 = nullptr;
-    ASSERT_EQ(0, ufifo_open(const_cast<char *>(name.c_str()), &init, &h1));
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &h1));
 
     ufifo_t *h2 = nullptr;
     ufifo_init_t attach = {};
     attach.opt = UFIFO_OPT_ATTACH;
-    ASSERT_EQ(0, ufifo_open(const_cast<char *>(name.c_str()), &attach, &h2));
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &attach, &h2));
 
     // H1 repeatedly puts 128B then gets 128B. H2 never gets.
     // Without fix: in keeps growing, unsigned overflow allows infinite puts
@@ -1422,7 +1422,7 @@ TEST_F(UfifoReapTest, ReapDeadUserOnRegister)
     init.alloc.force = 1;
 
     ufifo_t *fifo1 = nullptr;
-    ASSERT_EQ(0, ufifo_open(const_cast<char *>(name.c_str()), &init, &fifo1));
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &fifo1));
 
     // Slot 0 is taken by fifo1.
     // Now take Slot 1 via a child process that then dies.
@@ -1431,7 +1431,7 @@ TEST_F(UfifoReapTest, ReapDeadUserOnRegister)
         ufifo_init_t attach_init = {};
         attach_init.opt = UFIFO_OPT_ATTACH;
         ufifo_t *fifo_child = nullptr;
-        if (ufifo_open(const_cast<char *>(name.c_str()), &attach_init, &fifo_child) == 0) {
+        if (ufifo_open(name.c_str(), &attach_init, &fifo_child) == 0) {
             exit(0);
         }
         exit(1);
@@ -1447,7 +1447,7 @@ TEST_F(UfifoReapTest, ReapDeadUserOnRegister)
     attach_init.opt = UFIFO_OPT_ATTACH;
 
     // This should succeed by reaping the dead child
-    ASSERT_EQ(0, ufifo_open(const_cast<char *>(name.c_str()), &attach_init, &fifo2));
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &attach_init, &fifo2));
 
     ufifo_close(fifo2);
     ufifo_destroy(fifo1);
@@ -1464,7 +1464,7 @@ TEST_F(UfifoReapTest, ReapDeadUserOnPut)
     init.alloc.force = 1;
 
     ufifo_t *producer = nullptr;
-    ASSERT_EQ(0, ufifo_open(const_cast<char *>(name.c_str()), &init, &producer));
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &producer));
 
     // Start a reader process that reads one byte then dies.
     pid_t pid = fork();
@@ -1472,7 +1472,7 @@ TEST_F(UfifoReapTest, ReapDeadUserOnPut)
         ufifo_init_t attach_init = {};
         attach_init.opt = UFIFO_OPT_ATTACH;
         ufifo_t *reader = nullptr;
-        if (ufifo_open(const_cast<char *>(name.c_str()), &attach_init, &reader) == 0) {
+        if (ufifo_open(name.c_str(), &attach_init, &reader) == 0) {
             char b;
             if (ufifo_get_block(reader, &b, 1) == 1) {
                 exit(0);

@@ -99,7 +99,7 @@ typedef struct ufifo ufifo_t;
  * @param handle [out] Receives the created FIFO handle on success.
  * @return 0 on success, negative errno on failure.
  */
-int ufifo_open(char *name, ufifo_init_t *init, ufifo_t **handle);
+int ufifo_open(const char *name, const ufifo_init_t *init, ufifo_t **handle);
 
 /**
  * @brief Close handle (detach only, shared memory persists).

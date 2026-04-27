@@ -125,7 +125,7 @@ class UfifoTestAdapter {
         }
 
         ufifo_t *fifo = nullptr;
-        int ret = ufifo_open(const_cast<char *>(name_.c_str()), &init, &fifo);
+        int ret = ufifo_open(name_.c_str(), &init, &fifo);
         if (ret == 0) {
             std::lock_guard<std::mutex> lock(mutex_);
             handles_.push_back(fifo);
@@ -165,7 +165,7 @@ class UfifoTestAdapter {
             break;
         }
 
-        int ret = ufifo_open(const_cast<char *>(name_.c_str()), &init, handle);
+        int ret = ufifo_open(name_.c_str(), &init, handle);
         if (ret == 0) {
             std::lock_guard<std::mutex> lock(mutex_);
             handles_.push_back(*handle);

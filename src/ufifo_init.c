@@ -298,11 +298,12 @@ static int __ufifo_init_validate(const ufifo_init_t *init)
     return 0;
 }
 
-int ufifo_open(char *name, ufifo_init_t *init, ufifo_t **handle)
+int ufifo_open(const char *name, const ufifo_init_t *init, ufifo_t **handle)
 {
     int ret = 0;
     ufifo_t *fifo = NULL;
     int is_alloc = 0;
+    ufifo_init_t fifo_init;
 
     if (name == NULL || init == NULL || handle == NULL)
         return -EINVAL;
@@ -310,6 +311,7 @@ int ufifo_open(char *name, ufifo_init_t *init, ufifo_t **handle)
     ret = __ufifo_init_validate(init);
     if (ret < 0)
         return ret;
+    memcpy(&fifo_init, init, sizeof(ufifo_init_t));
 
     fifo = calloc(1, sizeof(ufifo_t));
     if (fifo == NULL)
@@ -318,17 +320,17 @@ int ufifo_open(char *name, ufifo_init_t *init, ufifo_t **handle)
     fifo->tx_efd = -1;
 
     strncpy(fifo->name, name, sizeof(fifo->name) - 1);
-    ret = __ufifo_hook_init(fifo, &init->hook);
+    ret = __ufifo_hook_init(fifo, &fifo_init.hook);
     if (ret < 0)
         goto err1;
 
-    if (init->opt == UFIFO_OPT_ALLOC) {
-        if (init->alloc.force) {
+    if (fifo_init.opt == UFIFO_OPT_ALLOC) {
+        if (fifo_init.alloc.force) {
             fifo->shm_fd = shm_open(name, O_RDWR | O_CREAT, (S_IRUSR | S_IWUSR));
         } else {
             fifo->shm_fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, (S_IRUSR | S_IWUSR));
             if (fifo->shm_fd < 0 && errno == EEXIST) {
-                init->opt = UFIFO_OPT_ATTACH;
+                fifo_init.opt = UFIFO_OPT_ATTACH;
                 fifo->shm_fd = shm_open(name, O_RDWR, (S_IRUSR | S_IWUSR));
             }
         }
@@ -340,13 +342,13 @@ int ufifo_open(char *name, ufifo_init_t *init, ufifo_t **handle)
         goto err1;
     }
 
-    if (init->opt == UFIFO_OPT_ALLOC) {
+    if (fifo_init.opt == UFIFO_OPT_ALLOC) {
         is_alloc = 1;
         if (__ufifo_init_lock(fifo->shm_fd) < 0) {
             ret = -errno;
             goto err2;
         }
-        ret = __ufifo_init_from_user(fifo, &init->alloc);
+        ret = __ufifo_init_from_user(fifo, &fifo_init.alloc);
         __ufifo_init_unlock(fifo->shm_fd);
         if (ret < 0)
             goto err2;
