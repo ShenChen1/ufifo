@@ -9,6 +9,7 @@ option(COVERAGE "Enable code coverage with gcov/lcov" OFF)
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 add_compile_definitions(_GNU_SOURCE)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Output directories
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
@@ -16,7 +17,7 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
 # Include directories
-include_directories(${CMAKE_SOURCE_DIR}/inc)
+# (Moved to target_include_directories)
 
 include(GNUInstallDirs)
 
@@ -48,6 +49,7 @@ set_target_properties(ufifo_static PROPERTIES
     OUTPUT_NAME ufifo
     POSITION_INDEPENDENT_CODE ON
 )
+target_include_directories(ufifo_static PUBLIC inc)
 target_compile_options(ufifo_static PRIVATE -g -Os -Wall -Werror)
 if(COVERAGE)
     ufifo_enable_coverage(ufifo_static)
@@ -61,6 +63,7 @@ set_target_properties(ufifo_shared PROPERTIES
     SOVERSION ${UFIFO_VERSION_MAJOR}
     POSITION_INDEPENDENT_CODE ON
 )
+target_include_directories(ufifo_shared PUBLIC inc)
 target_compile_options(ufifo_shared PRIVATE -g -Os -Wall -Werror -fvisibility=hidden)
 if(COVERAGE)
     ufifo_enable_coverage(ufifo_shared)

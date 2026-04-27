@@ -6,15 +6,17 @@
 #ifndef _UFIFO_H_
 #define _UFIFO_H_
 
+#include <stdarg.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 #ifndef UFIFO_API
 #if defined __GNUC__ && __GNUC__ >= 4
-  #define UFIFO_API __attribute__ ((visibility ("default")))
+#define UFIFO_API __attribute__((visibility("default")))
 #else
-  #define UFIFO_API
+#define UFIFO_API
 #endif
 #endif
 
@@ -287,6 +289,21 @@ UFIFO_API int ufifo_get_tx_fd(ufifo_t *handle);
  */
 UFIFO_API int ufifo_drain_rx_fd(ufifo_t *handle);
 UFIFO_API int ufifo_drain_tx_fd(ufifo_t *handle);
+
+/**
+ * @brief User-defined log callback.
+ * @param arg User-provided context.
+ * @param fmt Format string.
+ * @param ap  Argument list.
+ */
+typedef void (*ufifo_log_cb)(void *arg, const char *fmt, va_list ap);
+
+/**
+ * @brief Set global log handler for the library.
+ * @param cb  Log callback function.
+ * @param arg User context passed to the callback.
+ */
+UFIFO_API void ufifo_set_log_handler(ufifo_log_cb cb, void *arg);
 
 /**
  * @brief Dump the internal status of the FIFO for debugging.

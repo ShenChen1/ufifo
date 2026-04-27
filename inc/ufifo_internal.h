@@ -7,11 +7,11 @@
 #include "ufifo_layout.h"
 
 #define UFIFO_MAGIC (0xf1f0f1f0)
-#define UFIFO_CHECK_HANDLE(handle, ...)                     \
-    do {                                                    \
-        if (!(handle) || (handle)->magic != UFIFO_MAGIC) {  \
-            return __VA_ARGS__;                             \
-        }                                                   \
+#define UFIFO_CHECK_HANDLE(handle, ...)                    \
+    do {                                                   \
+        if (!(handle) || (handle)->magic != UFIFO_MAGIC) { \
+            return __VA_ARGS__;                            \
+        }                                                  \
     } while (0)
 
 struct ufifo {
@@ -63,5 +63,6 @@ void __ufifo_efd_notify_tx(ufifo_t *handle);
 /* ufifo_init.c */
 void __ufifo_reap_dead_user(ufifo_t *handle, unsigned int user_id);
 int __ufifo_is_shared(ufifo_t *handle);
+void __ufifo_log(const char *fmt, ...);
 
 #endif /* UFIFO_INTERNAL_H */

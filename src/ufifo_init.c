@@ -91,14 +91,13 @@ static int __ufifo_version_check(ufifo_ctrl_t *ctrl)
     ufifo_get_version_info(NULL, &ver);
 
     if (ctrl->ver.major != ver.major) {
-        fprintf(stderr,
-                "ufifo: version mismatch (shm=%u.%u.%u, lib=%u.%u.%u)\n",
-                ctrl->ver.major,
-                ctrl->ver.minor,
-                ctrl->ver.patch,
-                ver.major,
-                ver.minor,
-                ver.patch);
+        __ufifo_log("ufifo: version mismatch (shm=%u.%u.%u, lib=%u.%u.%u)\n",
+                    ctrl->ver.major,
+                    ctrl->ver.minor,
+                    ctrl->ver.patch,
+                    ver.major,
+                    ver.minor,
+                    ver.patch);
         return -EPROTO;
     }
     return 0;
