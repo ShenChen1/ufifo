@@ -48,3 +48,25 @@ jobs:
       - name: Run Tests
         working-directory: build
         run: ctest --output-on-failure
+
+  docs:
+    name: Build Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake doxygen
+
+      - name: Configure CMake
+        run: cmake -B build
+
+      - name: Build Documentation
+        run: cmake --build build --target doc
+
+      - name: Upload Documentation
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-docs
+          path: build/docs/html/

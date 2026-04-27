@@ -1,0 +1,10 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+exec_prefix=${prefix}
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: @CMAKE_PROJECT_NAME@
+Description: High performance shared memory ring buffer IPC
+Version: @UFIFO_VERSION_MAJOR@.@UFIFO_VERSION_MINOR@.@UFIFO_VERSION_PATCH@
+Libs: -L${libdir} -lufifo -lrt -lpthread
+Cflags: -I${includedir}/ufifo

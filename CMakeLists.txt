@@ -18,12 +18,15 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 # Include directories
 include_directories(${CMAKE_SOURCE_DIR}/inc)
 
+include(GNUInstallDirs)
+
 # Include custom modules
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 include(GitVersion)
 include(Sanitizers)
 include(Coverage)
 include(DbgInfo)
+include(Doxygen)
 
 # Find required libraries
 find_library(RT_LIBRARY rt)
@@ -78,15 +81,27 @@ foreach(example ${EXAMPLES})
     target_link_libraries(${example} PRIVATE ufifo_static ${RT_LIBRARY} ${PTHREAD_LIBRARY})
 endforeach()
 
+# Generate pkg-config file
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/ufifo.pc.in
+    ${CMAKE_CURRENT_BINARY_DIR}/ufifo.pc
+    @ONLY
+)
+
 # Install targets
 install(FILES inc/ufifo.h
-    DESTINATION include/ufifo
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/ufifo
+    COMPONENT release
+)
+
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/ufifo.pc
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig
     COMPONENT release
 )
 
 # Use DbgInfo to install targets and separate debug info
-ufifo_target_separate_dbginfo(ufifo_shared lib release dbgsym)
-ufifo_target_separate_dbginfo(ufifo_static lib release dbgsym)
+ufifo_target_separate_dbginfo(ufifo_shared ${CMAKE_INSTALL_LIBDIR} release dbgsym)
+ufifo_target_separate_dbginfo(ufifo_static ${CMAKE_INSTALL_LIBDIR} release dbgsym)
 
 # Test target
 enable_testing()
