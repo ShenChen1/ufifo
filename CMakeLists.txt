@@ -8,6 +8,7 @@ option(COVERAGE "Enable code coverage with gcov/lcov" OFF)
 # Compiler settings
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
+add_compile_definitions(_GNU_SOURCE)
 
 # Output directories
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)

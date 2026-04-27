@@ -1,7 +1,5 @@
 #ifndef UFIFO_INTERNAL_H
 #define UFIFO_INTERNAL_H
-
-#define _GNU_SOURCE
 #include <limits.h>
 
 #include "kfifo.h"

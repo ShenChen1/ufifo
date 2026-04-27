@@ -26,9 +26,6 @@
 #include <vector>
 
 #if defined(__linux__)
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
 #include <pthread.h>
 #include <sched.h>
 #endif
