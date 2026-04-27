@@ -43,9 +43,11 @@ void ufifo_dump(ufifo_t *handle)
     printf("Rx Efd: %d, Tx Efd: %d\n", handle->rx_efd, handle->tx_efd);
 
     unsigned int i;
-    ufifo_for_each_active_user(handle, i) {
-        unsigned int u_out = READ_ONCE(&handle->ctrl->users[i].out);
-        printf("  User[%u]: pid = %d, out = %u (offset: %u)\n", i, handle->ctrl->users[i].pid, u_out, u_out & mask);
+    for (i = 0; i < handle->ctrl->max_users; i++) {
+        if (READ_ONCE(&handle->ctrl->users[i].active)) {
+            unsigned int u_out = READ_ONCE(&handle->ctrl->users[i].out);
+            printf("  User[%u]: pid = %d, out = %u (offset: %u)\n", i, handle->ctrl->users[i].pid, u_out, u_out & mask);
+        }
     }
     printf("=========================\n");
 

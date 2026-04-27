@@ -33,7 +33,6 @@ typedef struct {
     unsigned int max_users;
     unsigned int num_users;
     ufifo_sub_ctrl_t users[];
-    /* followed by: unsigned int active_ids[max_users] */
 } ufifo_ctrl_t;
 
 #endif /* UFIFO_LAYOUT_H */
