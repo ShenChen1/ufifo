@@ -5,8 +5,9 @@
 #include <pthread.h>
 #include <stdint.h>
 #include <sys/eventfd.h>
-
 #include <unistd.h>
+
+#include "utils.h"
 
 int __ufifo_ctrl_lock(ufifo_t *handle)
 {
@@ -123,11 +124,12 @@ int __ufifo_efd_create(void)
     return eventfd(0, EFD_SEMAPHORE | EFD_NONBLOCK | EFD_CLOEXEC);
 }
 
-int __ufifo_efd_wait(int efd, ufifo_t *handle)
+int __ufifo_efd_wait(int efd, ufifo_t *handle, int *waiters)
 {
     uint64_t val;
     int ret;
 
+    atomic_fetch_add(waiters, 1);
     __ufifo_data_unlock(handle);
 
     /* Block until eventfd becomes readable */
@@ -143,14 +145,16 @@ int __ufifo_efd_wait(int efd, ufifo_t *handle)
     }
 
     __ufifo_data_lock(handle);
+    atomic_fetch_sub(waiters, 1);
     return ret;
 }
 
-int __ufifo_efd_timedwait(int efd, ufifo_t *handle, long millisec)
+int __ufifo_efd_timedwait(int efd, ufifo_t *handle, long millisec, int *waiters)
 {
     uint64_t val;
     int ret;
 
+    atomic_fetch_add(waiters, 1);
     __ufifo_data_unlock(handle);
 
     struct pollfd pfd = { .fd = efd, .events = POLLIN };
@@ -167,6 +171,7 @@ int __ufifo_efd_timedwait(int efd, ufifo_t *handle, long millisec)
     }
 
     __ufifo_data_lock(handle);
+    atomic_fetch_sub(waiters, 1);
     return ret;
 }
 
