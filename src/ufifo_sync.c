@@ -1,8 +1,12 @@
 #include "ufifo_internal.h"
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <pthread.h>
-#include <time.h>
+#include <stdint.h>
+#include <sys/eventfd.h>
+
+#include <unistd.h>
 
 int __ufifo_ctrl_lock(ufifo_t *handle)
 {
@@ -114,59 +118,69 @@ int __ufifo_lock_deinit(ufifo_t *handle)
     return ret;
 }
 
-int __ufifo_bsem_init(sem_t *bsem, unsigned int value)
+int __ufifo_efd_create(void)
 {
-    return sem_init(bsem, 1, value);
+    return eventfd(0, EFD_SEMAPHORE | EFD_NONBLOCK | EFD_CLOEXEC);
 }
 
-int __ufifo_bsem_deinit(sem_t *bsem)
+int __ufifo_efd_wait(int efd, ufifo_t *handle)
 {
-    return sem_destroy(bsem);
-}
-
-int __ufifo_bsem_wait(sem_t *bsem, ufifo_t *handle)
-{
+    uint64_t val;
     int ret;
 
     __ufifo_data_unlock(handle);
-    ret = sem_wait(bsem);
-    __ufifo_data_lock(handle);
 
+    /* Block until eventfd becomes readable */
+    struct pollfd pfd = { .fd = efd, .events = POLLIN };
+    ret = poll(&pfd, 1, -1); /* infinite wait */
+    if (ret > 0) {
+        if (read(efd, &val, sizeof(val)) < 0)
+            ret = -errno;
+        else
+            ret = 0;
+    } else {
+        ret = -errno;
+    }
+
+    __ufifo_data_lock(handle);
     return ret;
 }
 
-int __ufifo_bsem_timedwait(sem_t *bsem, ufifo_t *handle, long millisec)
+int __ufifo_efd_timedwait(int efd, ufifo_t *handle, long millisec)
 {
+    uint64_t val;
     int ret;
-    struct timespec wt;
-    struct timespec ts;
 
     __ufifo_data_unlock(handle);
 
-    wt.tv_sec = millisec / 1000;
-    wt.tv_nsec = (millisec % 1000) * 1000000;
-
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-
-    wt.tv_sec += ts.tv_sec;
-    wt.tv_nsec += ts.tv_nsec;
-    if (wt.tv_nsec >= 1000000000) {
-        wt.tv_sec += 1;
-        wt.tv_nsec %= 1000000000;
-    }
-
-    ret = sem_clockwait(bsem, CLOCK_MONOTONIC, &wt);
-    if (ret && errno == ETIMEDOUT) {
+    struct pollfd pfd = { .fd = efd, .events = POLLIN };
+    ret = poll(&pfd, 1, (int)millisec);
+    if (ret > 0) {
+        if (read(efd, &val, sizeof(val)) < 0)
+            ret = -errno;
+        else
+            ret = 0;
+    } else if (ret == 0) {
         ret = ETIMEDOUT;
+    } else {
+        ret = -errno;
     }
 
     __ufifo_data_lock(handle);
-
     return ret;
 }
 
-int __ufifo_bsem_post(sem_t *bsem)
+int __ufifo_efd_post(int efd)
 {
-    sem_trywait(bsem);
-    return sem_post(bsem);
+    uint64_t val = 1;
+    int ret = write(efd, &val, sizeof(val));
+    return ret < 0 ? -errno : 0;
+}
+
+int __ufifo_efd_drain(int efd)
+{
+    uint64_t val;
+    while (read(efd, &val, sizeof(val)) > 0) {
+    }
+    return 0;
 }
