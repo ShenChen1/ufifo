@@ -3,6 +3,21 @@
 
 #include "utils.h"
 
+/*
+ * Unified notification: post to eventfd only when someone is listening.
+ * - rx_waiters > 0: a thread is blocked in poll(), always post.
+ * - epoll_armed == 1: an epoll listener is registered.
+ *   Use atomic_exchange to flip 1→0 so only ONE producer posts per arm cycle.
+ */
+static inline void __ufifo_notify_efd(int efd, int *waiters, int *epoll_armed)
+{
+    if (smp_load_acquire(waiters) > 0) {
+        __ufifo_efd_post(efd);
+    } else if (atomic_xchg(epoll_armed, 0)) {
+        __ufifo_efd_post(efd);
+    }
+}
+
 static unsigned int __ufifo_min_out(ufifo_t *handle)
 {
     unsigned int in_val = READ_ONCE(handle->kfifo.in);
@@ -155,9 +170,9 @@ static unsigned int __ufifo_put(ufifo_t *handle, void *buf, unsigned int size, l
             if (millisec == 0) {
                 ret = -1;
             } else if (millisec == -1) {
-                ret = __ufifo_efd_wait(handle->efd_wr, handle);
+                ret = __ufifo_efd_wait(handle->efd_wr, handle, &handle->ctrl->tx_waiters);
             } else {
-                ret = __ufifo_efd_timedwait(handle->efd_wr, handle, millisec);
+                ret = __ufifo_efd_timedwait(handle->efd_wr, handle, millisec, &handle->ctrl->tx_waiters);
                 millisec = 0;
             }
             if (ret) {
@@ -184,12 +199,15 @@ static unsigned int __ufifo_put(ufifo_t *handle, void *buf, unsigned int size, l
     if (__ufifo_is_shared(handle)) {
         unsigned int i;
         for (i = 0; i < handle->ctrl->max_users; i++) {
-            if (READ_ONCE(&handle->ctrl->users[i].active)) {
-                __ufifo_efd_post(handle->efd_rd_all[i]);
-            }
+            if (READ_ONCE(&handle->ctrl->users[i].active))
+                __ufifo_notify_efd(handle->efd_rd_all[i],
+                                   &handle->ctrl->users[i].rx_waiters,
+                                   &handle->ctrl->users[i].epoll_armed);
         }
     } else {
-        __ufifo_efd_post(handle->efd_rd_all[0]);
+        __ufifo_notify_efd(handle->efd_rd_all[0],
+                           &handle->ctrl->users[0].rx_waiters,
+                           &handle->ctrl->users[0].epoll_armed);
     }
 
 end:
@@ -228,9 +246,9 @@ static unsigned int __ufifo_get(ufifo_t *handle, void *buf, unsigned int size, l
             if (millisec == 0) {
                 ret = -1;
             } else if (millisec == -1) {
-                ret = __ufifo_efd_wait(handle->efd_rd, handle);
+                ret = __ufifo_efd_wait(handle->efd_rd, handle, &handle->ctrl->users[__ufifo_is_shared(handle) ? handle->user_id : 0].rx_waiters);
             } else {
-                ret = __ufifo_efd_timedwait(handle->efd_rd, handle, millisec);
+                ret = __ufifo_efd_timedwait(handle->efd_rd, handle, millisec, &handle->ctrl->users[__ufifo_is_shared(handle) ? handle->user_id : 0].rx_waiters);
                 millisec = 0;
             }
             if (ret) {
@@ -251,7 +269,9 @@ static unsigned int __ufifo_get(ufifo_t *handle, void *buf, unsigned int size, l
         len = kfifo_out(&handle->kfifo, handle->shm_mem, buf, size);
     }
 
-    __ufifo_efd_post(handle->efd_wr);
+    __ufifo_notify_efd(handle->efd_wr,
+                       &handle->ctrl->tx_waiters,
+                       &handle->ctrl->epoll_tx_armed);
 
 end:
     __ufifo_data_unlock(handle);
@@ -289,9 +309,9 @@ static unsigned int __ufifo_peek(ufifo_t *handle, void *buf, unsigned int size, 
             if (millisec == 0) {
                 ret = -1;
             } else if (millisec == -1) {
-                ret = __ufifo_efd_wait(handle->efd_rd, handle);
+                ret = __ufifo_efd_wait(handle->efd_rd, handle, &handle->ctrl->users[__ufifo_is_shared(handle) ? handle->user_id : 0].rx_waiters);
             } else {
-                ret = __ufifo_efd_timedwait(handle->efd_rd, handle, millisec);
+                ret = __ufifo_efd_timedwait(handle->efd_rd, handle, millisec, &handle->ctrl->users[__ufifo_is_shared(handle) ? handle->user_id : 0].rx_waiters);
                 millisec = 0;
             }
             if (ret) {
@@ -311,7 +331,9 @@ static unsigned int __ufifo_peek(ufifo_t *handle, void *buf, unsigned int size, 
         len = kfifo_out_peek(&handle->kfifo, handle->shm_mem, buf, size);
     }
 
-    __ufifo_efd_post(handle->efd_wr);
+    __ufifo_notify_efd(handle->efd_wr,
+                       &handle->ctrl->tx_waiters,
+                       &handle->ctrl->epoll_tx_armed);
 end:
     __ufifo_data_unlock(handle);
 

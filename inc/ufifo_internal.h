@@ -56,8 +56,8 @@ int __ufifo_lock_deinit(ufifo_t *handle);
 
 /* eventfd operations */
 int __ufifo_efd_create(void);
-int __ufifo_efd_wait(int efd, ufifo_t *handle);
-int __ufifo_efd_timedwait(int efd, ufifo_t *handle, long millisec);
+int __ufifo_efd_wait(int efd, ufifo_t *handle, int *waiters);
+int __ufifo_efd_timedwait(int efd, ufifo_t *handle, long millisec, int *waiters);
 int __ufifo_efd_post(int efd);
 int __ufifo_efd_drain(int efd);
 
