@@ -39,6 +39,7 @@ set(LIB_SOURCES
     src/ufifo_opts.c
     src/ufifo_sync.c
     src/ufifo_epoll.c
+    src/ufifo_broker.c
     src/ufifo_init.c
     src/ufifo_info.c
 )

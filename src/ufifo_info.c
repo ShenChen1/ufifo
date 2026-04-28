@@ -69,8 +69,10 @@ void ufifo_dump(ufifo_t *handle)
 
     __ufifo_log("Pointers: in = %u (offset: %u), out = %u (offset: %u)\n", in, in & mask, out, out & mask);
 
-    // fd epoll info
-    __ufifo_log("Rx Efd: %d, Tx Efd: %d\n", handle->rx_efd, handle->tx_efd);
+    /* eventfd info */
+    __ufifo_log("Efd Wr: %d, Efd Rd: %d, Broker Owner: %s\n",
+                handle->efd_wr, handle->efd_rd,
+                handle->is_broker_owner ? "yes" : "no");
 
     unsigned int i;
     for (i = 0; i < handle->ctrl->max_users; i++) {

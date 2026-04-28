@@ -155,9 +155,9 @@ static unsigned int __ufifo_put(ufifo_t *handle, void *buf, unsigned int size, l
             if (millisec == 0) {
                 ret = -1;
             } else if (millisec == -1) {
-                ret = __ufifo_bsem_wait(handle->bsem_wr, handle);
+                ret = __ufifo_efd_wait(handle->efd_wr, handle);
             } else {
-                ret = __ufifo_bsem_timedwait(handle->bsem_wr, handle, millisec);
+                ret = __ufifo_efd_timedwait(handle->efd_wr, handle, millisec);
                 millisec = 0;
             }
             if (ret) {
@@ -185,13 +185,12 @@ static unsigned int __ufifo_put(ufifo_t *handle, void *buf, unsigned int size, l
         unsigned int i;
         for (i = 0; i < handle->ctrl->max_users; i++) {
             if (READ_ONCE(&handle->ctrl->users[i].active)) {
-                __ufifo_bsem_post(&handle->ctrl->users[i].bsem_rd);
+                __ufifo_efd_post(handle->efd_rd_all[i]);
             }
         }
     } else {
-        __ufifo_bsem_post(handle->bsem_rd);
+        __ufifo_efd_post(handle->efd_rd_all[0]);
     }
-    __ufifo_efd_notify_rx(handle);
 
 end:
     __ufifo_data_unlock(handle);
@@ -229,9 +228,9 @@ static unsigned int __ufifo_get(ufifo_t *handle, void *buf, unsigned int size, l
             if (millisec == 0) {
                 ret = -1;
             } else if (millisec == -1) {
-                ret = __ufifo_bsem_wait(handle->bsem_rd, handle);
+                ret = __ufifo_efd_wait(handle->efd_rd, handle);
             } else {
-                ret = __ufifo_bsem_timedwait(handle->bsem_rd, handle, millisec);
+                ret = __ufifo_efd_timedwait(handle->efd_rd, handle, millisec);
                 millisec = 0;
             }
             if (ret) {
@@ -252,8 +251,7 @@ static unsigned int __ufifo_get(ufifo_t *handle, void *buf, unsigned int size, l
         len = kfifo_out(&handle->kfifo, handle->shm_mem, buf, size);
     }
 
-    __ufifo_bsem_post(handle->bsem_wr);
-    __ufifo_efd_notify_tx(handle);
+    __ufifo_efd_post(handle->efd_wr);
 
 end:
     __ufifo_data_unlock(handle);
@@ -291,9 +289,9 @@ static unsigned int __ufifo_peek(ufifo_t *handle, void *buf, unsigned int size, 
             if (millisec == 0) {
                 ret = -1;
             } else if (millisec == -1) {
-                ret = __ufifo_bsem_wait(handle->bsem_rd, handle);
+                ret = __ufifo_efd_wait(handle->efd_rd, handle);
             } else {
-                ret = __ufifo_bsem_timedwait(handle->bsem_rd, handle, millisec);
+                ret = __ufifo_efd_timedwait(handle->efd_rd, handle, millisec);
                 millisec = 0;
             }
             if (ret) {
@@ -313,7 +311,7 @@ static unsigned int __ufifo_peek(ufifo_t *handle, void *buf, unsigned int size, 
         len = kfifo_out_peek(&handle->kfifo, handle->shm_mem, buf, size);
     }
 
-    __ufifo_bsem_post(handle->bsem_wr);
+    __ufifo_efd_post(handle->efd_wr);
 end:
     __ufifo_data_unlock(handle);
 
