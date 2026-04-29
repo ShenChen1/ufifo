@@ -29,12 +29,13 @@ Here is how `ufifo` compares to other common alternatives:
   - `SOLE` — Work queue: each message is consumed by exactly one reader. Scale consumers up or down freely.
   - `SHARED` — Broadcast: every attached reader receives the full stream independently, each at its own pace.
 - **Lock-Free SPMC Broadcast**: Pair `LOCK_NONE` with `SHARED` mode for true zero-contention fan-out. One producer, N consumers, no mutex in the data path — ideal for real-time video/sensor/market-data distribution.
-- **epoll-Ready, Bi-directional**: Get an `RX` fd (data available) and/or a `TX` fd (space available) to plug directly into your event loop. Works with `epoll`, `poll`, or any fd-based reactor — mix ufifo streams with network sockets in a single thread.
+- **epoll-Ready, Bi-directional**: Get an `RX` fd (data available) and/or a `TX` fd (space available) to plug directly into your event loop. Backed by blazing-fast, purely in-kernel `eventfd` counters — mix ufifo streams with network sockets in a single thread seamlessly.
 - **Self-Healing**: Crashed consumers never stall the system. Dead processes are detected automatically, their slots reclaimed, and buffer space recovered — no watchdog, no manual cleanup required.
 - **Record Mode with Tag Seeking**: Beyond raw byte streams, push structured records with user-defined boundaries. Tag records and jump directly to the `oldest` or `newest` matching entry, skipping stale data in O(n) scan — perfect for frame-accurate video playback or sensor replay.
 - **Custom Serialization Hooks**: Plug in your own `recput`/`recget` callbacks to serialize and deserialize directly inside the ring buffer. The library hands you the raw split-buffer pointers — you control the format, no intermediate copies.
+- **Customizable Diagnostics**: Inject your own logging callback via `ufifo_set_log_handler` to integrate `ufifo` warnings and debug outputs seamlessly into your application's logging infrastructure.
 - **Safe Across Versions**: A version stamp is embedded into shared memory at creation time. If a client links against an incompatible library version, `ufifo_open` rejects it immediately — no silent corruption.
-- **Three Blocking Flavors**: Every read/write operation comes in non-blocking, blocking, and timed variants (`_block`, `_timeout`), so you choose the back-pressure strategy that fits your architecture.
+- **Three Blocking Flavors**: Every read/write operation comes in non-blocking, blocking (`poll()`-based), and timed variants (`_block`, `_timeout`), so you choose the back-pressure strategy that fits your architecture.
 - **Lightweight, No External Dependencies**: Pure C99 + POSIX. No Boost, no Protobuf, no ZeroMQ runtime — just link against `librt` and `libpthread`.
 
 ## Common Topologies & Use Cases
@@ -60,8 +61,8 @@ Here is how `ufifo` compares to other common alternatives:
 `UFIFO_LOCK_PROCESS` + `UFIFO_OPT_ATTACH` + `ufifo_get_rx_fd()` / `ufifo_get_tx_fd()`
 
 - **Scenario**: Event loops (like `libuv`, Redis modules, or async game servers) needing to multiplex IPC streams alongside network sockets.
-- **The Magic**: A core thread handles everything through `epoll_wait()`. When backend workers enqueue responses into the `ufifo`, a wake-up signal travels through a dedicated Unix Domain Socket (`TX`/`RX` fd) out-of-band to awaken the `epoll` loop. After `epoll_wait` returns, simply call `ufifo_drain_rx_fd()` or `ufifo_drain_tx_fd()` to re-arm the notification state machine.
-- **The Advantage**: 100% non-blocking processing. Wait on sockets and local IPC FIFO streams simultaneously in the exact same event loop.
+- **The Magic**: A core thread handles everything through `epoll_wait()`. `ufifo` automatically spins up a tiny, lockless background broker daemon that passes purely in-kernel `eventfd` descriptors to clients via `SCM_RIGHTS`. When backend workers enqueue responses, an `eventfd` counter is tripped to awaken the `epoll` loop. After `epoll_wait` returns, simply call `ufifo_drain_rx_fd()` or `ufifo_drain_tx_fd()` to re-arm the notification state machine.
+- **The Advantage**: 100% non-blocking processing. Wait on networked sockets and local IPC FIFO streams simultaneously in the exact same event loop. Smart notification coalescing guarantees `eventfd` is only written to when your `epoll` loop is actually waiting, eliminating redundant syscalls.
 
 ## Quick Start
 
@@ -83,7 +84,7 @@ Based on its architectural design, `ufifo` has several distinctive advantages an
 - **Multi-Layer Crash Recovery**: Combines `PTHREAD_MUTEX_ROBUST` (auto-recovers deadlocked mutexes), OFD lock-based liveness detection (kernel-mediated, zero-overhead dead process detection), and automatic dead-reader reaping (transparently reclaims buffer space and registration slots).
 - **Race-Free Lifecycle**: OFD file locking + `init_done` atomic fence eliminates initialization race conditions between `ALLOC` and `ATTACH` without resorting to sleep/retry polling.
 - **Versatile Distribution Modes**: Natively supports both `SOLE` (competing consumers, perfect for worker pools) and `SHARED` (broadcast/pub-sub topologies).
-- **Asynchronous `epoll` Integration**: Employs out-of-band notifications via Unix Domain Sockets (UDS), allowing `ufifo` descriptors to be multiplexed into standard event loops. Internal states (`REGISTERED` / `PENDING`) coalesce notifications to minimize UDS syscall overhead.
+- **Asynchronous `eventfd` Integration**: Employs out-of-band notifications via `eventfd` passed seamlessly through a background broker (`SCM_RIGHTS`). Descriptors can be multiplexed into standard event loops, with smart arming logic that completely eliminates redundant `eventfd_write` syscall overhead.
 - **Zero-Allocation Record Hooks**: Custom callbacks (`recsize`, `recput`, `recget`) enable direct serialization/deserialization within the shared ring buffer, avoiding intermediate memory copies.
 - **Lightweight & Dependency-Free**: Relies exclusively on standard C99/POSIX interfaces with no external third-party dependencies.
 
@@ -91,8 +92,8 @@ Based on its architectural design, `ufifo` has several distinctive advantages an
 
 - **Local IPC Only**: Restricted to communication within a single machine. Because it uses POSIX shared memory (`shm_open` and `mmap`), it cannot span across network boundaries.
 - **Fixed Power-of-Two Capacity**: The buffer size is established during initialization and must be a power of two. It cannot dynamically allocate more memory or grow to accommodate traffic spikes once initialized.
-- **UDS Notification Overhead**: While `epoll` support is highly convenient for async runtimes, transmitting wake-up events over Unix Domain Sockets introduces system-call overhead compared to pure atomic busy-waiting.
-- **Platform Specificity**: Designed heavily around Linux-specific semantics (e.g., `F_OFD_SETLK` for liveness detection, abstract namespace UDS for epoll notifications, and robust mutexes). This significantly limits portability to non-Linux environments like macOS or Windows.
+- **Broker Daemon Requirement**: While `eventfd` provides incredibly fast notifications, passing anonymous file descriptors between unassociated processes requires a persistent background broker daemon. `ufifo` handles forking and managing this daemon automatically, but it does mean an extra lightweight process runs in the background.
+- **Platform Specificity**: Designed heavily around Linux-specific semantics (e.g., `eventfd`, `F_OFD_SETLK` for liveness detection, `SCM_RIGHTS` fd passing, and robust mutexes). This significantly limits portability to non-Linux environments like macOS or Windows.
 - **Setup Complexity**: Utilizing the advanced record mode and custom hooks requires writing specific serialization callbacks, making the initial setup slightly more complex than a basic pipe or POSIX Message Queue.
 
 ## Performance & Benchmarks
@@ -101,8 +102,7 @@ Based on its architectural design, `ufifo` has several distinctive advantages an
 
 - **Lock-Free Operation (`UFIFO_LOCK_NONE`)**: Achieves peak performance, isolating the memory barrier cost without contention. The ctrl/data dual-lock architecture ensures that even administrative operations (register/unregister) never block the hot data path.
 - **Multithreaded Load**: Throughput remains highly efficient even under heavy load (MPSC scenarios) thanks to process-shared robust mutexes minimizing wait times.
-- **Shared Broadcast**: Data broadcast introduces virtually zero overhead since consumers seamlessly read without mutating producer states. Dead reader reaping runs only on the slow path (when buffer space is exhausted) to avoid polluting the fast path.
-- **Notification Coalescing**: The epoll state machine (`IDLE → REGISTERED → PENDING → drain → REGISTERED`) prevents notification storms under burst traffic — multiple puts between drains generate only a single UDS sendto.
+- **Smart Notification Coalescing**: `eventfd` signaling is tightly coupled to actual waiter presence. `eventfd_write` is skipped entirely unless a reader/writer is explicitly blocked in `poll()` or has actively armed their epoll listener, slashing kernel context switch overhead during burst traffic.
 
 You can run the benchmark suite `ufifo_bench` in the `build/bin` directory to test throughput and latency metrics directly on your target hardware.
 
