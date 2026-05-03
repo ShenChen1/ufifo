@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <sys/eventfd.h>
 #include <unistd.h>
+#include <stdlib.h>
 
 #include "utils.h"
 
@@ -15,6 +16,9 @@ int __ufifo_ctrl_lock(ufifo_t *handle)
     if (ret == EOWNERDEAD) {
         pthread_mutex_consistent(&handle->ctrl->ctrl_mutex);
         ret = 0;
+    } else if (ret != 0) {
+        __ufifo_log("FATAL: ufifo ctrl_mutex lock failed (err=%d)\n", ret);
+        abort();
     }
     return ret;
 }
@@ -26,20 +30,23 @@ int __ufifo_ctrl_unlock(ufifo_t *handle)
 
 int __ufifo_data_lock(ufifo_t *handle)
 {
-    if (handle->ctrl->lock == UFIFO_LOCK_NONE)
+    if (handle->lock_type == UFIFO_LOCK_NONE)
         return 0;
 
     int ret = pthread_mutex_lock(&handle->ctrl->data_mutex);
     if (ret == EOWNERDEAD) {
         pthread_mutex_consistent(&handle->ctrl->data_mutex);
         ret = 0;
+    } else if (ret != 0) {
+        __ufifo_log("FATAL: ufifo data_mutex lock failed (err=%d)\n", ret);
+        abort();
     }
     return ret;
 }
 
 int __ufifo_data_unlock(ufifo_t *handle)
 {
-    if (handle->ctrl->lock == UFIFO_LOCK_NONE)
+    if (handle->lock_type == UFIFO_LOCK_NONE)
         return 0;
 
     return pthread_mutex_unlock(&handle->ctrl->data_mutex);
@@ -112,7 +119,7 @@ int __ufifo_lock_deinit(ufifo_t *handle)
 {
     int ret = pthread_mutex_destroy(&handle->ctrl->ctrl_mutex);
 
-    if (handle->ctrl->lock != UFIFO_LOCK_NONE) {
+    if (handle->lock_type != UFIFO_LOCK_NONE) {
         ret |= pthread_mutex_destroy(&handle->ctrl->data_mutex);
     }
 
@@ -197,7 +204,7 @@ int __ufifo_efd_notify(int efd, int *waiters, int *epoll_armed)
     int ret = 0;
     int w = smp_load_acquire(waiters);
     int armed = smp_load_acquire(epoll_armed);
-    
+
     if (w > 0 || armed > 0) {
         armed = atomic_xchg(epoll_armed, 0);
         uint64_t post_count = (w > 0 ? w : 0) + armed;

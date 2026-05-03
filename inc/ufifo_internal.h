@@ -18,6 +18,8 @@ struct ufifo {
 
     char name[128];
     unsigned int user_id;
+    int is_shared;
+    ufifo_lock_e lock_type;
 
     ufifo_hook_t hook;
     kfifo_t kfifo;
@@ -73,11 +75,12 @@ void __ufifo_efd_close_all(ufifo_t *handle);
 void __ufifo_reap_dead_user(ufifo_t *handle, unsigned int user_id);
 static inline int __ufifo_is_shared(ufifo_t *handle)
 {
-    return handle->ctrl->data_mode == UFIFO_DATA_SHARED;
+    return handle->is_shared;
 }
 void __ufifo_log(const char *fmt, ...);
 
 /* ufifo_opts.c */
 void __ufifo_update_cached_min_out(ufifo_t *handle);
+unsigned int __ufifo_unused_len(ufifo_t *handle);
 
 #endif /* UFIFO_INTERNAL_H */

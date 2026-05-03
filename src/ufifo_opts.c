@@ -36,7 +36,7 @@ void __ufifo_update_cached_min_out(ufifo_t *handle)
     }
 }
 
-static unsigned int __ufifo_unused_len(ufifo_t *handle)
+unsigned int __ufifo_unused_len(ufifo_t *handle)
 {
     unsigned int out;
     unsigned int len;
@@ -84,10 +84,15 @@ void ufifo_reset(ufifo_t *handle)
     UFIFO_CHECK_HANDLE(handle);
 
     __ufifo_data_lock(handle);
-    WRITE_ONCE(handle->kfifo.in, 0);
-    WRITE_ONCE(handle->kfifo.out, 0);
+    smp_store_release(handle->kfifo.in, 0);
+    smp_store_release(handle->kfifo.out, 0);
     if (__ufifo_is_shared(handle)) {
-        WRITE_ONCE(&handle->ctrl->cached_min_out, 0);
+        for (unsigned int i = 0; i < handle->ctrl->max_users; i++) {
+            if (smp_load_acquire(&handle->ctrl->users[i].active)) {
+                smp_store_release(&handle->ctrl->users[i].out, 0);
+            }
+        }
+        smp_store_release(&handle->ctrl->cached_min_out, 0);
     }
     __ufifo_data_unlock(handle);
 }
@@ -127,7 +132,9 @@ unsigned int ufifo_peek_len(ufifo_t *handle)
     UFIFO_CHECK_HANDLE(handle, 0);
 
     __ufifo_data_lock(handle);
-    len = __ufifo_peek_len(handle, READ_ONCE(handle->kfifo.out), READ_ONCE(handle->kfifo.in));
+    unsigned int out_val = READ_ONCE(handle->kfifo.out);
+    unsigned int in_val = smp_load_acquire(handle->kfifo.in);
+    len = __ufifo_peek_len(handle, out_val, in_val);
     __ufifo_data_unlock(handle);
 
     return len;
@@ -168,7 +175,8 @@ static unsigned int __ufifo_put(ufifo_t *handle, void *buf, unsigned int size, l
     __ufifo_data_lock(handle);
     while (1) {
         len = __ufifo_unused_len(handle);
-        if (len >= size) break;
+        if (len >= size)
+            break;
 
         /* Slow path: Check if space is constrained by dead shared readers or stale cache */
         if (__ufifo_is_shared(handle)) {
@@ -177,7 +185,8 @@ static unsigned int __ufifo_put(ufifo_t *handle, void *buf, unsigned int size, l
                 continue; /* Re-evaluate len after reaping */
             }
             len = __ufifo_unused_len(handle);
-            if (len >= size) break;
+            if (len >= size)
+                break;
         }
 
         if (millisec == 0) {
@@ -207,17 +216,18 @@ static unsigned int __ufifo_put(ufifo_t *handle, void *buf, unsigned int size, l
     }
 
     if (__ufifo_is_shared(handle)) {
-        unsigned int i;
-        for (i = 0; i < handle->ctrl->max_users; i++) {
-            if (READ_ONCE(&handle->ctrl->users[i].active))
-                __ufifo_efd_notify(handle->efd_rd_all[i],
-                                   &handle->ctrl->users[i].rx_waiters,
-                                   &handle->ctrl->users[i].epoll_armed);
+        for (unsigned int i = 0; i < handle->ctrl->max_users; i++) {
+            if (smp_load_acquire(&handle->ctrl->users[i].active))
+                __ufifo_efd_notify(
+                    handle->efd_rd_all[i],
+                    &handle->ctrl->users[i].rx_waiters,
+                    &handle->ctrl->users[i].epoll_armed);
         }
     } else {
-        __ufifo_efd_notify(handle->efd_rd_all[0],
-                           &handle->ctrl->users[0].rx_waiters,
-                           &handle->ctrl->users[0].epoll_armed);
+        __ufifo_efd_notify(
+            handle->efd_rd_all[0],
+            &handle->ctrl->users[0].rx_waiters,
+            &handle->ctrl->users[0].epoll_armed);
     }
 
 end:
@@ -248,6 +258,7 @@ static unsigned int __ufifo_get(ufifo_t *handle, void *buf, unsigned int size, l
 {
     int ret;
     unsigned int len;
+    unsigned int user_id = __ufifo_is_shared(handle) ? handle->user_id : 0;
 
     __ufifo_data_lock(handle);
     while (1) {
@@ -256,9 +267,9 @@ static unsigned int __ufifo_get(ufifo_t *handle, void *buf, unsigned int size, l
             if (millisec == 0) {
                 ret = -1;
             } else if (millisec == -1) {
-                ret = __ufifo_efd_wait(handle->efd_rd, handle, &handle->ctrl->users[__ufifo_is_shared(handle) ? handle->user_id : 0].rx_waiters);
+                ret = __ufifo_efd_wait(handle->efd_rd, handle, &handle->ctrl->users[user_id].rx_waiters);
             } else {
-                ret = __ufifo_efd_timedwait(handle->efd_rd, handle, millisec, &handle->ctrl->users[__ufifo_is_shared(handle) ? handle->user_id : 0].rx_waiters);
+                ret = __ufifo_efd_timedwait(handle->efd_rd, handle, millisec, &handle->ctrl->users[user_id].rx_waiters);
                 millisec = 0;
             }
             if (ret) {
@@ -286,9 +297,7 @@ static unsigned int __ufifo_get(ufifo_t *handle, void *buf, unsigned int size, l
         }
     }
 
-    __ufifo_efd_notify(handle->efd_wr,
-                       &handle->ctrl->tx_waiters,
-                       &handle->ctrl->epoll_tx_armed);
+    __ufifo_efd_notify(handle->efd_wr, &handle->ctrl->tx_waiters, &handle->ctrl->epoll_tx_armed);
 
 end:
     __ufifo_data_unlock(handle);
@@ -318,6 +327,7 @@ static unsigned int __ufifo_peek(ufifo_t *handle, void *buf, unsigned int size, 
 {
     int ret;
     unsigned int len;
+    unsigned int user_id = __ufifo_is_shared(handle) ? handle->user_id : 0;
 
     __ufifo_data_lock(handle);
     while (1) {
@@ -326,9 +336,9 @@ static unsigned int __ufifo_peek(ufifo_t *handle, void *buf, unsigned int size, 
             if (millisec == 0) {
                 ret = -1;
             } else if (millisec == -1) {
-                ret = __ufifo_efd_wait(handle->efd_rd, handle, &handle->ctrl->users[__ufifo_is_shared(handle) ? handle->user_id : 0].rx_waiters);
+                ret = __ufifo_efd_wait(handle->efd_rd, handle, &handle->ctrl->users[user_id].rx_waiters);
             } else {
-                ret = __ufifo_efd_timedwait(handle->efd_rd, handle, millisec, &handle->ctrl->users[__ufifo_is_shared(handle) ? handle->user_id : 0].rx_waiters);
+                ret = __ufifo_efd_timedwait(handle->efd_rd, handle, millisec, &handle->ctrl->users[user_id].rx_waiters);
                 millisec = 0;
             }
             if (ret) {
@@ -339,7 +349,7 @@ static unsigned int __ufifo_peek(ufifo_t *handle, void *buf, unsigned int size, 
         }
     }
 
-    if (handle->hook.recget) {
+    if (unlikely(handle->hook.recget)) {
         unsigned int out = READ_ONCE(handle->kfifo.out);
         len = *handle->kfifo.mask & out;
         len = handle->hook.recget(handle->shm_mem + len, *handle->kfifo.mask - len + 1, handle->shm_mem, buf);
@@ -348,9 +358,7 @@ static unsigned int __ufifo_peek(ufifo_t *handle, void *buf, unsigned int size, 
         len = kfifo_out_peek(&handle->kfifo, handle->shm_mem, buf, size);
     }
 
-    __ufifo_efd_notify(handle->efd_wr,
-                       &handle->ctrl->tx_waiters,
-                       &handle->ctrl->epoll_tx_armed);
+    __ufifo_efd_notify(handle->efd_wr, &handle->ctrl->tx_waiters, &handle->ctrl->epoll_tx_armed);
 end:
     __ufifo_data_unlock(handle);
 
@@ -378,7 +386,7 @@ unsigned int ufifo_peek_timeout(ufifo_t *handle, void *buf, unsigned int size, l
 int ufifo_oldest(ufifo_t *handle, unsigned int tag)
 {
     int ret = 0;
-    unsigned int len, tmp;
+    unsigned int len, tmp, old_out;
     UFIFO_CHECK_HANDLE(handle, -EINVAL);
 
     __ufifo_data_lock(handle);
@@ -386,7 +394,8 @@ int ufifo_oldest(ufifo_t *handle, unsigned int tag)
     unsigned int in_val = READ_ONCE(handle->kfifo.in);
     while (tmp != in_val) {
         len = __ufifo_peek_len(handle, tmp, in_val);
-        if (len == 0) break;
+        if (len == 0)
+            break;
         if (__ufifo_peek_tag(handle, tmp) == tag) {
             ret = 0;
             goto found;
@@ -395,7 +404,7 @@ int ufifo_oldest(ufifo_t *handle, unsigned int tag)
     }
     ret = -ESPIPE;
 found:
-    unsigned int old_out = READ_ONCE(handle->kfifo.out);
+    old_out = READ_ONCE(handle->kfifo.out);
     smp_store_release(handle->kfifo.out, tmp);
     if (__ufifo_is_shared(handle)) {
         if (old_out == smp_load_acquire(&handle->ctrl->cached_min_out)) {
@@ -421,7 +430,8 @@ int ufifo_newest(ufifo_t *handle, unsigned int tag)
     unsigned int in_val = READ_ONCE(handle->kfifo.in);
     while (tmp != in_val) {
         len = __ufifo_peek_len(handle, tmp, in_val);
-        if (len == 0) break;
+        if (len == 0)
+            break;
         if (__ufifo_peek_tag(handle, tmp) == tag) {
             found = true;
             final = tmp;

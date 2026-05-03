@@ -71,7 +71,8 @@ void ufifo_dump(ufifo_t *handle)
 
     /* eventfd info */
     __ufifo_log("Efd Wr: %d, Efd Rd: %d, Broker Owner: %s\n",
-                handle->efd_wr, handle->efd_rd,
+                handle->efd_wr,
+                handle->efd_rd,
                 handle->is_broker_owner ? "yes" : "no");
 
     unsigned int i;

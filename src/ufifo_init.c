@@ -17,7 +17,6 @@
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
 
-
 void __ufifo_reap_dead_user(ufifo_t *handle, unsigned int user_id)
 {
     ufifo_ctrl_t *ctrl = handle->ctrl;
@@ -166,6 +165,9 @@ static int __ufifo_init_from_shm(ufifo_t *handle)
     if (ret < 0)
         goto err_data_mmap;
     handle->user_id = (unsigned int)ret;
+    handle->is_shared = (handle->ctrl->data_mode == UFIFO_DATA_SHARED);
+    handle->lock_type = handle->ctrl->lock;
+
     handle->kfifo.in = &handle->ctrl->in;
     handle->kfifo.mask = &handle->ctrl->mask;
     if (__ufifo_is_shared(handle)) {
@@ -266,6 +268,8 @@ static int __ufifo_init_from_user(ufifo_t *handle, ufifo_alloc_t *alloc)
     if (ret < 0)
         goto err_data_mmap;
     handle->user_id = (unsigned int)ret;
+    handle->is_shared = (handle->ctrl->data_mode == UFIFO_DATA_SHARED);
+    handle->lock_type = handle->ctrl->lock;
 
     handle->kfifo.in = &handle->ctrl->in;
     handle->kfifo.out = &handle->ctrl->users[handle->user_id].out;

@@ -426,7 +426,8 @@ void __ufifo_efd_close_all(ufifo_t *handle)
 void __ufifo_broker_wake_to_exit(const char *name)
 {
     int s = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (s < 0) return;
+    if (s < 0)
+        return;
 
     struct sockaddr_un addr;
     socklen_t addr_len = __ufifo_broker_addr(name, &addr);

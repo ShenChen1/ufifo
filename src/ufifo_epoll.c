@@ -12,7 +12,7 @@ int ufifo_get_rx_fd(ufifo_t *handle)
     __ufifo_ctrl_lock(handle);
 
     /* Arm the notification. If data is already available, fire immediately. */
-    if (READ_ONCE(handle->kfifo.in) != READ_ONCE(handle->kfifo.out)) {
+    if (smp_load_acquire(handle->kfifo.in) != READ_ONCE(handle->kfifo.out)) {
         __ufifo_efd_post(handle->efd_rd);
         /* Leave epoll_armed = 0: producer will re-arm on next drain cycle */
     } else {
@@ -29,8 +29,7 @@ int ufifo_get_tx_fd(ufifo_t *handle)
 
     __ufifo_ctrl_lock(handle);
 
-    unsigned int len = READ_ONCE(handle->kfifo.in) - READ_ONCE(handle->kfifo.out);
-    unsigned int unused = *handle->kfifo.mask + 1 - len;
+    unsigned int unused = __ufifo_unused_len(handle);
     if (unused > 0) {
         __ufifo_efd_post(handle->efd_wr);
     } else {
