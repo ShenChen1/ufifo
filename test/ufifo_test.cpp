@@ -1525,3 +1525,197 @@ int main(int argc, char **argv)
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }
+
+// Log interface testing
+static std::string g_log_output;
+static void test_log_cb(void *arg, const char *fmt, va_list ap) {
+    char buf[1024];
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    g_log_output += buf;
+}
+
+TEST(UfifoLogTest, SetLogHandler) {
+    g_log_output.clear();
+    ufifo_set_log_handler(test_log_cb, nullptr);
+
+    ufifo_t *fifo = nullptr;
+    ufifo_init_t init = {};
+    init.opt = UFIFO_OPT_ALLOC;
+    init.alloc.size = 256;
+    init.alloc.max_users = 1;
+    init.alloc.force = 1;
+    ASSERT_EQ(0, ufifo_open("log_test", &init, &fifo));
+
+    ufifo_dump(fifo);
+    EXPECT_FALSE(g_log_output.empty());
+    EXPECT_TRUE(g_log_output.find("=== ufifo_dump") != std::string::npos);
+
+    ufifo_destroy(fifo);
+    ufifo_set_log_handler(nullptr, nullptr); // Reset
+}
+
+// Timeout APIs testing
+TEST(UfifoTimeoutTest, TimeoutApis) {
+    ufifo_t *fifo = nullptr;
+    ufifo_init_t init = {};
+    init.opt = UFIFO_OPT_ALLOC;
+    init.alloc.size = 256;
+    init.alloc.max_users = 1;
+    init.alloc.force = 1;
+    ASSERT_EQ(0, ufifo_open("timeout_test", &init, &fifo));
+
+    char buf[128];
+    // Empty FIFO, get should timeout
+    auto start = std::chrono::steady_clock::now();
+    unsigned int ret = ufifo_get_timeout(fifo, buf, sizeof(buf), 10); // 10ms
+    auto end = std::chrono::steady_clock::now();
+    EXPECT_EQ(0, ret);
+    EXPECT_GE(std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count(), 10);
+
+    // Empty FIFO, peek should timeout
+    start = std::chrono::steady_clock::now();
+    ret = ufifo_peek_timeout(fifo, buf, sizeof(buf), 10); // 10ms
+    end = std::chrono::steady_clock::now();
+    EXPECT_EQ(0, ret);
+    EXPECT_GE(std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count(), 10);
+
+    // Fill FIFO to test put timeout
+    char fill[256];
+    ret = ufifo_put(fifo, fill, 256);
+    EXPECT_EQ(256, ret);
+
+    // Full FIFO, put should timeout
+    start = std::chrono::steady_clock::now();
+    ret = ufifo_put_timeout(fifo, fill, 1, 10); // 10ms
+    end = std::chrono::steady_clock::now();
+    EXPECT_EQ(0, ret);
+    EXPECT_GE(std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count(), 10);
+
+    ufifo_destroy(fifo);
+}
+
+// Block APIs testing with another thread
+TEST(UfifoBlockTest, BlockApis) {
+    ufifo_t *fifo = nullptr;
+    ufifo_init_t init = {};
+    init.opt = UFIFO_OPT_ALLOC;
+    init.alloc.size = 256;
+    init.alloc.max_users = 1;
+    init.alloc.force = 1;
+    ASSERT_EQ(0, ufifo_open("block_test", &init, &fifo));
+
+    // Test get_block
+    std::thread t1([&]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        char data = 'X';
+        ufifo_put(fifo, &data, 1);
+    });
+
+    char buf[1];
+    unsigned int ret = ufifo_get_block(fifo, buf, 1);
+    EXPECT_EQ(1, ret);
+    EXPECT_EQ('X', buf[0]);
+    t1.join();
+
+    // Test peek_block
+    std::thread t2([&]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        char data = 'Y';
+        ufifo_put(fifo, &data, 1);
+    });
+
+    ret = ufifo_peek_block(fifo, buf, 1);
+    EXPECT_EQ(1, ret);
+    EXPECT_EQ('Y', buf[0]);
+    ufifo_get(fifo, buf, 1); // consume it
+    t2.join();
+
+    // Test put_block
+    // Fill it
+    char fill[256];
+    ret = ufifo_put(fifo, fill, 256);
+    EXPECT_EQ(256, ret);
+
+    std::thread t3([&]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        char out[10];
+        ufifo_get(fifo, out, 10);
+    });
+
+    char data = 'Z';
+    ret = ufifo_put_block(fifo, &data, 1);
+    EXPECT_EQ(1, ret);
+    t3.join();
+
+    ufifo_destroy(fifo);
+}
+
+TEST(ErrorTest, MmapAndShmOpenFail) {
+    ufifo_t *fifo = nullptr;
+    ufifo_init_t init = {};
+    init.opt = UFIFO_OPT_ALLOC;
+    init.alloc.size = 256;
+    init.alloc.force = 1;
+    init.alloc.max_users = 1;
+
+    std::string bad_name(4096, 'a');
+    EXPECT_NE(0, ufifo_open(bad_name.c_str(), &init, &fifo));
+}
+
+extern "C" {
+    typedef struct {
+        int listener_fd;
+        int *fds_to_send;       /* packed: [efd_wr, efd_rd_all[0..N-1]] */
+        unsigned int total_fds; /* 1 + max_users */
+        char shm_name[128];
+    } broker_ctx_t;
+    int __ufifo_send_fds(int sock, const int *fds, unsigned int nfds);
+    void __ufifo_broker_daemon(broker_ctx_t *ctx);
+}
+
+TEST(BrokerInternalTest, SendFds) {
+    int sv[2];
+    ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, sv));
+
+    int fds_to_send[2] = {sv[0], sv[1]};
+    EXPECT_EQ(0, __ufifo_send_fds(sv[0], fds_to_send, 2));
+
+    close(sv[0]);
+    close(sv[1]);
+}
+
+TEST(BrokerInternalTest, DaemonExitOnShmUnlink) {
+    std::string shm_name = "ufifo_broker_daemon_test";
+
+    int fd = shm_open(shm_name.c_str(), O_RDWR | O_CREAT, 0600);
+    ASSERT_GE(fd, 0);
+    close(fd);
+
+    int listener_fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+    ASSERT_GE(listener_fd, 0);
+
+    int fds_to_send[2] = {1, 2};
+    broker_ctx_t ctx = {};
+    ctx.listener_fd = listener_fd;
+    ctx.fds_to_send = fds_to_send;
+    ctx.total_fds = 2;
+    strncpy(ctx.shm_name, shm_name.c_str(), sizeof(ctx.shm_name));
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        __ufifo_broker_daemon(&ctx);
+        _exit(0);
+    }
+
+    ASSERT_GT(pid, 0);
+
+    shm_unlink(shm_name.c_str());
+
+    int status;
+    int wait_count = 0;
+    while (waitpid(pid, &status, WNOHANG) == 0 && wait_count < 30) {
+        usleep(100000); // 100ms
+        wait_count++;
+    }
+
+    if (wait_count == 30) {

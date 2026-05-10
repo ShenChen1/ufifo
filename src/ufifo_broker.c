@@ -30,7 +30,7 @@ static socklen_t __ufifo_broker_addr(const char *name, struct sockaddr_un *addr)
 /*  SCM_RIGHTS helpers                                                 */
 /* ------------------------------------------------------------------ */
 
-static int __ufifo_send_fds(int sock, const int *fds, unsigned int nfds)
+int __ufifo_send_fds(int sock, const int *fds, unsigned int nfds)
 {
     char dummy = 'F';
     struct iovec iov = { .iov_base = &dummy, .iov_len = 1 };
@@ -114,7 +114,7 @@ typedef struct {
 
 #define BROKER_POLL_INTERVAL_MS 2000
 
-static void __ufifo_broker_daemon(broker_ctx_t *ctx)
+void __ufifo_broker_daemon(broker_ctx_t *ctx)
 {
     setsid();
 
