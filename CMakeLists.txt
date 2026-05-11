@@ -135,3 +135,15 @@ set(CPACK_ARCHIVE_COMPONENT_INSTALL ON) # Install each component as separate arc
 set(CPACK_COMPONENTS_ALL release dbgsym)
 
 include(CPack)
+
+if(COVERAGE)
+    target_link_libraries(ufifo_test PRIVATE gcov)
+    target_link_libraries(bytestream PRIVATE gcov)
+    target_link_libraries(nolock PRIVATE gcov)
+    target_link_libraries(pressure PRIVATE gcov)
+    target_link_libraries(record PRIVATE gcov)
+    target_link_libraries(record-tag PRIVATE gcov)
+    target_link_libraries(record-tag-cb PRIVATE gcov)
+    target_link_libraries(epoll PRIVATE gcov)
+    target_link_libraries(ufifo_bench PRIVATE gcov)
+endif()
