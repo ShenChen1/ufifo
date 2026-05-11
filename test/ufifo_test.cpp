@@ -1579,7 +1579,8 @@ TEST(UfifoTimeoutTest, TimeoutApis) {
     EXPECT_EQ(3, ufifo_get_timeout(fifo, out_buf, 3, 50));
 
     // peek timeout
-    EXPECT_EQ(61, ufifo_peek_timeout(fifo, out_buf, 61, 50));
+    char large_out_buf[64];
+    EXPECT_EQ(61, ufifo_peek_timeout(fifo, large_out_buf, 61, 50));
 
     // empty the fifo
     char empty_buf[64];
