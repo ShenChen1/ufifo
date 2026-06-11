@@ -23,6 +23,9 @@ extern "C" {
 /** @brief Max number of users for a FIFO. */
 #define UFIFO_MAX_NUM_USERS (128U)
 
+/** @brief Maximum FIFO name length in bytes, excluding the null terminator. */
+#define UFIFO_NAME_MAX (64U)
+
 /**
  * @brief Hook callbacks for record-oriented mode.
  *
@@ -107,7 +110,7 @@ typedef struct ufifo ufifo_t;
 
 /**
  * @brief Open or create a FIFO.
- * @param name   Shared-memory name (must be unique per FIFO instance).
+ * @param name   Shared-memory name (must be unique and no longer than UFIFO_NAME_MAX bytes).
  * @param init   Initialization parameters (mode, hooks, alloc config).
  * @param handle [out] Receives the created FIFO handle on success.
  * @return 0 on success, negative errno on failure.

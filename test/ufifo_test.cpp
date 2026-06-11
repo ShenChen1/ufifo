@@ -5,6 +5,7 @@
 
 #include "gtest/gtest.h"
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
@@ -156,6 +157,36 @@ TEST_F(UfifoApiTest, OpenWithEmptyName)
     init.alloc.max_users = 1;
     ufifo_t *fifo = nullptr;
     EXPECT_NE(0, ufifo_open("", &init, &fifo));
+}
+
+TEST_F(UfifoApiTest, OpenWithMaxLengthName)
+{
+    ufifo_init_t init = {};
+    init.opt = UFIFO_OPT_ALLOC;
+    init.alloc.size = 64;
+    init.alloc.force = 1;
+    init.alloc.max_users = 1;
+    std::string name = GenerateName("max_name");
+    name.append(UFIFO_NAME_MAX - name.size(), 'x');
+    ufifo_t *fifo = nullptr;
+
+    ASSERT_EQ(UFIFO_NAME_MAX, name.size());
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &fifo));
+    EXPECT_EQ(0, ufifo_destroy(fifo));
+}
+
+TEST_F(UfifoApiTest, OpenWithTooLongName)
+{
+    ufifo_init_t init = {};
+    init.opt = UFIFO_OPT_ALLOC;
+    init.alloc.size = 64;
+    init.alloc.force = 1;
+    init.alloc.max_users = 1;
+    std::string name(UFIFO_NAME_MAX + 1, 'x');
+    ufifo_t *fifo = nullptr;
+
+    EXPECT_EQ(-ENAMETOOLONG, ufifo_open(name.c_str(), &init, &fifo));
+    EXPECT_EQ(nullptr, fifo);
 }
 
 TEST_F(UfifoApiTest, OpenWithInvalidDataMode)

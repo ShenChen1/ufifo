@@ -6,6 +6,10 @@
 #include "ufifo_layout.h"
 
 #define UFIFO_MAGIC (0xf1f0f1f0)
+#define UFIFO_NAME_BUF_SIZE (UFIFO_NAME_MAX)
+#define UFIFO_CTRL_NAME_SUFFIX "_ctrl"
+#define UFIFO_CTRL_NAME_BUF_SIZE (UFIFO_NAME_MAX + sizeof(UFIFO_CTRL_NAME_SUFFIX))
+
 #define UFIFO_CHECK_HANDLE(handle, ...)                    \
     do {                                                   \
         if (!(handle) || (handle)->magic != UFIFO_MAGIC) { \
@@ -16,7 +20,7 @@
 struct ufifo {
     unsigned int magic;
 
-    char name[128];
+    char name[UFIFO_NAME_BUF_SIZE];
     unsigned int user_id;
     int is_shared;
     ufifo_lock_e lock_type;

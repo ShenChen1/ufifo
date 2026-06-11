@@ -109,7 +109,7 @@ typedef struct {
     int listener_fd;
     int *fds_to_send;       /* packed: [efd_wr, efd_rd_all[0..N-1]] */
     unsigned int total_fds; /* 1 + efd_count */
-    char shm_name[128];
+    char shm_name[UFIFO_NAME_BUF_SIZE];
 } broker_ctx_t;
 
 #define BROKER_POLL_INTERVAL_MS 2000

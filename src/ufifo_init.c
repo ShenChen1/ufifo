@@ -115,9 +115,9 @@ static int __ufifo_init_from_shm(ufifo_t *handle)
 {
     int ret = 0;
     struct stat st;
-    char ctrl_name[128 + 8];
+    char ctrl_name[UFIFO_CTRL_NAME_BUF_SIZE];
 
-    snprintf(ctrl_name, sizeof(ctrl_name), "%s_ctrl", handle->name);
+    snprintf(ctrl_name, sizeof(ctrl_name), "%s%s", handle->name, UFIFO_CTRL_NAME_SUFFIX);
     handle->ctrl_fd = shm_open(ctrl_name, O_RDWR, (S_IRUSR | S_IWUSR));
     if (handle->ctrl_fd < 0) {
         ret = -errno;
@@ -207,12 +207,12 @@ static int __ufifo_init_from_user(ufifo_t *handle, ufifo_alloc_t *alloc)
     int ret = 0;
     unsigned int i;
     size_t slot_count = alloc->max_users + 1;
-    char ctrl_name[128 + 8];
+    char ctrl_name[UFIFO_CTRL_NAME_BUF_SIZE];
 
     if (!alloc->size)
         return -EINVAL;
 
-    snprintf(ctrl_name, sizeof(ctrl_name), "%s_ctrl", handle->name);
+    snprintf(ctrl_name, sizeof(ctrl_name), "%s%s", handle->name, UFIFO_CTRL_NAME_SUFFIX);
     handle->ctrl_size = sizeof(ufifo_ctrl_t) + slot_count * sizeof(ufifo_sub_ctrl_t);
     handle->ctrl_fd = shm_open(ctrl_name, O_RDWR | O_CREAT, (S_IRUSR | S_IWUSR));
     if (handle->ctrl_fd < 0) {
@@ -338,6 +338,8 @@ int ufifo_open(const char *name, const ufifo_init_t *init, ufifo_t **handle)
 
     if (name == NULL || init == NULL || handle == NULL)
         return -EINVAL;
+    if (strlen(name) > UFIFO_NAME_MAX)
+        return -ENAMETOOLONG;
 
     ret = __ufifo_init_validate(init);
     if (ret < 0)
@@ -361,8 +363,8 @@ int ufifo_open(const char *name, const ufifo_init_t *init, ufifo_t **handle)
              * force=1: nuke old shm to trigger old broker exit,
              * then recreate. This is a cold-restart operation.
              */
-            char ctrl_name[128 + 8];
-            snprintf(ctrl_name, sizeof(ctrl_name), "%s_ctrl", name);
+            char ctrl_name[UFIFO_CTRL_NAME_BUF_SIZE];
+            snprintf(ctrl_name, sizeof(ctrl_name), "%s%s", name, UFIFO_CTRL_NAME_SUFFIX);
             shm_unlink(name);
             shm_unlink(ctrl_name);
             __ufifo_broker_wake_to_exit(name);
@@ -418,7 +420,7 @@ err1:
 
 static int __ufifo_close(ufifo_t *handle, int destroy)
 {
-    char ctrl_name[128 + 8];
+    char ctrl_name[UFIFO_CTRL_NAME_BUF_SIZE];
 
     __ufifo_ctrl_lock(handle);
     __ufifo_unregister(handle);
@@ -440,7 +442,7 @@ static int __ufifo_close(ufifo_t *handle, int destroy)
     if (destroy) {
         /* Unlink shm → broker daemon detects and exits */
         shm_unlink(handle->name);
-        snprintf(ctrl_name, sizeof(ctrl_name), "%s_ctrl", handle->name);
+        snprintf(ctrl_name, sizeof(ctrl_name), "%s%s", handle->name, UFIFO_CTRL_NAME_SUFFIX);
         shm_unlink(ctrl_name);
         __ufifo_broker_wake_to_exit(handle->name);
     }
