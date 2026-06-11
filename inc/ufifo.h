@@ -20,6 +20,9 @@ extern "C" {
 #endif
 #endif
 
+/** @brief Max number of users for a FIFO. */
+#define UFIFO_MAX_NUM_USERS (128U)
+
 /**
  * @brief Hook callbacks for record-oriented mode.
  *
@@ -72,7 +75,7 @@ typedef struct {
     unsigned int force;          /**< 1 = recreate if exists; 0 = reuse. */
     ufifo_lock_e lock;           /**< Locking strategy. */
     ufifo_data_mode_e data_mode; /**< Data distribution mode. */
-    unsigned int max_users;      /**< Max concurrent consumers (>= 1). */
+    unsigned int max_users;      /**< Max concurrent consumers (1 <= max_users <= UFIFO_MAX_NUM_USERS). */
     unsigned int reserved[11];   /**< Reserved for ABI compatibility. */
 } ufifo_alloc_t;
 

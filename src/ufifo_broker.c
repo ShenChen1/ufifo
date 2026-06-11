@@ -108,7 +108,7 @@ static int __ufifo_recv_fds(int sock, int *fds, unsigned int nfds)
 typedef struct {
     int listener_fd;
     int *fds_to_send;       /* packed: [efd_wr, efd_rd_all[0..N-1]] */
-    unsigned int total_fds; /* 1 + max_users */
+    unsigned int total_fds; /* 1 + efd_count */
     char shm_name[128];
 } broker_ctx_t;
 
@@ -269,7 +269,8 @@ static int __ufifo_broker_connect(ufifo_t *handle)
 {
     struct sockaddr_un addr;
     socklen_t addr_len;
-    unsigned int total_fds = 1 + handle->ctrl->max_users;
+    unsigned int rx_slot_count = __ufifo_rx_slot_count(handle);
+    unsigned int total_fds = 1 + rx_slot_count;
     int ret;
 
     int sock = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
@@ -311,7 +312,7 @@ static int __ufifo_broker_connect(ufifo_t *handle)
 
     /* Unpack: [efd_wr, efd_rd_all[0], efd_rd_all[1], ...] */
     handle->efd_wr = fds[0];
-    handle->efd_count = handle->ctrl->max_users;
+    handle->efd_count = rx_slot_count;
     handle->efd_rd_all = malloc(handle->efd_count * sizeof(int));
     if (!handle->efd_rd_all) {
         unsigned int i;
@@ -342,7 +343,7 @@ int __ufifo_acquire_eventfds(ufifo_t *handle, int is_alloc)
     }
 
     /* Step 2: no broker → bootstrap: create eventfds + fork broker */
-    ret = __ufifo_efd_create_all(handle, handle->ctrl->max_users);
+    ret = __ufifo_efd_create_all(handle, __ufifo_rx_slot_count(handle));
     if (ret < 0)
         return ret;
 
@@ -362,7 +363,7 @@ int __ufifo_acquire_eventfds(ufifo_t *handle, int is_alloc)
     }
 
 set_rd:
-    handle->efd_rd = __ufifo_is_shared(handle) ? handle->efd_rd_all[handle->user_id] : handle->efd_rd_all[0];
+    handle->efd_rd = handle->efd_rd_all[__ufifo_rx_slot_id(handle)];
     return 0;
 }
 
@@ -370,7 +371,7 @@ set_rd:
 /*  eventfd creation and cleanup                                       */
 /* ------------------------------------------------------------------ */
 
-int __ufifo_efd_create_all(ufifo_t *handle, unsigned int max_users)
+int __ufifo_efd_create_all(ufifo_t *handle, unsigned int count)
 {
     unsigned int i;
 
@@ -378,15 +379,15 @@ int __ufifo_efd_create_all(ufifo_t *handle, unsigned int max_users)
     if (handle->efd_wr < 0)
         return -errno;
 
-    handle->efd_count = max_users;
-    handle->efd_rd_all = calloc(max_users, sizeof(int));
+    handle->efd_count = count;
+    handle->efd_rd_all = calloc(count, sizeof(int));
     if (!handle->efd_rd_all) {
         close(handle->efd_wr);
         handle->efd_wr = -1;
         return -ENOMEM;
     }
 
-    for (i = 0; i < max_users; i++) {
+    for (i = 0; i < count; i++) {
         handle->efd_rd_all[i] = __ufifo_efd_create();
         if (handle->efd_rd_all[i] < 0) {
             int err = errno;

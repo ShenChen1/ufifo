@@ -1,7 +1,6 @@
 #include "ufifo_internal.h"
 #include <errno.h>
 #include <fcntl.h>
-#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,7 +38,8 @@ static int __ufifo_register(ufifo_t *handle)
 
     for (i = 0; i < ctrl->max_users; i++) {
         if (!READ_ONCE(&ctrl->users[i].active)) {
-            WRITE_ONCE(&ctrl->users[i].out, READ_ONCE(&ctrl->in));
+            if (ctrl->data_mode == UFIFO_DATA_SHARED)
+                WRITE_ONCE(&ctrl->users[i].out, READ_ONCE(&ctrl->in));
             ctrl->users[i].pid = mypid;
             __ufifo_ofd_lock(handle->ctrl_fd, i);
             smp_store_release(&ctrl->users[i].active, 1);
@@ -51,8 +51,8 @@ static int __ufifo_register(ufifo_t *handle)
     for (i = 0; i < ctrl->max_users; i++) {
         if (READ_ONCE(&ctrl->users[i].active) && __ufifo_is_user_dead(handle->ctrl_fd, i)) {
             __ufifo_reap_dead_user(handle, i);
-
-            WRITE_ONCE(&ctrl->users[i].out, READ_ONCE(&ctrl->in));
+            if (ctrl->data_mode == UFIFO_DATA_SHARED)
+                WRITE_ONCE(&ctrl->users[i].out, READ_ONCE(&ctrl->in));
             ctrl->users[i].pid = mypid;
             __ufifo_ofd_lock(handle->ctrl_fd, i);
             smp_store_release(&ctrl->users[i].active, 1);
@@ -170,12 +170,7 @@ static int __ufifo_init_from_shm(ufifo_t *handle)
 
     handle->kfifo.in = &handle->ctrl->in;
     handle->kfifo.mask = handle->ctrl->mask;
-    if (__ufifo_is_shared(handle)) {
-        WRITE_ONCE(&handle->ctrl->users[handle->user_id].out, READ_ONCE(&handle->ctrl->in));
-        handle->kfifo.out = &handle->ctrl->users[handle->user_id].out;
-    } else {
-        handle->kfifo.out = &handle->ctrl->users[0].out;
-    }
+    handle->kfifo.out = &__ufifo_rx_ctrl(handle)->out;
 
     /* Acquire eventfds via broker (connect or bootstrap) */
     ret = __ufifo_acquire_eventfds(handle, 0);
@@ -211,13 +206,14 @@ static int __ufifo_init_from_user(ufifo_t *handle, ufifo_alloc_t *alloc)
 {
     int ret = 0;
     unsigned int i;
+    size_t slot_count = alloc->max_users + 1;
     char ctrl_name[128 + 8];
 
     if (!alloc->size)
         return -EINVAL;
 
     snprintf(ctrl_name, sizeof(ctrl_name), "%s_ctrl", handle->name);
-    handle->ctrl_size = sizeof(ufifo_ctrl_t) + alloc->max_users * sizeof(ufifo_sub_ctrl_t);
+    handle->ctrl_size = sizeof(ufifo_ctrl_t) + slot_count * sizeof(ufifo_sub_ctrl_t);
     handle->ctrl_fd = shm_open(ctrl_name, O_RDWR | O_CREAT, (S_IRUSR | S_IWUSR));
     if (handle->ctrl_fd < 0) {
         ret = -errno;
@@ -245,9 +241,8 @@ static int __ufifo_init_from_user(ufifo_t *handle, ufifo_alloc_t *alloc)
     handle->ctrl->data_mode = alloc->data_mode;
     handle->ctrl->max_users = alloc->max_users;
     handle->ctrl->num_users = 0;
-    for (i = 0; i < alloc->max_users; i++) {
-        handle->ctrl->users[i].active = 0;
-    }
+    for (i = 0; i < slot_count; i++)
+        memset(&handle->ctrl->users[i], 0, sizeof(handle->ctrl->users[i]));
 
     handle->shm_size = roundup_pow_of_two(alloc->size);
     ret = ftruncate(handle->shm_fd, handle->shm_size);
@@ -272,7 +267,7 @@ static int __ufifo_init_from_user(ufifo_t *handle, ufifo_alloc_t *alloc)
     handle->lock_type = handle->ctrl->lock;
 
     handle->kfifo.in = &handle->ctrl->in;
-    handle->kfifo.out = &handle->ctrl->users[handle->user_id].out;
+    handle->kfifo.out = &__ufifo_rx_ctrl(handle)->out;
     ret = kfifo_init(&handle->kfifo, handle->shm_size);
     if (ret < 0)
         goto err_register;
@@ -316,7 +311,7 @@ static int __ufifo_init_validate(const ufifo_init_t *init)
     }
 
     if (init->opt == UFIFO_OPT_ALLOC) {
-        if (init->alloc.max_users < 1) {
+        if (init->alloc.max_users < 1 || init->alloc.max_users > UFIFO_MAX_NUM_USERS) {
             return -EINVAL;
         }
         if (init->alloc.lock >= UFIFO_LOCK_MAX) {

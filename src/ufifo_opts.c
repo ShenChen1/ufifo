@@ -168,7 +168,8 @@ static int __ufifo_try_reap_dead_readers(ufifo_t *handle)
     return cleaned;
 }
 
-static inline __attribute__((always_inline)) unsigned int __ufifo_put(ufifo_t *handle, void *buf, unsigned int size, int wait_type, long millisec)
+static inline __attribute__((always_inline)) unsigned int
+__ufifo_put(ufifo_t *handle, void *buf, unsigned int size, int wait_type, long millisec)
 {
     int ret;
     unsigned int len;
@@ -219,15 +220,13 @@ static inline __attribute__((always_inline)) unsigned int __ufifo_put(ufifo_t *h
         for (unsigned int i = 0; i < handle->ctrl->max_users; i++) {
             if (smp_load_acquire(&handle->ctrl->users[i].active))
                 __ufifo_efd_notify(
-                    handle->efd_rd_all[i],
-                    &handle->ctrl->users[i].rx_waiters,
-                    &handle->ctrl->users[i].epoll_armed);
+                    handle->efd_rd_all[i], &handle->ctrl->users[i].rx_waiters, &handle->ctrl->users[i].epoll_armed);
         }
     } else {
-        __ufifo_efd_notify(
-            handle->efd_rd_all[0],
-            &handle->ctrl->users[0].rx_waiters,
-            &handle->ctrl->users[0].epoll_armed);
+        unsigned int rx_slot = __ufifo_rx_slot_id(handle);
+        __ufifo_efd_notify(handle->efd_rd_all[rx_slot],
+                           &handle->ctrl->users[rx_slot].rx_waiters,
+                           &handle->ctrl->users[rx_slot].epoll_armed);
     }
 
 end:
@@ -254,11 +253,12 @@ unsigned int ufifo_put_timeout(ufifo_t *handle, void *buf, unsigned int size, lo
     return __ufifo_put(handle, buf, size, 2, millisec);
 }
 
-static inline __attribute__((always_inline)) unsigned int __ufifo_get(ufifo_t *handle, void *buf, unsigned int size, int wait_type, long millisec)
+static inline __attribute__((always_inline)) unsigned int
+__ufifo_get(ufifo_t *handle, void *buf, unsigned int size, int wait_type, long millisec)
 {
     int ret;
     unsigned int len;
-    unsigned int user_id = __ufifo_is_shared(handle) ? handle->user_id : 0;
+    ufifo_sub_ctrl_t *rx_ctrl = __ufifo_rx_ctrl(handle);
 
     __ufifo_data_lock(handle);
     while (1) {
@@ -267,9 +267,9 @@ static inline __attribute__((always_inline)) unsigned int __ufifo_get(ufifo_t *h
             if (wait_type == 0) {
                 ret = -1;
             } else if (wait_type == 1) {
-                ret = __ufifo_efd_wait(handle->efd_rd, handle, &handle->ctrl->users[user_id].rx_waiters);
+                ret = __ufifo_efd_wait(handle->efd_rd, handle, &rx_ctrl->rx_waiters);
             } else {
-                ret = __ufifo_efd_timedwait(handle->efd_rd, handle, millisec, &handle->ctrl->users[user_id].rx_waiters);
+                ret = __ufifo_efd_timedwait(handle->efd_rd, handle, millisec, &rx_ctrl->rx_waiters);
             }
             if (ret) {
                 goto end;
@@ -322,11 +322,12 @@ unsigned int ufifo_get_timeout(ufifo_t *handle, void *buf, unsigned int size, lo
     return __ufifo_get(handle, buf, size, 2, millisec);
 }
 
-static inline __attribute__((always_inline)) unsigned int __ufifo_peek(ufifo_t *handle, void *buf, unsigned int size, int wait_type, long millisec)
+static inline __attribute__((always_inline)) unsigned int
+__ufifo_peek(ufifo_t *handle, void *buf, unsigned int size, int wait_type, long millisec)
 {
     int ret = 0;
     unsigned int len;
-    unsigned int user_id = __ufifo_is_shared(handle) ? handle->user_id : 0;
+    ufifo_sub_ctrl_t *rx_ctrl = __ufifo_rx_ctrl(handle);
     __ufifo_data_lock(handle);
     while (1) {
         len = __ufifo_peek_len(handle, READ_ONCE(handle->kfifo.out), READ_ONCE(handle->kfifo.in));
@@ -334,9 +335,9 @@ static inline __attribute__((always_inline)) unsigned int __ufifo_peek(ufifo_t *
             if (wait_type == 0) {
                 ret = -1;
             } else if (wait_type == 1) {
-                ret = __ufifo_efd_wait(handle->efd_rd, handle, &handle->ctrl->users[user_id].rx_waiters);
+                ret = __ufifo_efd_wait(handle->efd_rd, handle, &rx_ctrl->rx_waiters);
             } else {
-                ret = __ufifo_efd_timedwait(handle->efd_rd, handle, millisec, &handle->ctrl->users[user_id].rx_waiters);
+                ret = __ufifo_efd_timedwait(handle->efd_rd, handle, millisec, &rx_ctrl->rx_waiters);
             }
             if (ret) {
                 goto end;

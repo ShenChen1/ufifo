@@ -7,7 +7,7 @@
 int ufifo_get_rx_fd(ufifo_t *handle)
 {
     UFIFO_CHECK_HANDLE(handle, -EINVAL);
-    unsigned int idx = __ufifo_is_shared(handle) ? handle->user_id : 0;
+    ufifo_sub_ctrl_t *rx_ctrl = __ufifo_rx_ctrl(handle);
 
     __ufifo_ctrl_lock(handle);
 
@@ -16,7 +16,7 @@ int ufifo_get_rx_fd(ufifo_t *handle)
         __ufifo_efd_post(handle->efd_rd);
         /* Leave epoll_armed = 0: producer will re-arm on next drain cycle */
     } else {
-        smp_store_release(&handle->ctrl->users[idx].epoll_armed, 1);
+        smp_store_release(&rx_ctrl->epoll_armed, 1);
     }
 
     __ufifo_ctrl_unlock(handle);
@@ -45,9 +45,9 @@ int ufifo_drain_rx_fd(ufifo_t *handle)
     UFIFO_CHECK_HANDLE(handle, -EINVAL);
     if (handle->efd_rd < 0)
         return -EINVAL;
-    unsigned int idx = __ufifo_is_shared(handle) ? handle->user_id : 0;
+    ufifo_sub_ctrl_t *rx_ctrl = __ufifo_rx_ctrl(handle);
     int ret = __ufifo_efd_drain(handle->efd_rd);
-    smp_store_release(&handle->ctrl->users[idx].epoll_armed, 1); /* re-arm */
+    smp_store_release(&rx_ctrl->epoll_armed, 1); /* re-arm */
     return ret;
 }
 
