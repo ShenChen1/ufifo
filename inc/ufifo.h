@@ -169,7 +169,7 @@ UFIFO_API unsigned int ufifo_peek_len(ufifo_t *handle);
  * @param handle FIFO handle.
  * @param buf    Data to write.
  * @param size   Number of bytes to write.
- * @return Bytes written, 0 if FIFO is full.
+ * @return Bytes written, 0 on failure with errno set (EAGAIN if full, EMSGSIZE if oversized, EIO on hook error, EINVAL on bad handle).
  */
 UFIFO_API unsigned int ufifo_put(ufifo_t *handle, void *buf, unsigned int size);
 
@@ -178,7 +178,7 @@ UFIFO_API unsigned int ufifo_put(ufifo_t *handle, void *buf, unsigned int size);
  * @param handle FIFO handle.
  * @param buf    Data to write.
  * @param size   Number of bytes to write.
- * @return Bytes written.
+ * @return Bytes written, 0 on failure with errno set (EMSGSIZE if oversized, EIO on hook error, EINVAL on bad handle).
  */
 UFIFO_API unsigned int ufifo_put_block(ufifo_t *handle, void *buf, unsigned int size);
 
@@ -188,7 +188,7 @@ UFIFO_API unsigned int ufifo_put_block(ufifo_t *handle, void *buf, unsigned int 
  * @param buf      Data to write.
  * @param size     Number of bytes to write.
  * @param millisec Timeout in milliseconds.
- * @return Bytes written, 0 on timeout.
+ * @return Bytes written, 0 on failure/timeout with errno set (ETIMEDOUT on timeout, EMSGSIZE if oversized, EIO on hook error, EINVAL on bad handle).
  */
 UFIFO_API unsigned int ufifo_put_timeout(ufifo_t *handle, void *buf, unsigned int size, long millisec);
 
@@ -197,7 +197,7 @@ UFIFO_API unsigned int ufifo_put_timeout(ufifo_t *handle, void *buf, unsigned in
  * @param handle FIFO handle.
  * @param buf    Buffer to receive data.
  * @param size   Buffer capacity in bytes.
- * @return Bytes read, 0 if FIFO is empty.
+ * @return Bytes read, 0 on failure with errno set (EAGAIN if empty, ENOBUFS if buffer too small, EIO on hook error, EINVAL on bad handle).
  */
 UFIFO_API unsigned int ufifo_get(ufifo_t *handle, void *buf, unsigned int size);
 
@@ -206,7 +206,7 @@ UFIFO_API unsigned int ufifo_get(ufifo_t *handle, void *buf, unsigned int size);
  * @param handle FIFO handle.
  * @param buf    Buffer to receive data.
  * @param size   Buffer capacity in bytes.
- * @return Bytes read.
+ * @return Bytes read, 0 on failure with errno set (ENOBUFS if buffer too small, EIO on hook error, EINVAL on bad handle).
  */
 UFIFO_API unsigned int ufifo_get_block(ufifo_t *handle, void *buf, unsigned int size);
 
@@ -216,7 +216,7 @@ UFIFO_API unsigned int ufifo_get_block(ufifo_t *handle, void *buf, unsigned int 
  * @param buf      Buffer to receive data.
  * @param size     Buffer capacity in bytes.
  * @param millisec Timeout in milliseconds.
- * @return Bytes read, 0 on timeout.
+ * @return Bytes read, 0 on failure/timeout with errno set (ETIMEDOUT on timeout, ENOBUFS if buffer too small, EIO on hook error, EINVAL on bad handle).
  */
 UFIFO_API unsigned int ufifo_get_timeout(ufifo_t *handle, void *buf, unsigned int size, long millisec);
 
@@ -225,7 +225,7 @@ UFIFO_API unsigned int ufifo_get_timeout(ufifo_t *handle, void *buf, unsigned in
  * @param handle FIFO handle.
  * @param buf    Buffer to receive data.
  * @param size   Buffer capacity in bytes.
- * @return Bytes read, 0 if FIFO is empty.
+ * @return Bytes read, 0 on failure with errno set (EAGAIN if empty, ENOBUFS if buffer too small, EIO on hook error, EINVAL on bad handle).
  */
 UFIFO_API unsigned int ufifo_peek(ufifo_t *handle, void *buf, unsigned int size);
 
@@ -234,7 +234,7 @@ UFIFO_API unsigned int ufifo_peek(ufifo_t *handle, void *buf, unsigned int size)
  * @param handle FIFO handle.
  * @param buf    Buffer to receive data.
  * @param size   Buffer capacity in bytes.
- * @return Bytes read.
+ * @return Bytes read, 0 on failure with errno set (ENOBUFS if buffer too small, EIO on hook error, EINVAL on bad handle).
  */
 UFIFO_API unsigned int ufifo_peek_block(ufifo_t *handle, void *buf, unsigned int size);
 
@@ -244,7 +244,7 @@ UFIFO_API unsigned int ufifo_peek_block(ufifo_t *handle, void *buf, unsigned int
  * @param buf      Buffer to receive data.
  * @param size     Buffer capacity in bytes.
  * @param millisec Timeout in milliseconds.
- * @return Bytes read, 0 on timeout.
+ * @return Bytes read, 0 on failure/timeout with errno set (ETIMEDOUT on timeout, ENOBUFS if buffer too small, EIO on hook error, EINVAL on bad handle).
  */
 UFIFO_API unsigned int ufifo_peek_timeout(ufifo_t *handle, void *buf, unsigned int size, long millisec);
 

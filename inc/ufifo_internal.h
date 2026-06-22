@@ -13,6 +13,7 @@
 #define UFIFO_CHECK_HANDLE(handle, ...)                    \
     do {                                                   \
         if (!(handle) || (handle)->magic != UFIFO_MAGIC) { \
+            errno = EINVAL;                                \
             return __VA_ARGS__;                            \
         }                                                  \
     } while (0)

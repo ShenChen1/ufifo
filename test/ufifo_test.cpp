@@ -462,6 +462,40 @@ TEST_F(UfifoApiTest, Dump)
     ufifo_destroy(fifo);
 }
 
+TEST_F(UfifoApiTest, PutOversized)
+{
+    ufifo_init_t init = {};
+    init.opt = UFIFO_OPT_ALLOC;
+    init.alloc.size = 256;
+    init.alloc.force = 1;
+    init.alloc.max_users = 1;
+    init.alloc.data_mode = UFIFO_DATA_SOLE;
+
+    std::string name = GenerateName("oversized_test");
+    ufifo_t *fifo = nullptr;
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &fifo));
+
+    unsigned int capacity = ufifo_size(fifo);
+    std::vector<char> large_buf(capacity + 1, 'x');
+
+    errno = 0;
+    unsigned int written = ufifo_put_block(fifo, large_buf.data(), large_buf.size());
+    EXPECT_EQ(0u, written);
+    EXPECT_EQ(EMSGSIZE, errno);
+
+    errno = 0;
+    written = ufifo_put(fifo, large_buf.data(), large_buf.size());
+    EXPECT_EQ(0u, written);
+    EXPECT_EQ(EMSGSIZE, errno);
+
+    errno = 0;
+    written = ufifo_put_timeout(fifo, large_buf.data(), large_buf.size(), 100);
+    EXPECT_EQ(0u, written);
+    EXPECT_EQ(EMSGSIZE, errno);
+
+    ufifo_destroy(fifo);
+}
+
 // =============================================================================
 // 2. Base test suite class handling Parametrization
 // =============================================================================
@@ -1845,6 +1879,129 @@ TEST_F(UfifoReapTest, ReapDeadUserOnPut)
     ASSERT_EQ(2, ufifo_put(producer, large_buf, 2));
 
     ufifo_destroy(producer);
+}
+
+// =============================================================================
+// 12. Errno Unified Tests
+// =============================================================================
+class UfifoErrnoTest : public ::testing::Test {
+  protected:
+    std::string name;
+    ufifo_t *fifo = nullptr;
+
+    void SetUp() override {
+        name = GenerateName("errno_test");
+        ufifo_init_t init = {};
+        init.opt = UFIFO_OPT_ALLOC;
+        init.alloc.size = 64;
+        init.alloc.max_users = 1;
+        init.alloc.data_mode = UFIFO_DATA_SOLE;
+        init.alloc.force = 1;
+        ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &fifo));
+    }
+
+    void TearDown() override {
+        if (fifo) ufifo_destroy(fifo);
+    }
+};
+
+TEST_F(UfifoErrnoTest, InvalidHandle) {
+    errno = 0;
+    EXPECT_EQ(0u, ufifo_put(nullptr, nullptr, 1));
+    EXPECT_EQ(EINVAL, errno);
+
+    errno = 0;
+    EXPECT_EQ(0u, ufifo_get(nullptr, nullptr, 1));
+    EXPECT_EQ(EINVAL, errno);
+}
+
+TEST_F(UfifoErrnoTest, EmptyAndFull) {
+    char data = 'A';
+    errno = 0;
+    EXPECT_EQ(0u, ufifo_get(fifo, &data, 1));
+    EXPECT_EQ(EAGAIN, errno);
+
+    for (int i = 0; i < 64; i++) {
+        ufifo_put(fifo, &data, 1);
+    }
+    
+    errno = 0;
+    EXPECT_EQ(0u, ufifo_put(fifo, &data, 1));
+    EXPECT_EQ(EAGAIN, errno);
+}
+
+TEST_F(UfifoErrnoTest, Timeout) {
+    char data = 'A';
+    errno = 0;
+    EXPECT_EQ(0u, ufifo_get_timeout(fifo, &data, 1, 10));
+    EXPECT_EQ(ETIMEDOUT, errno);
+
+    for (int i = 0; i < 64; i++) {
+        ufifo_put(fifo, &data, 1);
+    }
+    
+    errno = 0;
+    EXPECT_EQ(0u, ufifo_put_timeout(fifo, &data, 1, 10));
+    EXPECT_EQ(ETIMEDOUT, errno);
+}
+
+static unsigned int failing_recput(unsigned char *, unsigned int, unsigned char *, void *) {
+    return 0; // Fail
+}
+
+static unsigned int failing_recget(unsigned char *, unsigned int, unsigned char *, void *) {
+    return 0; // Fail
+}
+
+static unsigned int dummy_recsize(unsigned char *, unsigned int, unsigned char *) {
+    return 10; // Fixed record size
+}
+
+TEST_F(UfifoErrnoTest, CustomCallbackFailure) {
+    ufifo_destroy(fifo);
+    ufifo_init_t init = {};
+    init.opt = UFIFO_OPT_ALLOC;
+    init.alloc.size = 64;
+    init.alloc.max_users = 1;
+    init.alloc.force = 1;
+    init.hook.recput = failing_recput;
+    init.hook.recget = failing_recget;
+    init.hook.recsize = dummy_recsize;
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &fifo));
+
+    char data[10] = {};
+    errno = 0;
+    EXPECT_EQ(0u, ufifo_put(fifo, data, 10));
+    EXPECT_EQ(EIO, errno);
+
+    ufifo_destroy(fifo);
+    init.hook.recput = nullptr;
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &fifo));
+
+    EXPECT_EQ(10u, ufifo_put(fifo, data, 10));
+
+    errno = 0;
+    EXPECT_EQ(0u, ufifo_get(fifo, data, 10));
+    EXPECT_EQ(EIO, errno);
+}
+
+TEST_F(UfifoErrnoTest, BufferTooSmall) {
+    ufifo_destroy(fifo);
+    ufifo_init_t init = {};
+    init.opt = UFIFO_OPT_ALLOC;
+    init.alloc.size = 64;
+    init.alloc.max_users = 1;
+    init.alloc.force = 1;
+    init.hook.recsize = dummy_recsize;
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &fifo));
+
+    char data[10] = {};
+    EXPECT_EQ(10u, ufifo_put(fifo, data, 10));
+
+    char small_buf[5];
+    errno = 0;
+    EXPECT_EQ(0u, ufifo_get(fifo, small_buf, 5));
+    EXPECT_EQ(ENOBUFS, errno);
 }
 
 // =============================================================================
