@@ -99,4 +99,19 @@ void __ufifo_log(const char *fmt, ...);
 void __ufifo_update_cached_min_out(ufifo_t *handle);
 unsigned int __ufifo_unused_len(ufifo_t *handle);
 
+/*
+ * Notify blocked writers / epoll-TX listeners that write-space may be available.
+ * Must be called after any operation that may increase available buffer capacity:
+ *   - reader consumes data (get / skip / oldest / newest / peek)
+ *   - reader unregisters (close)
+ *   - dead reader reaped
+ *   - FIFO reset
+ *   - new reader joins with out=in (attach)
+ * No-op when no writers are waiting (tx_waiters == 0 && epoll_tx_armed == 0).
+ */
+static inline void __ufifo_notify_writers(ufifo_t *handle)
+{
+    __ufifo_efd_notify(handle->efd_wr, &handle->ctrl->tx_waiters, &handle->ctrl->epoll_tx_armed);
+}
+
 #endif /* UFIFO_INTERNAL_H */

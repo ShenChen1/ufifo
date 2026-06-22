@@ -95,6 +95,7 @@ void ufifo_reset(ufifo_t *handle)
         }
         smp_store_release(&handle->ctrl->cached_min_out, 0);
     }
+    __ufifo_notify_writers(handle);
     __ufifo_data_unlock(handle);
 }
 
@@ -123,7 +124,7 @@ void ufifo_skip(ufifo_t *handle)
             __ufifo_update_cached_min_out(handle);
         }
     }
-    __ufifo_efd_notify(handle->efd_wr, &handle->ctrl->tx_waiters, &handle->ctrl->epoll_tx_armed);
+    __ufifo_notify_writers(handle);
     __ufifo_data_unlock(handle);
 }
 
@@ -163,6 +164,7 @@ static int __ufifo_try_reap_dead_readers(ufifo_t *handle)
 
     if (cleaned) {
         __ufifo_update_cached_min_out(handle);
+        __ufifo_notify_writers(handle);
     }
 
     return cleaned;
@@ -296,7 +298,7 @@ __ufifo_get(ufifo_t *handle, void *buf, unsigned int size, int wait_type, long m
         }
     }
 
-    __ufifo_efd_notify(handle->efd_wr, &handle->ctrl->tx_waiters, &handle->ctrl->epoll_tx_armed);
+    __ufifo_notify_writers(handle);
 
 end:
     __ufifo_data_unlock(handle);
@@ -354,7 +356,7 @@ __ufifo_peek(ufifo_t *handle, void *buf, unsigned int size, int wait_type, long 
         size = handle->hook.recsize ? min(size, len) : size;
         len = kfifo_out_peek(&handle->kfifo, handle->shm_mem, buf, size);
     }
-    __ufifo_efd_notify(handle->efd_wr, &handle->ctrl->tx_waiters, &handle->ctrl->epoll_tx_armed);
+    __ufifo_notify_writers(handle);
 end:
     __ufifo_data_unlock(handle);
     return len;
@@ -406,7 +408,7 @@ found:
             __ufifo_update_cached_min_out(handle);
         }
     }
-    __ufifo_efd_notify(handle->efd_wr, &handle->ctrl->tx_waiters, &handle->ctrl->epoll_tx_armed);
+    __ufifo_notify_writers(handle);
     __ufifo_data_unlock(handle);
 
     return ret;
@@ -446,7 +448,7 @@ int ufifo_newest(ufifo_t *handle, unsigned int tag)
             __ufifo_update_cached_min_out(handle);
         }
     }
-    __ufifo_efd_notify(handle->efd_wr, &handle->ctrl->tx_waiters, &handle->ctrl->epoll_tx_armed);
+    __ufifo_notify_writers(handle);
     __ufifo_data_unlock(handle);
 
     return ret;

@@ -73,6 +73,7 @@ static void __ufifo_unregister(ufifo_t *handle)
         __ufifo_ofd_unlock(handle->ctrl_fd, handle->user_id);
         ctrl->num_users--;
         __ufifo_update_cached_min_out(handle);
+        __ufifo_notify_writers(handle);
     }
 }
 
@@ -179,7 +180,7 @@ static int __ufifo_init_from_shm(ufifo_t *handle)
 
     if (__ufifo_is_shared(handle)) {
         __ufifo_update_cached_min_out(handle);
-        __ufifo_efd_notify(handle->efd_wr, &handle->ctrl->tx_waiters, &handle->ctrl->epoll_tx_armed);
+        __ufifo_notify_writers(handle);
     }
 
     return 0;
