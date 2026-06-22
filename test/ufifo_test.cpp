@@ -1305,6 +1305,55 @@ TEST_F(EdgeCaseTest, DeadReaderReapWakesBlockedWriter)
     ufifo_destroy(writer);
 }
 
+// Regression: test lock-free lost wakeup bug
+TEST_F(EdgeCaseTest, LockFreeLostWakeupStress)
+{
+    std::string name = GenerateName("lf_wakeup_stress");
+    ufifo_init_t init = {};
+    init.opt = UFIFO_OPT_ALLOC;
+    init.alloc.size = 1024;
+    init.alloc.max_users = 2;
+    init.alloc.data_mode = UFIFO_DATA_SOLE;
+    init.alloc.lock = UFIFO_LOCK_NONE;
+    init.alloc.force = 1;
+
+    ufifo_t *writer = nullptr;
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &writer));
+
+    ufifo_init_t attach = {};
+    attach.opt = UFIFO_OPT_ATTACH;
+    ufifo_t *reader = nullptr;
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &attach, &reader));
+
+    const int iterations = 50000;
+    std::atomic<int> consumed{ 0 };
+
+    std::thread reader_thread([&]() {
+        char buf[1];
+        for (int i = 0; i < iterations; i++) {
+            // Short timeout to avoid hanging the test suite indefinitely if bug triggers
+            if (ufifo_get_timeout(reader, buf, 1, 500) > 0) {
+                consumed++;
+            } else {
+                break; // Lost wakeup or timeout
+            }
+        }
+    });
+
+    for (int i = 0; i < iterations; i++) {
+        char data[1] = { 0x42 };
+        while (ufifo_put(writer, data, 1) == 0) {
+            std::this_thread::yield();
+        }
+    }
+
+    reader_thread.join();
+    EXPECT_EQ(iterations, consumed.load()) << "Lost wakeup occurred during Lock-Free stress test";
+
+    ufifo_close(reader);
+    ufifo_destroy(writer);
+}
+
 // =============================================================================
 // 10. Epoll Tests (parameterized by DataFormat, SHARED mode)
 // =============================================================================

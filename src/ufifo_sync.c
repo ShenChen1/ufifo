@@ -131,12 +131,11 @@ int __ufifo_efd_create(void)
     return eventfd(0, EFD_SEMAPHORE | EFD_NONBLOCK | EFD_CLOEXEC);
 }
 
-int __ufifo_efd_wait(int efd, ufifo_t *handle, int *waiters)
+int __ufifo_efd_wait(int efd, ufifo_t *handle)
 {
     uint64_t val;
     int ret;
 
-    atomic_fetch_add(waiters, 1);
     __ufifo_data_unlock(handle);
 
     /* Block until eventfd becomes readable */
@@ -153,16 +152,14 @@ int __ufifo_efd_wait(int efd, ufifo_t *handle, int *waiters)
     }
 
     __ufifo_data_lock(handle);
-    atomic_fetch_sub(waiters, 1);
     return ret;
 }
 
-int __ufifo_efd_timedwait(int efd, ufifo_t *handle, long millisec, int *waiters)
+int __ufifo_efd_timedwait(int efd, ufifo_t *handle, long millisec)
 {
     uint64_t val;
     int ret;
 
-    atomic_fetch_add(waiters, 1);
     __ufifo_data_unlock(handle);
 
     struct pollfd pfd = { .fd = efd, .events = POLLIN };
@@ -180,7 +177,6 @@ int __ufifo_efd_timedwait(int efd, ufifo_t *handle, long millisec, int *waiters)
     }
 
     __ufifo_data_lock(handle);
-    atomic_fetch_sub(waiters, 1);
     return ret;
 }
 

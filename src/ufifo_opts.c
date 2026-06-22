@@ -170,13 +170,11 @@ static int __ufifo_try_reap_dead_readers(ufifo_t *handle)
     return cleaned;
 }
 
-static inline __attribute__((always_inline)) unsigned int
-__ufifo_put(ufifo_t *handle, void *buf, unsigned int size, int wait_type, long millisec)
+static inline int __ufifo_wait_for_space(ufifo_t *handle, unsigned int size, int wait_type, long millisec, unsigned int *out_len)
 {
-    int ret;
+    int ret = 0;
     unsigned int len;
 
-    __ufifo_data_lock(handle);
     while (1) {
         len = __ufifo_unused_len(handle);
         if (len >= size)
@@ -195,16 +193,91 @@ __ufifo_put(ufifo_t *handle, void *buf, unsigned int size, int wait_type, long m
 
         if (wait_type == 0) {
             ret = -1;
-        } else if (wait_type == 1) {
-            ret = __ufifo_efd_wait(handle->efd_wr, handle, &handle->ctrl->tx_waiters);
-        } else {
-            ret = __ufifo_efd_timedwait(handle->efd_wr, handle, millisec, &handle->ctrl->tx_waiters);
+            len = 0;
+            break;
         }
+
+        atomic_fetch_add(&handle->ctrl->tx_waiters, 1);
+        if (handle->lock_type == UFIFO_LOCK_NONE) {
+            len = __ufifo_unused_len(handle);
+            if (len >= size) {
+                atomic_fetch_sub(&handle->ctrl->tx_waiters, 1);
+                break;
+            }
+        }
+
+        if (wait_type == 1) {
+            ret = __ufifo_efd_wait(handle->efd_wr, handle);
+        } else {
+            ret = __ufifo_efd_timedwait(handle->efd_wr, handle, millisec);
+        }
+        atomic_fetch_sub(&handle->ctrl->tx_waiters, 1);
+
         if (ret) {
             len = 0;
-            goto end;
+            break;
         }
     }
+
+    *out_len = len;
+    return ret;
+}
+
+static inline int __ufifo_wait_for_data(ufifo_t *handle, int wait_type, long millisec, unsigned int *out_len)
+{
+    int ret = 0;
+    unsigned int len;
+    ufifo_sub_ctrl_t *rx_ctrl = __ufifo_rx_ctrl(handle);
+
+    while (1) {
+        len = __ufifo_peek_len(handle, READ_ONCE(handle->kfifo.out), READ_ONCE(handle->kfifo.in));
+        if (len > 0)
+            break;
+
+        if (wait_type == 0) {
+            ret = -1;
+            len = 0;
+            break;
+        }
+
+        atomic_fetch_add(&rx_ctrl->rx_waiters, 1);
+        if (handle->lock_type == UFIFO_LOCK_NONE) {
+            len = __ufifo_peek_len(handle, READ_ONCE(handle->kfifo.out), smp_load_acquire(handle->kfifo.in));
+            if (len > 0) {
+                atomic_fetch_sub(&rx_ctrl->rx_waiters, 1);
+                break;
+            }
+        }
+
+        if (wait_type == 1) {
+            ret = __ufifo_efd_wait(handle->efd_rd, handle);
+        } else {
+            ret = __ufifo_efd_timedwait(handle->efd_rd, handle, millisec);
+        }
+        atomic_fetch_sub(&rx_ctrl->rx_waiters, 1);
+
+        if (ret) {
+            len = 0;
+            break;
+        }
+    }
+
+    *out_len = len;
+    return ret;
+}
+
+static inline __attribute__((always_inline)) unsigned int
+__ufifo_put(ufifo_t *handle, void *buf, unsigned int size, int wait_type, long millisec)
+{
+    int ret;
+    unsigned int len;
+
+    __ufifo_data_lock(handle);
+    ret = __ufifo_wait_for_space(handle, size, wait_type, millisec, &len);
+    if (ret) {
+        goto end;
+    }
+
     if (unlikely(handle->hook.recput)) {
         unsigned int in = READ_ONCE(handle->kfifo.in);
         len = handle->kfifo.mask & in;
@@ -218,18 +291,7 @@ __ufifo_put(ufifo_t *handle, void *buf, unsigned int size, int wait_type, long m
         len = kfifo_in(&handle->kfifo, handle->shm_mem, buf, size);
     }
 
-    if (__ufifo_is_shared(handle)) {
-        for (unsigned int i = 0; i < handle->ctrl->max_users; i++) {
-            if (smp_load_acquire(&handle->ctrl->users[i].active))
-                __ufifo_efd_notify(
-                    handle->efd_rd_all[i], &handle->ctrl->users[i].rx_waiters, &handle->ctrl->users[i].epoll_armed);
-        }
-    } else {
-        unsigned int rx_slot = __ufifo_rx_slot_id(handle);
-        __ufifo_efd_notify(handle->efd_rd_all[rx_slot],
-                           &handle->ctrl->users[rx_slot].rx_waiters,
-                           &handle->ctrl->users[rx_slot].epoll_armed);
-    }
+    __ufifo_notify_readers(handle);
 
 end:
     __ufifo_data_unlock(handle);
@@ -260,25 +322,10 @@ __ufifo_get(ufifo_t *handle, void *buf, unsigned int size, int wait_type, long m
 {
     int ret;
     unsigned int len;
-    ufifo_sub_ctrl_t *rx_ctrl = __ufifo_rx_ctrl(handle);
-
     __ufifo_data_lock(handle);
-    while (1) {
-        len = __ufifo_peek_len(handle, READ_ONCE(handle->kfifo.out), READ_ONCE(handle->kfifo.in));
-        if (len == 0) {
-            if (wait_type == 0) {
-                ret = -1;
-            } else if (wait_type == 1) {
-                ret = __ufifo_efd_wait(handle->efd_rd, handle, &rx_ctrl->rx_waiters);
-            } else {
-                ret = __ufifo_efd_timedwait(handle->efd_rd, handle, millisec, &rx_ctrl->rx_waiters);
-            }
-            if (ret) {
-                goto end;
-            }
-        } else {
-            break;
-        }
+    ret = __ufifo_wait_for_data(handle, wait_type, millisec, &len);
+    if (ret) {
+        goto end;
     }
 
     unsigned int old_out = READ_ONCE(handle->kfifo.out);
@@ -329,24 +376,10 @@ __ufifo_peek(ufifo_t *handle, void *buf, unsigned int size, int wait_type, long 
 {
     int ret = 0;
     unsigned int len;
-    ufifo_sub_ctrl_t *rx_ctrl = __ufifo_rx_ctrl(handle);
     __ufifo_data_lock(handle);
-    while (1) {
-        len = __ufifo_peek_len(handle, READ_ONCE(handle->kfifo.out), READ_ONCE(handle->kfifo.in));
-        if (len == 0) {
-            if (wait_type == 0) {
-                ret = -1;
-            } else if (wait_type == 1) {
-                ret = __ufifo_efd_wait(handle->efd_rd, handle, &rx_ctrl->rx_waiters);
-            } else {
-                ret = __ufifo_efd_timedwait(handle->efd_rd, handle, millisec, &rx_ctrl->rx_waiters);
-            }
-            if (ret) {
-                goto end;
-            }
-        } else {
-            break;
-        }
+    ret = __ufifo_wait_for_data(handle, wait_type, millisec, &len);
+    if (ret) {
+        goto end;
     }
     if (unlikely(handle->hook.recget)) {
         unsigned int out = READ_ONCE(handle->kfifo.out);
