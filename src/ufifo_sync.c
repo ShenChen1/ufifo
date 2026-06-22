@@ -1,12 +1,13 @@
 #include "ufifo_internal.h"
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <poll.h>
 #include <pthread.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <sys/eventfd.h>
 #include <unistd.h>
-#include <stdlib.h>
 
 #include "utils.h"
 
@@ -163,7 +164,8 @@ int __ufifo_efd_timedwait(int efd, ufifo_t *handle, long millisec)
     __ufifo_data_unlock(handle);
 
     struct pollfd pfd = { .fd = efd, .events = POLLIN };
-    ret = poll(&pfd, 1, (int)millisec);
+    int poll_timeout = range(millisec, 0L, (long)INT_MAX);
+    ret = poll(&pfd, 1, poll_timeout);
     if (ret > 0) {
         if (read(efd, &val, sizeof(val)) < 0) {
             ret = errno == EAGAIN ? 0 : -errno;

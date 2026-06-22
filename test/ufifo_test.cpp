@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <climits>
 #include <condition_variable>
 #include <cstring>
 #include <fcntl.h>
@@ -1889,7 +1890,8 @@ class UfifoErrnoTest : public ::testing::Test {
     std::string name;
     ufifo_t *fifo = nullptr;
 
-    void SetUp() override {
+    void SetUp() override
+    {
         name = GenerateName("errno_test");
         ufifo_init_t init = {};
         init.opt = UFIFO_OPT_ALLOC;
@@ -1900,12 +1902,15 @@ class UfifoErrnoTest : public ::testing::Test {
         ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &fifo));
     }
 
-    void TearDown() override {
-        if (fifo) ufifo_destroy(fifo);
+    void TearDown() override
+    {
+        if (fifo)
+            ufifo_destroy(fifo);
     }
 };
 
-TEST_F(UfifoErrnoTest, InvalidHandle) {
+TEST_F(UfifoErrnoTest, InvalidHandle)
+{
     errno = 0;
     EXPECT_EQ(0u, ufifo_put(nullptr, nullptr, 1));
     EXPECT_EQ(EINVAL, errno);
@@ -1915,7 +1920,8 @@ TEST_F(UfifoErrnoTest, InvalidHandle) {
     EXPECT_EQ(EINVAL, errno);
 }
 
-TEST_F(UfifoErrnoTest, EmptyAndFull) {
+TEST_F(UfifoErrnoTest, EmptyAndFull)
+{
     char data = 'A';
     errno = 0;
     EXPECT_EQ(0u, ufifo_get(fifo, &data, 1));
@@ -1924,13 +1930,14 @@ TEST_F(UfifoErrnoTest, EmptyAndFull) {
     for (int i = 0; i < 64; i++) {
         ufifo_put(fifo, &data, 1);
     }
-    
+
     errno = 0;
     EXPECT_EQ(0u, ufifo_put(fifo, &data, 1));
     EXPECT_EQ(EAGAIN, errno);
 }
 
-TEST_F(UfifoErrnoTest, Timeout) {
+TEST_F(UfifoErrnoTest, Timeout)
+{
     char data = 'A';
     errno = 0;
     EXPECT_EQ(0u, ufifo_get_timeout(fifo, &data, 1, 10));
@@ -1939,25 +1946,89 @@ TEST_F(UfifoErrnoTest, Timeout) {
     for (int i = 0; i < 64; i++) {
         ufifo_put(fifo, &data, 1);
     }
-    
+
     errno = 0;
     EXPECT_EQ(0u, ufifo_put_timeout(fifo, &data, 1, 10));
     EXPECT_EQ(ETIMEDOUT, errno);
 }
 
-static unsigned int failing_recput(unsigned char *, unsigned int, unsigned char *, void *) {
+TEST_F(UfifoErrnoTest, LongTimeoutOverflow)
+{
+    char data = 'A';
+    for (int i = 0; i < 64; i++) {
+        ufifo_put(fifo, &data, 1);
+    }
+
+    std::thread t([&]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        char b;
+        ufifo_get(fifo, &b, 1);
+    });
+
+    long huge_timeout = 3000L + (long)INT_MAX; // Triggers clamp to INT_MAX
+    errno = 0;
+    EXPECT_EQ(1u, ufifo_put_timeout(fifo, &data, 1, huge_timeout));
+    t.join();
+}
+
+TEST_F(UfifoErrnoTest, StrictTimeoutWithSpuriousWakeup)
+{
+    char data = 'A';
+
+    struct ufifo_dummy {
+        void *ctrl;
+        unsigned char *shm_mem;
+        int shm_fd;
+        unsigned int shm_size;
+        int efd_rd;
+        int efd_wr;
+    };
+
+    std::thread t([&]() {
+        for (int i = 0; i < 5; i++) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            uint64_t val = 1;
+            int fd = ((ufifo_dummy *)fifo)->efd_rd;
+            auto _ = write(fd, &val, sizeof(val));
+            (void)_;
+        }
+    });
+
+    auto start = std::chrono::steady_clock::now();
+
+    errno = 0;
+    // Timeout is 200 ms.
+    EXPECT_EQ(0u, ufifo_get_timeout(fifo, &data, 1, 200));
+    EXPECT_EQ(ETIMEDOUT, errno);
+
+    auto end = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+
+    t.join();
+
+    // The elapsed time should be approximately 200ms despite spurious wakeups resetting the poll loop.
+    // Without the fix, each spurious wakeup would refresh the timeout to the full 200ms.
+    EXPECT_GE(elapsed, 150);
+    EXPECT_LT(elapsed, 400);
+}
+
+static unsigned int failing_recput(unsigned char *, unsigned int, unsigned char *, void *)
+{
     return 0; // Fail
 }
 
-static unsigned int failing_recget(unsigned char *, unsigned int, unsigned char *, void *) {
+static unsigned int failing_recget(unsigned char *, unsigned int, unsigned char *, void *)
+{
     return 0; // Fail
 }
 
-static unsigned int dummy_recsize(unsigned char *, unsigned int, unsigned char *) {
+static unsigned int dummy_recsize(unsigned char *, unsigned int, unsigned char *)
+{
     return 10; // Fixed record size
 }
 
-TEST_F(UfifoErrnoTest, CustomCallbackFailure) {
+TEST_F(UfifoErrnoTest, CustomCallbackFailure)
+{
     ufifo_destroy(fifo);
     ufifo_init_t init = {};
     init.opt = UFIFO_OPT_ALLOC;
@@ -1985,7 +2056,8 @@ TEST_F(UfifoErrnoTest, CustomCallbackFailure) {
     EXPECT_EQ(EIO, errno);
 }
 
-TEST_F(UfifoErrnoTest, BufferTooSmall) {
+TEST_F(UfifoErrnoTest, BufferTooSmall)
+{
     ufifo_destroy(fifo);
     ufifo_init_t init = {};
     init.opt = UFIFO_OPT_ALLOC;

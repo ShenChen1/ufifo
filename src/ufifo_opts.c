@@ -1,8 +1,38 @@
 #include "ufifo_internal.h"
 #include <errno.h>
+#include <limits.h>
 #include <stdbool.h>
+#include <time.h>
 
 #include "utils.h"
+
+typedef enum {
+    UFIFO_WAIT_NONE = 0,
+    UFIFO_WAIT_BLOCK = 1,
+    UFIFO_WAIT_TIMED = 2,
+} ufifo_wait_type_e;
+
+static inline void __ufifo_calc_deadline(long millisec, struct timespec *deadline)
+{
+    if (millisec < 0) {
+        millisec = 0;
+    }
+    clock_gettime(CLOCK_MONOTONIC, deadline);
+    deadline->tv_sec += millisec / 1000;
+    deadline->tv_nsec += (millisec % 1000) * 1000000L;
+    if (deadline->tv_nsec >= 1000000000L) {
+        deadline->tv_sec += 1;
+        deadline->tv_nsec -= 1000000000L;
+    }
+}
+
+static inline long __ufifo_remaining_ms(const struct timespec *deadline)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    long remaining = (deadline->tv_sec - now.tv_sec) * 1000L + (deadline->tv_nsec - now.tv_nsec) / 1000000L;
+    return remaining > 0 ? remaining : 0;
+}
 
 static unsigned int __ufifo_min_out(ufifo_t *handle)
 {
@@ -170,10 +200,19 @@ static int __ufifo_try_reap_dead_readers(ufifo_t *handle)
     return cleaned;
 }
 
-static inline int __ufifo_wait_for_space(ufifo_t *handle, unsigned int size, int wait_type, long millisec, unsigned int *out_len)
+static inline int __ufifo_wait_for_space(ufifo_t *handle,
+                                         unsigned int size,
+                                         ufifo_wait_type_e wait_type,
+                                         long millisec,
+                                         unsigned int *out_len)
 {
     int ret = 0;
     unsigned int len;
+    struct timespec deadline;
+
+    if (wait_type == UFIFO_WAIT_TIMED) {
+        __ufifo_calc_deadline(millisec, &deadline);
+    }
 
     while (1) {
         len = __ufifo_unused_len(handle);
@@ -191,7 +230,7 @@ static inline int __ufifo_wait_for_space(ufifo_t *handle, unsigned int size, int
                 break;
         }
 
-        if (wait_type == 0) {
+        if (wait_type == UFIFO_WAIT_NONE) {
             errno = EAGAIN;
             ret = -1;
             len = 0;
@@ -207,10 +246,11 @@ static inline int __ufifo_wait_for_space(ufifo_t *handle, unsigned int size, int
             }
         }
 
-        if (wait_type == 1) {
+        if (wait_type == UFIFO_WAIT_BLOCK) {
             ret = __ufifo_efd_wait(handle->efd_wr, handle);
         } else {
-            ret = __ufifo_efd_timedwait(handle->efd_wr, handle, millisec);
+            long rem = __ufifo_remaining_ms(&deadline);
+            ret = __ufifo_efd_timedwait(handle->efd_wr, handle, rem);
         }
         atomic_fetch_sub(&handle->ctrl->tx_waiters, 1);
 
@@ -225,18 +265,24 @@ static inline int __ufifo_wait_for_space(ufifo_t *handle, unsigned int size, int
     return ret;
 }
 
-static inline int __ufifo_wait_for_data(ufifo_t *handle, int wait_type, long millisec, unsigned int *out_len)
+static inline int
+__ufifo_wait_for_data(ufifo_t *handle, ufifo_wait_type_e wait_type, long millisec, unsigned int *out_len)
 {
     int ret = 0;
     unsigned int len;
     ufifo_sub_ctrl_t *rx_ctrl = __ufifo_rx_ctrl(handle);
+    struct timespec deadline;
+
+    if (wait_type == UFIFO_WAIT_TIMED) {
+        __ufifo_calc_deadline(millisec, &deadline);
+    }
 
     while (1) {
         len = __ufifo_peek_len(handle, READ_ONCE(handle->kfifo.out), READ_ONCE(handle->kfifo.in));
         if (len > 0)
             break;
 
-        if (wait_type == 0) {
+        if (wait_type == UFIFO_WAIT_NONE) {
             errno = EAGAIN;
             ret = -1;
             len = 0;
@@ -252,10 +298,11 @@ static inline int __ufifo_wait_for_data(ufifo_t *handle, int wait_type, long mil
             }
         }
 
-        if (wait_type == 1) {
+        if (wait_type == UFIFO_WAIT_BLOCK) {
             ret = __ufifo_efd_wait(handle->efd_rd, handle);
         } else {
-            ret = __ufifo_efd_timedwait(handle->efd_rd, handle, millisec);
+            long rem = __ufifo_remaining_ms(&deadline);
+            ret = __ufifo_efd_timedwait(handle->efd_rd, handle, rem);
         }
         atomic_fetch_sub(&rx_ctrl->rx_waiters, 1);
 
@@ -271,7 +318,7 @@ static inline int __ufifo_wait_for_data(ufifo_t *handle, int wait_type, long mil
 }
 
 static inline __attribute__((always_inline)) unsigned int
-__ufifo_put(ufifo_t *handle, void *buf, unsigned int size, int wait_type, long millisec)
+__ufifo_put(ufifo_t *handle, void *buf, unsigned int size, ufifo_wait_type_e wait_type, long millisec)
 {
     int ret;
     unsigned int len;
@@ -312,23 +359,23 @@ end:
 unsigned int ufifo_put(ufifo_t *handle, void *buf, unsigned int size)
 {
     UFIFO_CHECK_HANDLE(handle, 0);
-    return __ufifo_put(handle, buf, size, 0, 0);
+    return __ufifo_put(handle, buf, size, UFIFO_WAIT_NONE, 0);
 }
 
 unsigned int ufifo_put_block(ufifo_t *handle, void *buf, unsigned int size)
 {
     UFIFO_CHECK_HANDLE(handle, 0);
-    return __ufifo_put(handle, buf, size, 1, 0);
+    return __ufifo_put(handle, buf, size, UFIFO_WAIT_BLOCK, 0);
 }
 
 unsigned int ufifo_put_timeout(ufifo_t *handle, void *buf, unsigned int size, long millisec)
 {
     UFIFO_CHECK_HANDLE(handle, 0);
-    return __ufifo_put(handle, buf, size, 2, millisec);
+    return __ufifo_put(handle, buf, size, UFIFO_WAIT_TIMED, millisec);
 }
 
 static inline __attribute__((always_inline)) unsigned int
-__ufifo_get(ufifo_t *handle, void *buf, unsigned int size, int wait_type, long millisec)
+__ufifo_get(ufifo_t *handle, void *buf, unsigned int size, ufifo_wait_type_e wait_type, long millisec)
 {
     int ret;
     unsigned int len;
@@ -376,23 +423,23 @@ end:
 unsigned int ufifo_get(ufifo_t *handle, void *buf, unsigned int size)
 {
     UFIFO_CHECK_HANDLE(handle, 0);
-    return __ufifo_get(handle, buf, size, 0, 0);
+    return __ufifo_get(handle, buf, size, UFIFO_WAIT_NONE, 0);
 }
 
 unsigned int ufifo_get_block(ufifo_t *handle, void *buf, unsigned int size)
 {
     UFIFO_CHECK_HANDLE(handle, 0);
-    return __ufifo_get(handle, buf, size, 1, 0);
+    return __ufifo_get(handle, buf, size, UFIFO_WAIT_BLOCK, 0);
 }
 
 unsigned int ufifo_get_timeout(ufifo_t *handle, void *buf, unsigned int size, long millisec)
 {
     UFIFO_CHECK_HANDLE(handle, 0);
-    return __ufifo_get(handle, buf, size, 2, millisec);
+    return __ufifo_get(handle, buf, size, UFIFO_WAIT_TIMED, millisec);
 }
 
 static inline __attribute__((always_inline)) unsigned int
-__ufifo_peek(ufifo_t *handle, void *buf, unsigned int size, int wait_type, long millisec)
+__ufifo_peek(ufifo_t *handle, void *buf, unsigned int size, ufifo_wait_type_e wait_type, long millisec)
 {
     int ret = 0;
     unsigned int len;
@@ -429,19 +476,19 @@ end:
 unsigned int ufifo_peek(ufifo_t *handle, void *buf, unsigned int size)
 {
     UFIFO_CHECK_HANDLE(handle, 0);
-    return __ufifo_peek(handle, buf, size, 0, 0);
+    return __ufifo_peek(handle, buf, size, UFIFO_WAIT_NONE, 0);
 }
 
 unsigned int ufifo_peek_block(ufifo_t *handle, void *buf, unsigned int size)
 {
     UFIFO_CHECK_HANDLE(handle, 0);
-    return __ufifo_peek(handle, buf, size, 1, 0);
+    return __ufifo_peek(handle, buf, size, UFIFO_WAIT_BLOCK, 0);
 }
 
 unsigned int ufifo_peek_timeout(ufifo_t *handle, void *buf, unsigned int size, long millisec)
 {
     UFIFO_CHECK_HANDLE(handle, 0);
-    return __ufifo_peek(handle, buf, size, 2, millisec);
+    return __ufifo_peek(handle, buf, size, UFIFO_WAIT_TIMED, millisec);
 }
 
 int ufifo_oldest(ufifo_t *handle, unsigned int tag)
