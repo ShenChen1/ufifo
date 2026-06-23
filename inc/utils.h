@@ -24,7 +24,6 @@
 
 #define range(val, lo, hi) min(max(val, lo), hi)
 
-
 #define unlikely(x)                     __builtin_expect(!!(x), 0)
 #define likely(x)                       __builtin_expect(!!(x), 1)
 
