@@ -467,7 +467,6 @@ __ufifo_peek(ufifo_t *handle, void *buf, unsigned int size, ufifo_wait_type_e wa
         size = handle->hook.recsize ? min(size, len) : size;
         len = kfifo_out_peek(&handle->kfifo, handle->shm_mem, buf, size);
     }
-    __ufifo_notify_writers(handle);
 end:
     __ufifo_data_unlock(handle);
     return len;

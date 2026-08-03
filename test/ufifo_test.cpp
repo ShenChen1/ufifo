@@ -1714,6 +1714,68 @@ TEST_P(EpollTest, PutWakeupOnGet)
     close(epfd);
 }
 
+// --- Regression: peek must NOT notify writers (it does not free capacity) ---
+TEST_P(EpollTest, PeekDoesNotNotifyWriter)
+{
+    // Small buffer so it fills quickly
+    ASSERT_EQ(0, adapter_->Create(128, UFIFO_LOCK_THREAD, 2));
+
+    ufifo_t *writer = adapter_->GetMainHandle();
+    ufifo_t *reader = nullptr;
+    ASSERT_EQ(0, adapter_->Attach(&reader));
+
+    int epfd = epoll_create1(0);
+    ASSERT_GE(epfd, 0);
+
+    int writer_fd = ufifo_get_tx_fd(writer);
+    ASSERT_GE(writer_fd, 0);
+
+    struct epoll_event ev = {};
+    ev.events = EPOLLIN;
+    ev.data.fd = writer_fd;
+    ASSERT_EQ(0, epoll_ctl(epfd, EPOLL_CTL_ADD, writer_fd, &ev));
+
+    // Fill the buffer until put fails (reader.out stays at 0).
+    // In SHARED mode, the writer must also consume its own copy to keep
+    // its own `out` pointer advancing.
+    int put_count = 0;
+    while (adapter_->PutValue(writer, put_count) > 0) {
+        int wd = 0;
+        adapter_->GetValue(writer, wd);
+        put_count++;
+    }
+    EXPECT_GT(put_count, 0) << "Buffer should have absorbed some items before filling";
+    EXPECT_EQ(0, adapter_->PutValue(writer, 9999));
+
+    // Drain all prior notifications from the initial put/get flurry on writer
+    ufifo_drain_tx_fd(writer);
+
+    // Verify epoll_wait blocks because there is no new activity
+    struct epoll_event events[1];
+    EXPECT_EQ(0, epoll_wait(epfd, events, 1, 50));
+
+    // Reader peeks — data is available, but nothing is consumed
+    char buf[64];
+    unsigned int peeked = 0;
+    switch (GetParam()) {
+    case DataFormat::BYTESTREAM:
+        peeked = ufifo_peek(reader, buf, sizeof(int));
+        break;
+    case DataFormat::RECORD:
+        peeked = ufifo_peek(reader, buf, sizeof(TestRecord) + sizeof(int));
+        break;
+    case DataFormat::TAG:
+        peeked = ufifo_peek(reader, buf, sizeof(TaggedRecord) + sizeof(int));
+        break;
+    }
+    EXPECT_GT(peeked, 0u) << "Peek should see data without consuming";
+
+    // Peek must not signal the writer: available capacity is unchanged
+    EXPECT_EQ(0, epoll_wait(epfd, events, 1, 100)) << "peek must not wake the writer";
+
+    close(epfd);
+}
+
 // --- Failure path: spurious wakeup — epoll fires but FIFO has no data ---
 TEST_P(EpollTest, SpuriousWakeupSafe)
 {

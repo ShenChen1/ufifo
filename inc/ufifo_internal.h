@@ -103,7 +103,7 @@ unsigned int __ufifo_unused_len(ufifo_t *handle);
 /*
  * Notify blocked writers / epoll-TX listeners that write-space may be available.
  * Must be called after any operation that may increase available buffer capacity:
- *   - reader consumes data (get / skip / oldest / newest / peek)
+ *   - reader consumes data (get / skip / oldest / newest)
  *   - reader unregisters (close)
  *   - dead reader reaped
  *   - FIFO reset
