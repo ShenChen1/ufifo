@@ -178,6 +178,8 @@ static int __ufifo_init_from_shm(ufifo_t *handle)
     if (ret < 0)
         goto err_unregister;
 
+    handle->local_broker_gen = handle->ctrl->broker_gen;
+
     if (__ufifo_is_shared(handle)) {
         __ufifo_update_cached_min_out(handle);
         __ufifo_notify_writers(handle);
@@ -242,6 +244,7 @@ static int __ufifo_init_from_user(ufifo_t *handle, ufifo_alloc_t *alloc)
     handle->ctrl->data_mode = alloc->data_mode;
     handle->ctrl->max_users = alloc->max_users;
     handle->ctrl->num_users = 0;
+    handle->ctrl->broker_gen = 0;
     for (i = 0; i < slot_count; i++)
         memset(&handle->ctrl->users[i], 0, sizeof(handle->ctrl->users[i]));
 
@@ -278,6 +281,8 @@ static int __ufifo_init_from_user(ufifo_t *handle, ufifo_alloc_t *alloc)
     ret = __ufifo_acquire_eventfds(handle, 1);
     if (ret < 0)
         goto err_register;
+
+    handle->local_broker_gen = handle->ctrl->broker_gen;
 
     ufifo_get_version_info(NULL, &handle->ctrl->ver);
     smp_store_release(&handle->ctrl->init_done, 1);
@@ -422,6 +427,10 @@ err1:
 static int __ufifo_close(ufifo_t *handle, int destroy)
 {
     char ctrl_name[UFIFO_CTRL_NAME_BUF_SIZE];
+
+    if (destroy && handle->local_broker_gen != smp_load_acquire(&handle->ctrl->broker_gen)) {
+        destroy = 0;
+    }
 
     __ufifo_ctrl_lock(handle);
     __ufifo_unregister(handle);

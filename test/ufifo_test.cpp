@@ -26,6 +26,11 @@
 
 #include "ufifo_test_adapter.hpp"
 
+extern "C" {
+#include "ufifo_internal.h"
+#include "ufifo_layout.h"
+}
+
 // Generate unique FIFO name
 std::string GenerateName(const char *prefix)
 {
@@ -2180,7 +2185,7 @@ class FaultInjectionTest : public ::testing::Test {
         return ufifo_open(name.c_str(), &init, handle);
     }
 
-  private:
+  protected:
     std::vector<std::string> shm_names_;
 };
 
@@ -2392,6 +2397,100 @@ TEST_F(FaultInjectionTest, EpollDrainConcurrency)
 
     close(epfd);
     ufifo_close(reader);
+    ufifo_destroy(fifo);
+}
+
+TEST_F(FaultInjectionTest, CtrlMutexOwnerDeath)
+{
+    std::string name = UniqueName("rec03");
+    ufifo_t *fifo = nullptr;
+    ASSERT_EQ(0, CreateFifo(name, &fifo, 4096, 4));
+
+    int p2c[2], c2p[2];
+    ASSERT_EQ(0, pipe(p2c));
+    ASSERT_EQ(0, pipe(c2p));
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(p2c[1]);
+        close(c2p[0]);
+        ufifo_t *child_fifo = nullptr;
+        if (AttachFifo(name, &child_fifo) == 0) {
+            pthread_mutex_lock(&child_fifo->ctrl->ctrl_mutex);
+            child_fifo->ctrl->num_users = 99; // Corrupt state
+            char ready = '1';
+            write(c2p[1], &ready, 1);
+            char wait_cmd;
+            read(p2c[0], &wait_cmd, 1); // wait for parent
+            kill(getpid(), SIGKILL);
+        }
+        _exit(1);
+    }
+    ASSERT_GT(pid, 0);
+    close(p2c[0]);
+    close(c2p[1]);
+
+    char ready;
+    EXPECT_EQ(1, read(c2p[0], &ready, 1));
+    close(p2c[1]); // unblocks child's read, triggering SIGKILL
+
+    int status;
+    waitpid(pid, &status, 0);
+
+    ufifo_t *new_reader = nullptr;
+    int ret = AttachFifo(name, &new_reader);
+    ASSERT_EQ(0, ret);
+
+    unsigned int expected_users = 2; // parent + new_reader
+    EXPECT_EQ(expected_users, fifo->ctrl->num_users);
+
+    ufifo_close(new_reader);
+    ufifo_destroy(fifo);
+}
+
+TEST_F(FaultInjectionTest, LockNoneWaiterRace)
+{
+    std::string name = UniqueName("not04");
+    ufifo_t *fifo = nullptr;
+    {
+        ufifo_init_t init = {};
+        init.opt = UFIFO_OPT_ALLOC;
+        init.alloc.size = 4096;
+        init.alloc.force = 1;
+        init.alloc.lock = UFIFO_LOCK_NONE;
+        init.alloc.data_mode = UFIFO_DATA_SOLE;
+        init.alloc.max_users = 4;
+        ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &fifo));
+    }
+
+    std::atomic<int> total_written{0};
+    std::atomic<int> total_read{0};
+    std::atomic<bool> running{true};
+    const int target = 10000;
+
+    std::thread writer([&]() {
+        char data = 'X';
+        while (total_written < target) {
+            if (ufifo_put(fifo, &data, 1) > 0)
+                total_written++;
+            else
+                std::this_thread::yield();
+        }
+        running = false;
+    });
+
+    std::thread reader([&]() {
+        char buf;
+        while (running || total_read < total_written) {
+            if (ufifo_get_timeout(fifo, &buf, 1, 100) > 0)
+                total_read++;
+        }
+    });
+
+    writer.join();
+    reader.join();
+
+    EXPECT_EQ(total_written.load(), total_read.load());
     ufifo_destroy(fifo);
 }
 

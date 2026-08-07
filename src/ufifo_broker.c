@@ -384,6 +384,8 @@ int __ufifo_acquire_eventfds(ufifo_t *handle, int is_alloc)
     } else if (ret < 0) {
         __ufifo_efd_close_all(handle);
         return ret;
+    } else {
+        __atomic_add_fetch(&handle->ctrl->broker_gen, 1, __ATOMIC_RELEASE);
     }
 
 set_rd:

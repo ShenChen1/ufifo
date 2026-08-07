@@ -45,6 +45,7 @@ struct ufifo {
 
     /* fd broker lifecycle (forked daemon, started by first open) */
     int is_broker_owner; /* 1 if this process forked the broker daemon */
+    unsigned int local_broker_gen;
 };
 
 /* ufifo_sync.c */

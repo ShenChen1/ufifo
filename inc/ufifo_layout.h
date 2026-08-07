@@ -37,6 +37,7 @@ typedef struct {
     ufifo_data_mode_e data_mode;
     unsigned int max_users;
     unsigned int num_users;
+    unsigned int broker_gen;
     ufifo_sub_ctrl_t users[];
 } ufifo_ctrl_t;
 
