@@ -60,6 +60,7 @@ int __ufifo_init_wait(int fd);
 int __ufifo_init_unlock(int fd);
 int __ufifo_lock_init(ufifo_t *handle, ufifo_lock_e type);
 int __ufifo_lock_deinit(ufifo_t *handle);
+void __ufifo_recover_state(ufifo_t *handle);
 
 /* eventfd operations */
 int __ufifo_efd_create(void);
@@ -120,9 +121,8 @@ static inline void __ufifo_notify_readers(ufifo_t *handle)
     if (__ufifo_is_shared(handle)) {
         for (unsigned int i = 0; i < handle->ctrl->max_users; i++) {
             if (smp_load_acquire(&handle->ctrl->users[i].active))
-                __ufifo_efd_notify(handle->efd_rd_all[i],
-                                   &handle->ctrl->users[i].rx_waiters,
-                                   &handle->ctrl->users[i].epoll_armed);
+                __ufifo_efd_notify(
+                    handle->efd_rd_all[i], &handle->ctrl->users[i].rx_waiters, &handle->ctrl->users[i].epoll_armed);
         }
     } else {
         unsigned int rx_slot = __ufifo_rx_slot_id(handle);

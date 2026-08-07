@@ -11,10 +11,35 @@
 
 #include "utils.h"
 
+void __ufifo_recover_state(ufifo_t *handle)
+{
+    ufifo_ctrl_t *ctrl = handle->ctrl;
+    unsigned int count = 0;
+    unsigned int i;
+
+    for (i = 0; i < ctrl->max_users; i++) {
+        if (smp_load_acquire(&ctrl->users[i].active)) {
+            if (__ufifo_is_user_dead(handle->ctrl_fd, i)) {
+                smp_store_release(&ctrl->users[i].active, 0);
+            } else {
+                count++;
+            }
+        }
+    }
+
+    ctrl->num_users = count;
+
+    if (__ufifo_is_shared(handle)) {
+        __ufifo_update_cached_min_out(handle);
+    }
+}
+
 int __ufifo_ctrl_lock(ufifo_t *handle)
 {
     int ret = pthread_mutex_lock(&handle->ctrl->ctrl_mutex);
     if (ret == EOWNERDEAD) {
+        __ufifo_log("WARN: ctrl_mutex owner died, recovering state\n");
+        __ufifo_recover_state(handle);
         pthread_mutex_consistent(&handle->ctrl->ctrl_mutex);
         ret = 0;
     } else if (ret != 0) {
