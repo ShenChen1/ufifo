@@ -30,21 +30,21 @@ static socklen_t __ufifo_broker_addr(const char *name, struct sockaddr_un *addr)
 /*  SCM_RIGHTS helpers                                                 */
 /* ------------------------------------------------------------------ */
 
-static int __ufifo_send_fds(int sock, const int *fds, unsigned int nfds)
+/*
+ * Send file descriptors via SCM_RIGHTS using a pre-allocated cmsg buffer.
+ * Safe to call after fork (no malloc/calloc).
+ */
+static int __ufifo_send_fds_prealloc(int sock, const int *fds, unsigned int nfds, char *buf, size_t buf_size)
 {
     char dummy = 'F';
     struct iovec iov = { .iov_base = &dummy, .iov_len = 1 };
 
-    size_t cmsg_space = CMSG_SPACE(nfds * sizeof(int));
-    char *cmsg_buf = calloc(1, cmsg_space);
-    if (!cmsg_buf)
-        return -ENOMEM;
-
+    memset(buf, 0, buf_size);
     struct msghdr msg = {
         .msg_iov = &iov,
         .msg_iovlen = 1,
-        .msg_control = cmsg_buf,
-        .msg_controllen = cmsg_space,
+        .msg_control = buf,
+        .msg_controllen = buf_size,
     };
 
     struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
@@ -54,7 +54,6 @@ static int __ufifo_send_fds(int sock, const int *fds, unsigned int nfds)
     memcpy(CMSG_DATA(cmsg), fds, nfds * sizeof(int));
 
     int ret = sendmsg(sock, &msg, 0);
-    free(cmsg_buf);
     return ret < 0 ? -errno : 0;
 }
 
@@ -110,6 +109,8 @@ typedef struct {
     int *fds_to_send;       /* packed: [efd_wr, efd_rd_all[0..N-1]] */
     unsigned int total_fds; /* 1 + efd_count */
     char shm_name[UFIFO_NAME_BUF_SIZE];
+    char *cmsg_buf; /* pre-allocated SCM_RIGHTS buffer (fork-safe) */
+    size_t cmsg_buf_size;
 } broker_ctx_t;
 
 #define BROKER_POLL_INTERVAL_MS 2000
@@ -131,28 +132,41 @@ static void __ufifo_broker_daemon(broker_ctx_t *ctx)
         struct pollfd pfd = { .fd = ctx->listener_fd, .events = POLLIN };
         int ready = poll(&pfd, 1, BROKER_POLL_INTERVAL_MS);
 
+        int client = -1;
         if (ready > 0 && (pfd.revents & POLLIN)) {
-            int client = accept4(ctx->listener_fd, NULL, NULL, SOCK_CLOEXEC);
+            client = accept4(ctx->listener_fd, NULL, NULL, SOCK_CLOEXEC);
             if (client >= 0) {
                 /* Ignore send errors: client may have disconnected */
-                __ufifo_send_fds(client, ctx->fds_to_send, ctx->total_fds);
-                close(client);
+                __ufifo_send_fds_prealloc(client, ctx->fds_to_send, ctx->total_fds, ctx->cmsg_buf, ctx->cmsg_buf_size);
+                /* Delay close(client) until after shm liveness check */
             }
         }
 
         /* Periodic liveness check: exit when shm is destroyed */
         int probe = shm_open(ctx->shm_name, O_RDONLY, 0);
         if (probe < 0) {
-            if (errno == ENOENT)
+            if (errno == ENOENT) {
+                /* Release abstract address BEFORE closing client to avoid race */
+                if (ctx->listener_fd >= 0) {
+                    close(ctx->listener_fd);
+                    ctx->listener_fd = -1;
+                }
+                if (client >= 0)
+                    close(client);
                 break; /* shm destroyed → graceful exit */
+            }
             /* Other errors (e.g. permission): stay alive, be conservative */
         } else {
             close(probe);
         }
+
+        if (client >= 0)
+            close(client);
     }
 
     /* Cleanup: close listener + all eventfds */
-    close(ctx->listener_fd);
+    if (ctx->listener_fd >= 0)
+        close(ctx->listener_fd);
     unsigned int i;
     for (i = 0; i < ctx->total_fds; i++)
         close(ctx->fds_to_send[i]);
@@ -166,7 +180,7 @@ static int __ufifo_broker_fork(ufifo_t *handle, int listener_fd)
 {
     unsigned int total_fds = 1 + handle->efd_count;
 
-    /* Pre-pack fd array on parent's stack; child inherits a copy */
+    /* Pre-pack fd array and cmsg buffer before fork (fork-safe) */
     int *fds_to_send = malloc(total_fds * sizeof(int));
     if (!fds_to_send)
         return -ENOMEM;
@@ -174,10 +188,19 @@ static int __ufifo_broker_fork(ufifo_t *handle, int listener_fd)
     fds_to_send[0] = handle->efd_wr;
     memcpy(fds_to_send + 1, handle->efd_rd_all, handle->efd_count * sizeof(int));
 
+    size_t cmsg_buf_size = CMSG_SPACE(total_fds * sizeof(int));
+    char *cmsg_buf = calloc(1, cmsg_buf_size);
+    if (!cmsg_buf) {
+        free(fds_to_send);
+        return -ENOMEM;
+    }
+
     broker_ctx_t ctx = {
         .listener_fd = listener_fd,
         .fds_to_send = fds_to_send,
         .total_fds = total_fds,
+        .cmsg_buf = cmsg_buf,
+        .cmsg_buf_size = cmsg_buf_size,
     };
     strncpy(ctx.shm_name, handle->name, sizeof(ctx.shm_name));
 
@@ -214,6 +237,7 @@ static int __ufifo_broker_fork(ufifo_t *handle, int listener_fd)
     /* Parent no longer needs the listener (broker owns it) */
     close(listener_fd);
     free(fds_to_send);
+    free(cmsg_buf);
 
     return 0;
 }
@@ -426,16 +450,36 @@ void __ufifo_efd_close_all(ufifo_t *handle)
 
 void __ufifo_broker_wake_to_exit(const char *name)
 {
+    struct sockaddr_un addr;
+    socklen_t addr_len = __ufifo_broker_addr(name, &addr);
+
     int s = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (s < 0)
         return;
 
-    struct sockaddr_un addr;
-    socklen_t addr_len = __ufifo_broker_addr(name, &addr);
-
-    /* connect just to wake up accept() in the daemon */
-    connect(s, (struct sockaddr *)&addr, addr_len);
-    /* fix: wait for the daemon to exit */
-    usleep(1000);
+    /*
+     * Connect to the broker. The broker will send its FDs, then check
+     * shm liveness. If shm is gone, it closes its listener socket (releasing
+     * the abstract address) BEFORE closing this client connection.
+     * Thus, reading until EOF deterministically waits for the broker
+     * to release the address, eliminating the need for polling.
+     */
+    if (connect(s, (struct sockaddr *)&addr, addr_len) == 0) {
+        struct pollfd pfd = { .fd = s, .events = POLLIN };
+        char buf[16];
+        while (1) {
+            int r = poll(&pfd, 1, 5000);
+            if (r <= 0)
+                break;
+            ssize_t n = read(s, buf, sizeof(buf));
+            if (n < 0) {
+                if (errno == EINTR)
+                    continue;
+                break;
+            } else if (n == 0) {
+                break;
+            }
+        }
+    }
     close(s);
 }
