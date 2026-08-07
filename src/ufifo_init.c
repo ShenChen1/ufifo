@@ -427,12 +427,16 @@ static int __ufifo_close(ufifo_t *handle, int destroy)
     __ufifo_unregister(handle);
     __ufifo_ctrl_unlock(handle);
 
+    /* Close this process's eventfds */
+    __ufifo_efd_close_all(handle);
+
+    /*
+     * Destroy mutexes after eventfds are closed: defense-in-depth to
+     * keep mutexes valid for the entire eventfd lifetime of this handle.
+     */
     if (destroy) {
         __ufifo_lock_deinit(handle);
     }
-
-    /* Close this process's eventfds */
-    __ufifo_efd_close_all(handle);
 
     munmap(handle->shm_mem, handle->shm_size);
     close(handle->shm_fd);
@@ -447,6 +451,9 @@ static int __ufifo_close(ufifo_t *handle, int destroy)
         shm_unlink(ctrl_name);
         __ufifo_broker_wake_to_exit(handle->name);
     }
+
+    /* Best-effort invalidation to defend against double-free / stale pointer */
+    handle->magic = 0;
     free(handle);
     return 0;
 }
