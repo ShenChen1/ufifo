@@ -36,9 +36,9 @@ static const unsigned int RECORD_SIZE = sizeof(record_t) + sizeof(PAYLOAD);
 /* Shared control: producer handle (owner) */
 static ufifo_t *producer_fifo = NULL;
 
-static unsigned int recsize(unsigned char *p1, unsigned int n1, unsigned char *p2)
+static size_t recsize(uint8_t *p1, size_t n1, uint8_t *p2)
 {
-    unsigned int size = sizeof(record_t);
+    size_t size = sizeof(record_t);
 
     if (n1 >= size) {
         record_t *rec = (record_t *)p1;
@@ -67,7 +67,7 @@ static unsigned int recsize(unsigned char *p1, unsigned int n1, unsigned char *p
 static void *producer_thread(void *arg)
 {
     (void)arg;
-    unsigned int ret;
+    size_t ret;
     char buf[64];
     record_t *rec = (record_t *)buf;
 
@@ -105,7 +105,7 @@ static atomic_int consumers_failed = 0;
 static void *consumer_thread(void *arg)
 {
     consumer_arg_t *ctx = (consumer_arg_t *)arg;
-    unsigned int ret;
+    size_t ret;
     char buf[64];
     record_t *rec = (record_t *)buf;
     unsigned int expected_index = 0;

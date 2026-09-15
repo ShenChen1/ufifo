@@ -18,7 +18,7 @@ int main()
 {
     unsigned char buf[6];
     unsigned char i, j;
-    unsigned int ret;
+    size_t ret;
 
     printf("byte stream fifo test start\n");
 
@@ -38,7 +38,7 @@ int main()
         ufifo_put(test, &i, 1);
 
     /* show the number of used elements */
-    printf("fifo len: %u\n", ufifo_len(test));
+    printf("fifo len: %zu\n", ufifo_len(test));
 
     /* get max of 5 bytes from the fifo */
     i = ufifo_get(test, buf, 5);
@@ -46,10 +46,10 @@ int main()
 
     /* get max of 2 elements from the fifo */
     ret = ufifo_get(test, buf, 2);
-    printf("ret: %u\n", ret);
+    printf("ret: %zu\n", ret);
     /* and put it back to the end of the zfifo */
     ret = ufifo_put(test, buf, ret);
-    printf("ret: %u\n", ret);
+    printf("ret: %zu\n", ret);
 
     /* skip first element of the fifo */
     printf("skip 1st element\n");
@@ -59,7 +59,7 @@ int main()
     for (i = 20; ufifo_put(test, &i, 1); i++)
         ;
 
-    printf("queue len: %u\n", ufifo_len(test));
+    printf("queue len: %zu\n", ufifo_len(test));
 
     /* show the first value without removing from the fifo */
     if (ufifo_peek(test, &i, 1))

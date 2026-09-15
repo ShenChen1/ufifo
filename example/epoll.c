@@ -26,7 +26,7 @@ static void *writer_thread_func(void *arg)
         snprintf(msg, sizeof(msg), "Message %d", i);
 
         // Put message into FIFO
-        unsigned int written = ufifo_put(ctx->fifo, msg, strlen(msg) + 1);
+        size_t written = ufifo_put(ctx->fifo, msg, strlen(msg) + 1);
         if (written > 0) {
             printf("[Writer] Sent: '%s'\n", msg);
             // In shared data mode, the writer must consume its own produced message

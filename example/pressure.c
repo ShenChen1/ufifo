@@ -19,9 +19,9 @@ typedef struct {
 
 static int run_mode = 0;
 
-static unsigned int recsize(unsigned char *p1, unsigned int n1, unsigned char *p2)
+static size_t recsize(uint8_t *p1, size_t n1, uint8_t *p2)
 {
-    unsigned int size = sizeof(record_t);
+    size_t size = sizeof(record_t);
 
     if (n1 >= size) {
         record_t *rec = (record_t *)p1;
@@ -43,7 +43,7 @@ ufifo_t *test_consume = NULL;
 
 void *product(void *arg)
 {
-    unsigned int ret;
+    size_t ret;
     char buf[32];
     record_t *rec = (void *)buf;
 
@@ -57,7 +57,7 @@ void *product(void *arg)
         } else {
             ret = ufifo_put_block(test_product, rec, rec->size + sizeof(record_t));
         }
-        printf("-----[%zu]: put end: %u fifo:%u\n", (size_t)arg, ret, ufifo_len(test_product));
+        printf("-----[%zu]: put end: %zu fifo:%zu\n", (size_t)arg, ret, ufifo_len(test_product));
         if (ret) {
             assert(ret == rec->size + sizeof(record_t));
             if (rec->index == NUM) {
@@ -72,7 +72,7 @@ void *product(void *arg)
 
 void *consume(void *arg)
 {
-    unsigned int ret;
+    size_t ret;
     char buf[32];
     record_t *rec = (void *)buf;
 
@@ -84,7 +84,7 @@ void *consume(void *arg)
         } else {
             ret = ufifo_get_block(test_consume, rec, sizeof(buf));
         }
-        printf("-----[%zu]: get end: %u fifo:%u\n", (size_t)arg, ret, ufifo_len(test_consume));
+        printf("-----[%zu]: get end: %zu fifo:%zu\n", (size_t)arg, ret, ufifo_len(test_consume));
         if (ret != 0) {
             assert(!strcmp("hello", rec->buf));
             if (rec->index == NUM) {
