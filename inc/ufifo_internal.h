@@ -69,7 +69,7 @@ int __ufifo_efd_wait(int efd, ufifo_t *handle);
 int __ufifo_efd_timedwait(int efd, ufifo_t *handle, long millisec);
 int __ufifo_efd_post(int efd);
 int __ufifo_efd_drain(int efd);
-int __ufifo_efd_notify(int efd, int *waiters, int *epoll_armed);
+int __ufifo_efd_notify(int efd, int32_t *waiters, int32_t *epoll_armed);
 
 /* ufifo_broker.c — eventfd lifecycle (fork-based broker daemon) */
 int __ufifo_acquire_eventfds(ufifo_t *handle, bool is_alloc);
@@ -120,13 +120,14 @@ static inline void __ufifo_notify_writers(ufifo_t *handle)
 static inline void __ufifo_notify_readers(ufifo_t *handle)
 {
     if (__ufifo_is_shared(handle)) {
-        for (unsigned int i = 0; i < handle->ctrl->max_users; i++) {
-            if (smp_load_acquire(&handle->ctrl->users[i].active))
-                __ufifo_efd_notify(
-                    handle->efd_rd_all[i], &handle->ctrl->users[i].rx_waiters, &handle->ctrl->users[i].epoll_armed);
+        for (size_t i = 0; i < handle->ctrl->max_users; i++) {
+            if (!smp_load_acquire(&handle->ctrl->users[i].active))
+                continue;
+            __ufifo_efd_notify(
+                handle->efd_rd_all[i], &handle->ctrl->users[i].rx_waiters, &handle->ctrl->users[i].epoll_armed);
         }
     } else {
-        unsigned int rx_slot = __ufifo_rx_slot_id(handle);
+        size_t rx_slot = __ufifo_rx_slot_id(handle);
         __ufifo_efd_notify(handle->efd_rd_all[rx_slot],
                            &handle->ctrl->users[rx_slot].rx_waiters,
                            &handle->ctrl->users[rx_slot].epoll_armed);

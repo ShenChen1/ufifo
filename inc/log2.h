@@ -11,8 +11,7 @@
  *   - n == 0
  *   - result cannot be represented by size_t
  */
-static inline __attribute__((const))
-size_t roundup_pow_of_two(size_t n)
+static inline __attribute__((const)) size_t roundup_pow_of_two(size_t n)
 {
     if (n == 0)
         return 0;
@@ -37,8 +36,7 @@ size_t roundup_pow_of_two(size_t n)
  *
  * Returns 0 if n == 0.
  */
-static inline __attribute__((const))
-size_t rounddown_pow_of_two(size_t n)
+static inline __attribute__((const)) size_t rounddown_pow_of_two(size_t n)
 {
     if (n == 0)
         return 0;

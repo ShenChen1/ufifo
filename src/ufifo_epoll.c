@@ -29,7 +29,7 @@ int ufifo_get_tx_fd(ufifo_t *handle)
     /* Arm: ACQ_REL xchg provides store-load ordering with subsequent space check */
     atomic_xchg(&handle->ctrl->epoll_tx_armed, 1);
 
-    unsigned int unused = __ufifo_unused_len(handle);
+    size_t unused = __ufifo_unused_len(handle);
     if (unused > 0) {
         if (atomic_xchg(&handle->ctrl->epoll_tx_armed, 0) == 1) {
             __ufifo_efd_post(handle->efd_wr);
@@ -46,7 +46,7 @@ int ufifo_drain_rx_fd(ufifo_t *handle)
         return -EINVAL;
     ufifo_sub_ctrl_t *rx_ctrl = __ufifo_rx_ctrl(handle);
 
-    unsigned int saved_in = smp_load_acquire(handle->kfifo.in);
+    size_t saved_in = smp_load_acquire(handle->kfifo.in);
     int ret = __ufifo_efd_drain(handle->efd_rd);
 
     /* Re-arm: ACQ_REL xchg provides store-load ordering with subsequent data check */
@@ -61,7 +61,7 @@ int ufifo_drain_rx_fd(ufifo_t *handle)
     return ret;
 }
 
-static inline unsigned int __ufifo_tx_progress_state(ufifo_t *handle)
+static inline size_t __ufifo_tx_progress_state(ufifo_t *handle)
 {
     if (__ufifo_is_shared(handle)) {
         return smp_load_acquire(&handle->ctrl->cached_min_out);
@@ -76,7 +76,7 @@ int ufifo_drain_tx_fd(ufifo_t *handle)
     if (handle->efd_wr < 0)
         return -EINVAL;
 
-    unsigned int saved_out = __ufifo_tx_progress_state(handle);
+    size_t saved_out = __ufifo_tx_progress_state(handle);
     int ret = __ufifo_efd_drain(handle->efd_wr);
 
     /* Re-arm: ACQ_REL xchg provides store-load ordering with subsequent space check */

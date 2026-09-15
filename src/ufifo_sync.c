@@ -14,13 +14,13 @@
 void __ufifo_recover_state(ufifo_t *handle)
 {
     ufifo_ctrl_t *ctrl = handle->ctrl;
-    unsigned int count = 0;
-    unsigned int i;
+    size_t count = 0;
+    size_t i;
 
     for (i = 0; i < ctrl->max_users; i++) {
         if (smp_load_acquire(&ctrl->users[i].active)) {
             if (__ufifo_is_user_dead(handle->ctrl_fd, i)) {
-                smp_store_release(&ctrl->users[i].active, 0);
+                smp_store_release(&ctrl->users[i].active, false);
             } else {
                 count++;
             }
@@ -78,19 +78,19 @@ int __ufifo_data_unlock(ufifo_t *handle)
     return pthread_mutex_unlock(&handle->ctrl->data_mutex);
 }
 
-int __ufifo_ofd_lock(int fd, unsigned int user_id)
+int __ufifo_ofd_lock(int fd, size_t user_id)
 {
     struct flock fl = { .l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = user_id, .l_len = 1 };
     return fcntl(fd, F_OFD_SETLK, &fl);
 }
 
-int __ufifo_ofd_unlock(int fd, unsigned int user_id)
+int __ufifo_ofd_unlock(int fd, size_t user_id)
 {
     struct flock fl = { .l_type = F_UNLCK, .l_whence = SEEK_SET, .l_start = user_id, .l_len = 1 };
     return fcntl(fd, F_OFD_SETLK, &fl);
 }
 
-int __ufifo_is_user_dead(int fd, unsigned int user_id)
+int __ufifo_is_user_dead(int fd, size_t user_id)
 {
     struct flock fl = { .l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = user_id, .l_len = 1 };
     if (fcntl(fd, F_OFD_GETLK, &fl) < 0)
@@ -222,11 +222,11 @@ int __ufifo_efd_drain(int efd)
     return 0;
 }
 
-int __ufifo_efd_notify(int efd, int *waiters, int *epoll_armed)
+int __ufifo_efd_notify(int efd, int32_t *waiters, int32_t *epoll_armed)
 {
     int ret = 0;
-    int w = smp_load_acquire(waiters);
-    int armed = smp_load_acquire(epoll_armed);
+    int32_t w = smp_load_acquire(waiters);
+    int32_t armed = smp_load_acquire(epoll_armed);
 
     if (w > 0 || armed > 0) {
         armed = atomic_xchg(epoll_armed, 0);

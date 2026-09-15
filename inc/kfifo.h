@@ -1,8 +1,8 @@
 #ifndef _KFIFO_H_
 #define _KFIFO_H_
 
-#include <string.h>
 #include "utils.h"
+#include <string.h>
 
 typedef struct __kfifo {
     size_t *in;
@@ -31,16 +31,19 @@ static inline __attribute__((always_inline)) size_t __kfifo_unused(kfifo_t *fifo
     return (fifo->mask + 1) - (in - out);
 }
 
-static inline __attribute__((always_inline)) void __kfifo_copy_in(kfifo_t *fifo, char *base, const char *src, size_t len, size_t off)
+static inline __attribute__((always_inline)) void
+__kfifo_copy_in(kfifo_t *fifo, void *base, const void *src, size_t len, size_t off)
 {
+    char *b = (char *)base;
+    const char *s = (const char *)src;
     size_t size = fifo->mask + 1;
     size_t l;
 
     off &= fifo->mask;
     l = min(len, size - off);
 
-    memcpy(base + off, src, l);
-    memcpy(base, src + l, len - l);
+    memcpy(b + off, s, l);
+    memcpy(b, s + l, len - l);
 }
 
 static inline __attribute__((always_inline)) size_t kfifo_in(kfifo_t *fifo, void *base, const void *buf, size_t len)
@@ -57,16 +60,19 @@ static inline __attribute__((always_inline)) size_t kfifo_in(kfifo_t *fifo, void
     return len;
 }
 
-static inline __attribute__((always_inline)) void __kfifo_copy_out(kfifo_t *fifo, char *base, char *dst, size_t len, size_t off)
+static inline __attribute__((always_inline)) void
+__kfifo_copy_out(kfifo_t *fifo, void *base, void *dst, size_t len, size_t off)
 {
+    char *b = (char *)base;
+    char *d = (char *)dst;
     size_t size = fifo->mask + 1;
     size_t l;
 
     off &= fifo->mask;
     l = min(len, size - off);
 
-    memcpy(dst, base + off, l);
-    memcpy(dst + l, base, len - l);
+    memcpy(d, b + off, l);
+    memcpy(d + l, b, len - l);
 }
 
 static inline __attribute__((always_inline)) size_t kfifo_out_peek(kfifo_t *fifo, void *base, void *buf, size_t len)

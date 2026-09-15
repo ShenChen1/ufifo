@@ -34,7 +34,7 @@ static socklen_t __ufifo_broker_addr(const char *name, struct sockaddr_un *addr)
  * Send file descriptors via SCM_RIGHTS using a pre-allocated cmsg buffer.
  * Safe to call after fork (no malloc/calloc).
  */
-static int __ufifo_send_fds_prealloc(int sock, const int *fds, unsigned int nfds, char *buf, size_t buf_size)
+static int __ufifo_send_fds_prealloc(int sock, const int *fds, size_t nfds, char *buf, size_t buf_size)
 {
     char dummy = 'F';
     struct iovec iov = { .iov_base = &dummy, .iov_len = 1 };
@@ -57,7 +57,7 @@ static int __ufifo_send_fds_prealloc(int sock, const int *fds, unsigned int nfds
     return ret < 0 ? -errno : 0;
 }
 
-static int __ufifo_recv_fds(int sock, int *fds, unsigned int nfds)
+static int __ufifo_recv_fds(int sock, int *fds, size_t nfds)
 {
     char dummy;
     struct iovec iov = { .iov_base = &dummy, .iov_len = 1 };
@@ -106,8 +106,8 @@ static int __ufifo_recv_fds(int sock, int *fds, unsigned int nfds)
  */
 typedef struct {
     int listener_fd;
-    int *fds_to_send;       /* packed: [efd_wr, efd_rd_all[0..N-1]] */
-    unsigned int total_fds; /* 1 + efd_count */
+    int *fds_to_send; /* packed: [efd_wr, efd_rd_all[0..N-1]] */
+    size_t total_fds; /* 1 + efd_count */
     char shm_name[UFIFO_NAME_BUF_SIZE];
     char *cmsg_buf; /* pre-allocated SCM_RIGHTS buffer (fork-safe) */
     size_t cmsg_buf_size;
@@ -167,8 +167,7 @@ static void __ufifo_broker_daemon(broker_ctx_t *ctx)
     /* Cleanup: close listener + all eventfds */
     if (ctx->listener_fd >= 0)
         close(ctx->listener_fd);
-    unsigned int i;
-    for (i = 0; i < ctx->total_fds; i++)
+    for (size_t i = 0; i < ctx->total_fds; i++)
         close(ctx->fds_to_send[i]);
 }
 
@@ -178,7 +177,7 @@ static void __ufifo_broker_daemon(broker_ctx_t *ctx)
 
 static int __ufifo_broker_fork(ufifo_t *handle, int listener_fd)
 {
-    unsigned int total_fds = 1 + handle->efd_count;
+    size_t total_fds = 1 + handle->efd_count;
 
     /* Pre-pack fd array and cmsg buffer before fork (fork-safe) */
     int *fds_to_send = malloc(total_fds * sizeof(int));
@@ -281,7 +280,7 @@ int __ufifo_broker_start(ufifo_t *handle)
         return ret;
     }
 
-    handle->is_broker_owner = 1;
+    handle->is_broker_owner = true;
     return 0;
 }
 
@@ -293,8 +292,8 @@ static int __ufifo_broker_connect(ufifo_t *handle)
 {
     struct sockaddr_un addr;
     socklen_t addr_len;
-    unsigned int rx_slot_count = __ufifo_rx_slot_count(handle);
-    unsigned int total_fds = 1 + rx_slot_count;
+    size_t rx_slot_count = __ufifo_rx_slot_count(handle);
+    size_t total_fds = 1 + rx_slot_count;
     int ret;
 
     int sock = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
@@ -339,8 +338,7 @@ static int __ufifo_broker_connect(ufifo_t *handle)
     handle->efd_count = rx_slot_count;
     handle->efd_rd_all = malloc(handle->efd_count * sizeof(int));
     if (!handle->efd_rd_all) {
-        unsigned int i;
-        for (i = 0; i < total_fds; i++)
+        for (size_t i = 0; i < total_fds; i++)
             close(fds[i]);
         free(fds);
         return -ENOMEM;
@@ -355,7 +353,7 @@ static int __ufifo_broker_connect(ufifo_t *handle)
 /*  Unified eventfd acquisition (used by both ALLOC and ATTACH)        */
 /* ------------------------------------------------------------------ */
 
-int __ufifo_acquire_eventfds(ufifo_t *handle, int is_alloc)
+int __ufifo_acquire_eventfds(ufifo_t *handle, bool is_alloc)
 {
     int ret;
 
@@ -397,10 +395,8 @@ set_rd:
 /*  eventfd creation and cleanup                                       */
 /* ------------------------------------------------------------------ */
 
-int __ufifo_efd_create_all(ufifo_t *handle, unsigned int count)
+int __ufifo_efd_create_all(ufifo_t *handle, size_t count)
 {
-    unsigned int i;
-
     handle->efd_wr = __ufifo_efd_create();
     if (handle->efd_wr < 0)
         return -errno;
@@ -413,12 +409,11 @@ int __ufifo_efd_create_all(ufifo_t *handle, unsigned int count)
         return -ENOMEM;
     }
 
-    for (i = 0; i < count; i++) {
+    for (size_t i = 0; i < count; i++) {
         handle->efd_rd_all[i] = __ufifo_efd_create();
         if (handle->efd_rd_all[i] < 0) {
             int err = errno;
-            unsigned int j;
-            for (j = 0; j < i; j++)
+            for (size_t j = 0; j < i; j++)
                 close(handle->efd_rd_all[j]);
             free(handle->efd_rd_all);
             handle->efd_rd_all = NULL;
@@ -439,8 +434,7 @@ void __ufifo_efd_close_all(ufifo_t *handle)
     }
 
     if (handle->efd_rd_all) {
-        unsigned int i;
-        for (i = 0; i < handle->efd_count; i++) {
+        for (size_t i = 0; i < handle->efd_count; i++) {
             if (handle->efd_rd_all[i] >= 0)
                 close(handle->efd_rd_all[i]);
         }

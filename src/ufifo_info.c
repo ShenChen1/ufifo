@@ -41,14 +41,14 @@ void ufifo_dump(ufifo_t *handle)
     UFIFO_CHECK_HANDLE(handle);
     __ufifo_ctrl_lock(handle);
 
-    unsigned int mask = handle->kfifo.mask;
-    unsigned int size = mask + 1;
-    unsigned int in = READ_ONCE(handle->kfifo.in);
-    unsigned int out = READ_ONCE(handle->kfifo.out);
+    size_t mask = handle->kfifo.mask;
+    size_t size = mask + 1;
+    size_t in = READ_ONCE(handle->kfifo.in);
+    size_t out = READ_ONCE(handle->kfifo.out);
 
     __ufifo_log("=== ufifo_dump: %s ===\n", handle->name);
-    __ufifo_log("Shm fd: %d, Size: %u (Mask: 0x%x)\n", handle->shm_fd, size, mask);
-    __ufifo_log("Ctrl fd: %d, Max Users: %u, Num Users: %u\n",
+    __ufifo_log("Shm fd: %d, Size: %zu (Mask: 0x%zx)\n", handle->shm_fd, size, mask);
+    __ufifo_log("Ctrl fd: %d, Max Users: %zu, Num Users: %zu\n",
                 handle->ctrl_fd,
                 handle->ctrl->max_users,
                 handle->ctrl->num_users);
@@ -67,7 +67,7 @@ void ufifo_dump(ufifo_t *handle)
     const char *lock_str = (handle->ctrl->lock < UFIFO_LOCK_MAX) ? lock_modes[handle->ctrl->lock] : "UNKNOWN";
     __ufifo_log("Lock Mode: %s\n", lock_str);
 
-    __ufifo_log("Pointers: in = %u (offset: %u), out = %u (offset: %u)\n", in, in & mask, out, out & mask);
+    __ufifo_log("Pointers: in = %zu (offset: %zu), out = %zu (offset: %zu)\n", in, in & mask, out, out & mask);
 
     /* eventfd info */
     __ufifo_log("Efd Wr: %d, Efd Rd: %d, Broker Owner: %s\n",
@@ -75,12 +75,11 @@ void ufifo_dump(ufifo_t *handle)
                 handle->efd_rd,
                 handle->is_broker_owner ? "yes" : "no");
 
-    unsigned int i;
-    for (i = 0; i < handle->ctrl->max_users; i++) {
+    for (size_t i = 0; i < handle->ctrl->max_users; i++) {
         if (READ_ONCE(&handle->ctrl->users[i].active)) {
-            unsigned int u_out = READ_ONCE(&handle->ctrl->users[i].out);
+            size_t u_out = READ_ONCE(&handle->ctrl->users[i].out);
             unsigned int pid = handle->ctrl->users[i].pid;
-            __ufifo_log("  User[%u]: pid = %d, out = %u (offset: %u)\n", i, pid, u_out, u_out & mask);
+            __ufifo_log("  User[%zu]: pid = %d, out = %zu (offset: %zu)\n", i, pid, u_out, u_out & mask);
         }
     }
     __ufifo_log("=========================\n");
