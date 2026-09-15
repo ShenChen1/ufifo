@@ -603,7 +603,7 @@ class ParameterizedTestBase : public ::testing::TestWithParam<TestParam> {
         // Launch consumers — each uses handles_[num_producers + c]
         for (int c = 0; c < num_consumers; ++c) {
             const int handle_idx = num_producers + c;
-            threads.emplace_back([&, c, handle_idx]() {
+            threads.emplace_back([&, handle_idx]() {
                 {
                     std::unique_lock<std::mutex> lck(start_mtx);
                     ready_count++;
@@ -2080,17 +2080,17 @@ TEST_F(UfifoErrnoTest, StrictTimeoutWithSpuriousWakeup)
     EXPECT_LT(elapsed, 400);
 }
 
-static unsigned int failing_recput(unsigned char *, unsigned int, unsigned char *, void *)
+static size_t failing_recput(uint8_t *, size_t, uint8_t *, void *)
 {
     return 0; // Fail
 }
 
-static unsigned int failing_recget(unsigned char *, unsigned int, unsigned char *, void *)
+static size_t failing_recget(uint8_t *, size_t, uint8_t *, void *)
 {
     return 0; // Fail
 }
 
-static unsigned int dummy_recsize(unsigned char *, unsigned int, unsigned char *)
+static size_t dummy_recsize(uint8_t *, size_t, uint8_t *)
 {
     return 10; // Fixed record size
 }
@@ -2214,7 +2214,7 @@ TEST_F(FaultInjectionTest, ReaderCrashRecovery)
     int p2c[2], c2p[2];
     ASSERT_EQ(0, pipe(p2c));
     ASSERT_EQ(0, pipe(c2p));
-    
+
     pid_t pid2 = fork();
     if (pid2 == 0) {
         close(p2c[1]);
@@ -2223,7 +2223,7 @@ TEST_F(FaultInjectionTest, ReaderCrashRecovery)
         if (AttachFifo(name, &child_fifo) == 0) {
             char buf[10] = "test";
             ufifo_put(child_fifo, buf, 10);
-            
+
             char ready = '1';
             write(c2p[1], &ready, 1);
             char wait_cmd;
@@ -2235,12 +2235,12 @@ TEST_F(FaultInjectionTest, ReaderCrashRecovery)
     ASSERT_GT(pid2, 0);
     close(p2c[0]);
     close(c2p[1]);
-    
+
     // Wait for child to attach before triggering crash
     char ready;
     EXPECT_EQ(1, read(c2p[0], &ready, 1));
     close(p2c[1]); // unblocks child's read, triggering SIGKILL
-    
+
     int status2;
     waitpid(pid2, &status2, 0);
 
@@ -2275,6 +2275,10 @@ TEST_F(FaultInjectionTest, AllReadersCrash)
         ASSERT_EQ(0, pipe(c2p[i]));
         pids[i] = fork();
         if (pids[i] == 0) {
+            for (int j = 0; j < i; j++) {
+                close(p2c[j][1]);
+                close(c2p[j][0]);
+            }
             close(p2c[i][1]);
             close(c2p[i][0]);
             ufifo_t *child_fifo = nullptr;
@@ -2295,6 +2299,8 @@ TEST_F(FaultInjectionTest, AllReadersCrash)
     for (int i = 0; i < 3; i++) {
         char ready;
         EXPECT_EQ(1, read(c2p[i][0], &ready, 1));
+        char cmd = 'k';
+        EXPECT_EQ(1, write(p2c[i][1], &cmd, 1));
         close(p2c[i][1]); // trigger crash
         int status;
         waitpid(pids[i], &status, 0);
@@ -2463,9 +2469,9 @@ TEST_F(FaultInjectionTest, LockNoneWaiterRace)
         ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &fifo));
     }
 
-    std::atomic<int> total_written{0};
-    std::atomic<int> total_read{0};
-    std::atomic<bool> running{true};
+    std::atomic<int> total_written{ 0 };
+    std::atomic<int> total_read{ 0 };
+    std::atomic<bool> running{ true };
     const int target = 10000;
 
     std::thread writer([&]() {

@@ -32,9 +32,9 @@ struct TaggedRecord {
 };
 
 // Hooks
-unsigned int test_recsize(unsigned char *p1, unsigned int n1, unsigned char *p2)
+size_t test_recsize(uint8_t *p1, size_t n1, uint8_t *p2)
 {
-    unsigned int size = sizeof(TestRecord);
+    size_t size = sizeof(TestRecord);
     if (n1 >= size) {
         TestRecord *rec = reinterpret_cast<TestRecord *>(p1);
         size = rec->size;
@@ -48,9 +48,9 @@ unsigned int test_recsize(unsigned char *p1, unsigned int n1, unsigned char *p2)
     return sizeof(TestRecord) + size;
 }
 
-unsigned int tagged_recsize(unsigned char *p1, unsigned int n1, unsigned char *p2)
+size_t tagged_recsize(uint8_t *p1, size_t n1, uint8_t *p2)
 {
-    unsigned int size = sizeof(TaggedRecord);
+    size_t size = sizeof(TaggedRecord);
     if (n1 >= size) {
         TaggedRecord *rec = reinterpret_cast<TaggedRecord *>(p1);
         size = rec->size;
@@ -64,10 +64,10 @@ unsigned int tagged_recsize(unsigned char *p1, unsigned int n1, unsigned char *p
     return sizeof(TaggedRecord) + size;
 }
 
-unsigned int tagged_rectag(unsigned char *p1, unsigned int n1, unsigned char *p2)
+size_t tagged_rectag(uint8_t *p1, size_t n1, uint8_t *p2)
 {
-    unsigned int tag = 0;
-    unsigned int size = sizeof(TaggedRecord);
+    size_t tag = 0;
+    size_t size = sizeof(TaggedRecord);
     if (n1 >= size) {
         TaggedRecord *rec = reinterpret_cast<TaggedRecord *>(p1);
         tag = rec->tag;
@@ -110,7 +110,7 @@ class UfifoTestAdapter {
         handles_.clear();
     }
 
-    int Create(unsigned int size, ufifo_lock_e lock = UFIFO_LOCK_NONE, unsigned int max_users = 10)
+    int Create(size_t size, ufifo_lock_e lock = UFIFO_LOCK_NONE, size_t max_users = 10)
     {
         ufifo_init_t init = {};
         init.opt = UFIFO_OPT_ALLOC;
@@ -222,7 +222,7 @@ class UfifoTestAdapter {
     {
         char buf[64] = {};
         size_t size = sizeof(buf);
-        unsigned int ret = 0;
+        size_t ret = 0;
         if (format_ == DataFormat::BYTESTREAM) {
             size = sizeof(value);
         } else if (format_ == DataFormat::RECORD) {
