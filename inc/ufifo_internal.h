@@ -19,11 +19,11 @@
     } while (0)
 
 struct ufifo {
-    unsigned int magic;
+    uint32_t magic;
 
     char name[UFIFO_NAME_BUF_SIZE];
-    unsigned int user_id;
-    int is_shared;
+    size_t user_id;
+    bool is_shared;
     ufifo_lock_e lock_type;
 
     ufifo_hook_t hook;
@@ -44,8 +44,8 @@ struct ufifo {
     size_t efd_count; /* size of efd_rd_all */
 
     /* fd broker lifecycle (forked daemon, started by first open) */
-    int is_broker_owner; /* 1 if this process forked the broker daemon */
-    unsigned int local_broker_gen;
+    bool is_broker_owner; /* true if this process forked the broker daemon */
+    uint32_t local_broker_gen;
 };
 
 /* ufifo_sync.c */
@@ -53,9 +53,9 @@ int __ufifo_ctrl_lock(ufifo_t *handle);
 int __ufifo_ctrl_unlock(ufifo_t *handle);
 int __ufifo_data_lock(ufifo_t *handle);
 int __ufifo_data_unlock(ufifo_t *handle);
-int __ufifo_ofd_lock(int fd, unsigned int user_id);
-int __ufifo_ofd_unlock(int fd, unsigned int user_id);
-int __ufifo_is_user_dead(int fd, unsigned int user_id);
+int __ufifo_ofd_lock(int fd, size_t user_id);
+int __ufifo_ofd_unlock(int fd, size_t user_id);
+int __ufifo_is_user_dead(int fd, size_t user_id);
 int __ufifo_init_lock(int fd);
 int __ufifo_init_wait(int fd);
 int __ufifo_init_unlock(int fd);
@@ -72,23 +72,23 @@ int __ufifo_efd_drain(int efd);
 int __ufifo_efd_notify(int efd, int *waiters, int *epoll_armed);
 
 /* ufifo_broker.c — eventfd lifecycle (fork-based broker daemon) */
-int __ufifo_acquire_eventfds(ufifo_t *handle, int is_alloc);
+int __ufifo_acquire_eventfds(ufifo_t *handle, bool is_alloc);
 int __ufifo_broker_start(ufifo_t *handle);
 void __ufifo_broker_wake_to_exit(const char *name);
-int __ufifo_efd_create_all(ufifo_t *handle, unsigned int count);
+int __ufifo_efd_create_all(ufifo_t *handle, size_t count);
 void __ufifo_efd_close_all(ufifo_t *handle);
 
 /* ufifo_init.c */
-void __ufifo_reap_dead_user(ufifo_t *handle, unsigned int user_id);
-static inline int __ufifo_is_shared(ufifo_t *handle)
+void __ufifo_reap_dead_user(ufifo_t *handle, size_t user_id);
+static inline bool __ufifo_is_shared(ufifo_t *handle)
 {
     return handle->is_shared;
 }
-static inline unsigned int __ufifo_rx_slot_id(ufifo_t *handle)
+static inline size_t __ufifo_rx_slot_id(ufifo_t *handle)
 {
     return __ufifo_is_shared(handle) ? handle->user_id : handle->ctrl->max_users;
 }
-static inline unsigned int __ufifo_rx_slot_count(ufifo_t *handle)
+static inline size_t __ufifo_rx_slot_count(ufifo_t *handle)
 {
     return handle->ctrl->max_users + (__ufifo_is_shared(handle) ? 0U : 1U);
 }
@@ -100,7 +100,7 @@ void __ufifo_log(const char *fmt, ...);
 
 /* ufifo_opts.c */
 void __ufifo_update_cached_min_out(ufifo_t *handle);
-unsigned int __ufifo_unused_len(ufifo_t *handle);
+size_t __ufifo_unused_len(ufifo_t *handle);
 
 /*
  * Notify blocked writers / epoll-TX listeners that write-space may be available.

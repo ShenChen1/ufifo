@@ -5,12 +5,12 @@
 #include "utils.h"
 
 typedef struct __kfifo {
-    unsigned int *in;
-    unsigned int *out;
-    unsigned int mask;
+    size_t *in;
+    size_t *out;
+    size_t mask;
 } kfifo_t;
 
-static inline __attribute__((always_inline)) int kfifo_init(kfifo_t *fifo, unsigned int size)
+static inline __attribute__((always_inline)) int kfifo_init(kfifo_t *fifo, size_t size)
 {
     *fifo->in = 0;
     *fifo->out = 0;
@@ -24,17 +24,17 @@ static inline __attribute__((always_inline)) int kfifo_init(kfifo_t *fifo, unsig
     return 0;
 }
 
-static inline __attribute__((always_inline)) unsigned int __kfifo_unused(kfifo_t *fifo)
+static inline __attribute__((always_inline)) size_t __kfifo_unused(kfifo_t *fifo)
 {
-    unsigned int in = READ_ONCE(fifo->in);
-    unsigned int out = smp_load_acquire(fifo->out);
+    size_t in = READ_ONCE(fifo->in);
+    size_t out = smp_load_acquire(fifo->out);
     return (fifo->mask + 1) - (in - out);
 }
 
-static inline __attribute__((always_inline)) void __kfifo_copy_in(kfifo_t *fifo, char *base, const char *src, unsigned int len, unsigned int off)
+static inline __attribute__((always_inline)) void __kfifo_copy_in(kfifo_t *fifo, char *base, const char *src, size_t len, size_t off)
 {
-    unsigned int size = fifo->mask + 1;
-    unsigned int l;
+    size_t size = fifo->mask + 1;
+    size_t l;
 
     off &= fifo->mask;
     l = min(len, size - off);
@@ -43,24 +43,24 @@ static inline __attribute__((always_inline)) void __kfifo_copy_in(kfifo_t *fifo,
     memcpy(base, src + l, len - l);
 }
 
-static inline __attribute__((always_inline)) unsigned int kfifo_in(kfifo_t *fifo, void *base, const void *buf, unsigned int len)
+static inline __attribute__((always_inline)) size_t kfifo_in(kfifo_t *fifo, void *base, const void *buf, size_t len)
 {
-    unsigned int l;
+    size_t l;
 
     l = __kfifo_unused(fifo);
     if (len > l)
         len = l;
 
-    unsigned int in = READ_ONCE(fifo->in);
+    size_t in = READ_ONCE(fifo->in);
     __kfifo_copy_in(fifo, base, buf, len, in);
     smp_store_release(fifo->in, in + len);
     return len;
 }
 
-static inline __attribute__((always_inline)) void __kfifo_copy_out(kfifo_t *fifo, char *base, char *dst, unsigned int len, unsigned int off)
+static inline __attribute__((always_inline)) void __kfifo_copy_out(kfifo_t *fifo, char *base, char *dst, size_t len, size_t off)
 {
-    unsigned int size = fifo->mask + 1;
-    unsigned int l;
+    size_t size = fifo->mask + 1;
+    size_t l;
 
     off &= fifo->mask;
     l = min(len, size - off);
@@ -69,11 +69,11 @@ static inline __attribute__((always_inline)) void __kfifo_copy_out(kfifo_t *fifo
     memcpy(dst + l, base, len - l);
 }
 
-static inline __attribute__((always_inline)) unsigned int kfifo_out_peek(kfifo_t *fifo, void *base, void *buf, unsigned int len)
+static inline __attribute__((always_inline)) size_t kfifo_out_peek(kfifo_t *fifo, void *base, void *buf, size_t len)
 {
-    unsigned int l;
-    unsigned int in = smp_load_acquire(fifo->in);
-    unsigned int out = READ_ONCE(fifo->out);
+    size_t l;
+    size_t in = smp_load_acquire(fifo->in);
+    size_t out = READ_ONCE(fifo->out);
 
     l = in - out;
     if (len > l)
@@ -83,10 +83,10 @@ static inline __attribute__((always_inline)) unsigned int kfifo_out_peek(kfifo_t
     return len;
 }
 
-static inline __attribute__((always_inline)) unsigned int kfifo_out(kfifo_t *fifo, void *base, void *buf, unsigned int len)
+static inline __attribute__((always_inline)) size_t kfifo_out(kfifo_t *fifo, void *base, void *buf, size_t len)
 {
     len = kfifo_out_peek(fifo, base, buf, len);
-    unsigned int out = READ_ONCE(fifo->out);
+    size_t out = READ_ONCE(fifo->out);
     smp_store_release(fifo->out, out + len);
     return len;
 }
