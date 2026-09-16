@@ -69,6 +69,16 @@ if(COVERAGE)
     ufifo_enable_coverage(ufifo_shared)
 endif()
 
+# Broker daemon executable
+add_executable(ufifo-broker src/ufifo_broker_main.c)
+target_compile_options(ufifo-broker PRIVATE -g -O3 -Wall -Werror)
+target_link_libraries(ufifo-broker PRIVATE ${RT_LIBRARY})
+
+install(TARGETS ufifo-broker
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT release
+)
+ufifo_target_separate_dbginfo(ufifo-broker ${CMAKE_INSTALL_BINDIR} release dbgsym)
+
 # Example executables
 set(EXAMPLES
     bytestream

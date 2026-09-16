@@ -29,34 +29,6 @@ static socklen_t __ufifo_broker_addr(const char *name, struct sockaddr_un *addr)
 /* ------------------------------------------------------------------ */
 /*  SCM_RIGHTS helpers                                                 */
 /* ------------------------------------------------------------------ */
-
-/*
- * Send file descriptors via SCM_RIGHTS using a pre-allocated cmsg buffer.
- * Safe to call after fork (no malloc/calloc).
- */
-static int __ufifo_send_fds_prealloc(int sock, const int *fds, size_t nfds, char *buf, size_t buf_size)
-{
-    char dummy = 'F';
-    struct iovec iov = { .iov_base = &dummy, .iov_len = 1 };
-
-    memset(buf, 0, buf_size);
-    struct msghdr msg = {
-        .msg_iov = &iov,
-        .msg_iovlen = 1,
-        .msg_control = buf,
-        .msg_controllen = buf_size,
-    };
-
-    struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
-    cmsg->cmsg_level = SOL_SOCKET;
-    cmsg->cmsg_type = SCM_RIGHTS;
-    cmsg->cmsg_len = CMSG_LEN(nfds * sizeof(int));
-    memcpy(CMSG_DATA(cmsg), fds, nfds * sizeof(int));
-
-    int ret = sendmsg(sock, &msg, 0);
-    return ret < 0 ? -errno : 0;
-}
-
 static int __ufifo_recv_fds(int sock, int *fds, size_t nfds)
 {
     char dummy;
@@ -92,94 +64,101 @@ static int __ufifo_recv_fds(int sock, int *fds, size_t nfds)
 }
 
 /* ------------------------------------------------------------------ */
-/*  Broker daemon loop (runs in forked child)                          */
-/*                                                                     */
-/*  Design constraints for stability:                                  */
-/*   - No mutex usage (async-signal-safe after fork)                   */
-/*   - Pre-allocate all buffers before the loop                        */
-/*   - Only syscalls: poll, accept4, sendmsg, close, shm_open         */
+/*  Broker start (double-fork & exec)                                  */
 /* ------------------------------------------------------------------ */
 
-/*
- * Broker daemon context: all data the daemon needs, copied before fork.
- * The daemon must NOT access the parent's ufifo_t handle.
- */
-typedef struct {
-    int listener_fd;
-    int *fds_to_send; /* packed: [efd_wr, efd_rd_all[0..N-1]] */
-    size_t total_fds; /* 1 + efd_count */
-    char shm_name[UFIFO_NAME_BUF_SIZE];
-    char *cmsg_buf; /* pre-allocated SCM_RIGHTS buffer (fork-safe) */
-    size_t cmsg_buf_size;
-} broker_ctx_t;
+#include <dirent.h>
+#include <limits.h>
 
-#define BROKER_POLL_INTERVAL_MS 2000
-
-static void __ufifo_broker_daemon(broker_ctx_t *ctx)
+static int get_broker_path(char *path, size_t size)
 {
-    setsid();
-
-    int null_fd = open("/dev/null", O_RDWR);
-    if (null_fd >= 0) {
-        dup2(null_fd, STDIN_FILENO);
-        dup2(null_fd, STDOUT_FILENO);
-        dup2(null_fd, STDERR_FILENO);
-        if (null_fd > STDERR_FILENO)
-            close(null_fd);
+    const char *env_path = getenv("UFIFO_BROKER_PATH");
+    if (env_path) {
+        snprintf(path, size, "%s", env_path);
+        return 0;
     }
-
-    while (1) {
-        struct pollfd pfd = { .fd = ctx->listener_fd, .events = POLLIN };
-        int ready = poll(&pfd, 1, BROKER_POLL_INTERVAL_MS);
-
-        int client = -1;
-        if (ready > 0 && (pfd.revents & POLLIN)) {
-            client = accept4(ctx->listener_fd, NULL, NULL, SOCK_CLOEXEC);
-            if (client >= 0) {
-                /* Ignore send errors: client may have disconnected */
-                __ufifo_send_fds_prealloc(client, ctx->fds_to_send, ctx->total_fds, ctx->cmsg_buf, ctx->cmsg_buf_size);
-                /* Delay close(client) until after shm liveness check */
+    ssize_t len = readlink("/proc/self/exe", path, size - 1);
+    if (len > 0) {
+        path[len] = '\0';
+        char *last_slash = strrchr(path, '/');
+        if (last_slash) {
+            *(last_slash + 1) = '\0';
+            strncat(path, "ufifo-broker", size - strlen(path) - 1);
+            if (access(path, X_OK) == 0) {
+                return 0;
             }
         }
-
-        /* Periodic liveness check: exit when shm is destroyed */
-        int probe = shm_open(ctx->shm_name, O_RDONLY, 0);
-        if (probe < 0) {
-            if (errno == ENOENT) {
-                /* Release abstract address BEFORE closing client to avoid race */
-                if (ctx->listener_fd >= 0) {
-                    close(ctx->listener_fd);
-                    ctx->listener_fd = -1;
-                }
-                if (client >= 0)
-                    close(client);
-                break; /* shm destroyed → graceful exit */
-            }
-            /* Other errors (e.g. permission): stay alive, be conservative */
-        } else {
-            close(probe);
-        }
-
-        if (client >= 0)
-            close(client);
     }
-
-    /* Cleanup: close listener + all eventfds */
-    if (ctx->listener_fd >= 0)
-        close(ctx->listener_fd);
-    for (size_t i = 0; i < ctx->total_fds; i++)
-        close(ctx->fds_to_send[i]);
+    snprintf(path, size, "ufifo-broker");
+    return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Broker start (double-fork)                                         */
-/* ------------------------------------------------------------------ */
+static bool fd_in_set(int fd, int listener_fd, const int *fds, size_t nfds)
+{
+    if (fd == listener_fd)
+        return true;
+    for (size_t i = 0; i < nfds; i++) {
+        if (fd == fds[i])
+            return true;
+    }
+    return false;
+}
+
+/*
+ * Close all fds except listener_fd and keep_fds[].
+ * Also clears O_CLOEXEC on kept fds so they survive exec.
+ */
+static void close_inherited_fds(int listener_fd, const int *keep_fds, size_t nfds)
+{
+    fcntl(listener_fd, F_SETFD, 0);
+    for (size_t i = 0; i < nfds; i++)
+        fcntl(keep_fds[i], F_SETFD, 0);
+
+    DIR *dir = opendir("/proc/self/fd");
+    if (dir) {
+        int dir_fd = dirfd(dir);
+        struct dirent *dp;
+        while ((dp = readdir(dir)) != NULL) {
+            if (dp->d_name[0] == '.')
+                continue;
+            int fd = atoi(dp->d_name);
+            if (fd != dir_fd && !fd_in_set(fd, listener_fd, keep_fds, nfds))
+                close(fd);
+        }
+        closedir(dir);
+        return;
+    }
+    /* Fallback when /proc is unavailable */
+    for (int fd = 3; fd < 1024; fd++) {
+        if (!fd_in_set(fd, listener_fd, keep_fds, nfds))
+            close(fd);
+    }
+}
+
+/* Build argv: ["ufifo-broker", shm_name, listener_fd, fd0, fd1, ..., NULL] */
+static char **build_broker_argv(const char *name, int listener_fd, const int *fds, size_t nfds)
+{
+    char **args = malloc((4 + nfds) * sizeof(char *));
+    if (!args)
+        return NULL;
+
+    char buf[32];
+    args[0] = strdup("ufifo-broker");
+    args[1] = strdup(name);
+    snprintf(buf, sizeof(buf), "%d", listener_fd);
+    args[2] = strdup(buf);
+    for (size_t i = 0; i < nfds; i++) {
+        snprintf(buf, sizeof(buf), "%d", fds[i]);
+        args[3 + i] = strdup(buf);
+    }
+    args[3 + nfds] = NULL;
+    return args;
+}
 
 static int __ufifo_broker_fork(ufifo_t *handle, int listener_fd)
 {
     size_t total_fds = 1 + handle->efd_count;
 
-    /* Pre-pack fd array and cmsg buffer before fork (fork-safe) */
     int *fds_to_send = malloc(total_fds * sizeof(int));
     if (!fds_to_send)
         return -ENOMEM;
@@ -187,21 +166,8 @@ static int __ufifo_broker_fork(ufifo_t *handle, int listener_fd)
     fds_to_send[0] = handle->efd_wr;
     memcpy(fds_to_send + 1, handle->efd_rd_all, handle->efd_count * sizeof(int));
 
-    size_t cmsg_buf_size = CMSG_SPACE(total_fds * sizeof(int));
-    char *cmsg_buf = calloc(1, cmsg_buf_size);
-    if (!cmsg_buf) {
-        free(fds_to_send);
-        return -ENOMEM;
-    }
-
-    broker_ctx_t ctx = {
-        .listener_fd = listener_fd,
-        .fds_to_send = fds_to_send,
-        .total_fds = total_fds,
-        .cmsg_buf = cmsg_buf,
-        .cmsg_buf_size = cmsg_buf_size,
-    };
-    strncpy(ctx.shm_name, handle->name, sizeof(ctx.shm_name));
+    char broker_path[PATH_MAX];
+    get_broker_path(broker_path, sizeof(broker_path));
 
     pid_t pid = fork();
     if (pid < 0) {
@@ -211,33 +177,24 @@ static int __ufifo_broker_fork(ufifo_t *handle, int listener_fd)
     }
 
     if (pid == 0) {
-        /* First child: double-fork to orphan the daemon */
         pid_t pid2 = fork();
         if (pid2 > 0)
-            _exit(0); /* first child exits immediately */
+            _exit(0);
         if (pid2 < 0)
             _exit(1);
 
-        /* Grandchild: actual broker daemon */
-
-        /* Close fds the broker doesn't need */
-        close(handle->shm_fd);
-        close(handle->ctrl_fd);
-        /* Note: shm_mem/ctrl are mmap'd, child has COW copies — harmless */
-
-        __ufifo_broker_daemon(&ctx);
-        /* ctx.fds_to_send is freed implicitly by _exit */
-        _exit(0);
+        /* Grandchild: sanitize fds and exec broker */
+        close_inherited_fds(listener_fd, fds_to_send, total_fds);
+        char **args = build_broker_argv(handle->name, listener_fd, fds_to_send, total_fds);
+        if (!args)
+            _exit(1);
+        execvp(broker_path, args);
+        _exit(1);
     }
 
-    /* Parent: wait for first child (returns almost immediately) */
     waitpid(pid, NULL, 0);
-
-    /* Parent no longer needs the listener (broker owns it) */
     close(listener_fd);
     free(fds_to_send);
-    free(cmsg_buf);
-
     return 0;
 }
 
