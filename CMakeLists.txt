@@ -38,9 +38,16 @@ set(LIB_SOURCES
     src/ufifo_opts.c
     src/ufifo_sync.c
     src/ufifo_epoll.c
-    src/ufifo_broker.c
     src/ufifo_init.c
     src/ufifo_info.c
+)
+
+# liburing static library
+set(LIBURING_INSTALL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/liburing/install")
+add_library(liburing_static STATIC IMPORTED)
+set_target_properties(liburing_static PROPERTIES
+    IMPORTED_LOCATION "${LIBURING_INSTALL_DIR}/lib/liburing.a"
+    INTERFACE_INCLUDE_DIRECTORIES "${LIBURING_INSTALL_DIR}/include"
 )
 
 # Create static library
@@ -50,6 +57,7 @@ set_target_properties(ufifo_static PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 target_include_directories(ufifo_static PUBLIC inc)
+target_link_libraries(ufifo_static PUBLIC liburing_static)
 target_compile_options(ufifo_static PRIVATE -g -O3 -Wall -Werror)
 if(COVERAGE)
     ufifo_enable_coverage(ufifo_static)
@@ -64,6 +72,7 @@ set_target_properties(ufifo_shared PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 target_include_directories(ufifo_shared PUBLIC inc)
+target_link_libraries(ufifo_shared PRIVATE liburing_static)
 target_compile_options(ufifo_shared PRIVATE -g -O3 -flto -Wall -Werror -fvisibility=hidden)
 if(COVERAGE)
     ufifo_enable_coverage(ufifo_shared)

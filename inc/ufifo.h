@@ -276,33 +276,37 @@ UFIFO_API int ufifo_oldest(ufifo_t *handle, uint32_t tag);
 UFIFO_API int ufifo_newest(ufifo_t *handle, uint32_t tag);
 
 /**
- * @brief Get fd for epoll multiplexing (cross-process safe).
+ * @brief Get fd for epoll multiplexing (cross-process safe, io_uring backed).
  *
- * Returns a socket fd that becomes readable when FIFO state changes
- * (data written or consumed). Add this fd to epoll to multiplex
- * multiple FIFOs in a single thread.
+ * Returns an io_uring file descriptor that becomes readable when FIFO state changes
+ * (data written or space available) via kernel futex completion. Add this fd to
+ * epoll to multiplex multiple FIFOs in a single thread.
  *
- * After epoll_wait returns, call ufifo_drain_rx_fd() / ufifo_drain_tx_fd() to clear,
- * (may return 0 on spurious wake).
+ * @note ufifo operates with Edge-Triggered (ET) semantics. When epoll_wait returns,
+ * consumers/producers should call ufifo_drain_rx_fd() / ufifo_drain_tx_fd() to
+ * acknowledge the notification and re-arm, and then drain data in a loop until empty:
+ *
+ * @code
+ *   ufifo_drain_rx_fd(handle);
+ *   while (ufifo_get(handle, buf, sizeof(buf)) > 0) { ... }
+ * @endcode
  *
  * @param handle FIFO handle.
- * @return fd (>= 0) on success, -1 on failure.
+ * @return fd (>= 0) on success, negative errno on failure.
  */
 UFIFO_API int ufifo_get_rx_fd(ufifo_t *handle);
 UFIFO_API int ufifo_get_tx_fd(ufifo_t *handle);
 
 /**
- * @brief Drain pending RX/TX notifications from the epoll file descriptor.
+ * @brief Drain pending RX/TX notifications and re-arm the epoll trigger.
  *
- * Clears the underlying socket buffer so that `epoll_wait` doesn't
- * return immediately on subsequent calls in level-triggered mode.
- * Also transitions the internal notification state from PENDING back
- * to REGISTERED, re-arming for the next notification.
+ * Consumes completion events from the underlying io_uring ring and re-submits
+ * futex wait requests so that `epoll_wait` will report future events.
  *
- * Should be called after `epoll_wait` returns and before consuming data.
+ * Should be called after `epoll_wait` returns and before consuming/producing data.
  *
  * @param handle FIFO handle.
- * @return 0 on success, -EINVAL if no epoll fd has been registered.
+ * @return 0 on success, negative errno on failure.
  */
 UFIFO_API int ufifo_drain_rx_fd(ufifo_t *handle);
 UFIFO_API int ufifo_drain_tx_fd(ufifo_t *handle);

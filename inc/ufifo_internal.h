@@ -37,15 +37,14 @@ struct ufifo {
     size_t ctrl_size;
     ufifo_ctrl_t *ctrl;
 
-    /* eventfd-based notification */
-    int efd_wr;       /* eventfd: write-space available (shared, one per FIFO) */
-    int efd_rd;       /* eventfd: read-data available (this user's) */
-    int *efd_rd_all;  /* SHARED: user eventfds; SOLE: user eventfds + reserved global eventfd */
-    size_t efd_count; /* size of efd_rd_all */
-
-    /* fd broker lifecycle (forked daemon, started by first open) */
-    bool is_broker_owner; /* true if this process forked the broker daemon */
-    uint32_t local_broker_gen;
+    /* io_uring epoll bridge (lazily initialized) */
+    pthread_mutex_t ring_mutex; /* protects rx_ring and tx_ring operations */
+    struct io_uring *rx_ring;   /* NULL until rx epoll is requested */
+    int rx_ring_fd;             /* io_uring fd for rx epoll, -1 if unused */
+    bool rx_wait_pending;       /* true if a FUTEX_WAIT is queued in the ring */
+    struct io_uring *tx_ring;   /* NULL until tx epoll is requested */
+    int tx_ring_fd;             /* io_uring fd for tx epoll, -1 if unused */
+    bool tx_wait_pending;       /* true if a FUTEX_WAIT is queued in the ring */
 };
 
 /* ufifo_sync.c */
@@ -63,20 +62,13 @@ int __ufifo_lock_init(ufifo_t *handle, ufifo_lock_e type);
 int __ufifo_lock_deinit(ufifo_t *handle);
 void __ufifo_recover_state(ufifo_t *handle);
 
-/* eventfd operations */
-int __ufifo_efd_create(void);
-int __ufifo_efd_wait(int efd, ufifo_t *handle);
-int __ufifo_efd_timedwait(int efd, ufifo_t *handle, long millisec);
-int __ufifo_efd_post(int efd);
-int __ufifo_efd_drain(int efd);
-int __ufifo_efd_notify(int efd, int32_t *waiters, int32_t *epoll_armed);
+/* futex-based wait/notify (ufifo_sync.c) */
+int __ufifo_futex_wait(uint32_t *futex, ufifo_t *handle);
+int __ufifo_futex_timedwait(uint32_t *futex, ufifo_t *handle, long millisec);
+void __ufifo_futex_notify(uint32_t *futex, int32_t *waiters, int32_t *armed);
 
-/* ufifo_broker.c — eventfd lifecycle (fork-based broker daemon) */
-int __ufifo_acquire_eventfds(ufifo_t *handle, bool is_alloc);
-int __ufifo_broker_start(ufifo_t *handle);
-void __ufifo_broker_wake_to_exit(const char *name);
-int __ufifo_efd_create_all(ufifo_t *handle, size_t count);
-void __ufifo_efd_close_all(ufifo_t *handle);
+/* io_uring epoll bridge (ufifo_epoll.c) */
+void __ufifo_ring_destroy(ufifo_t *handle);
 
 /* ufifo_init.c */
 void __ufifo_reap_dead_user(ufifo_t *handle, size_t user_id);
@@ -101,20 +93,16 @@ void __ufifo_log(const char *fmt, ...);
 /* ufifo_opts.c */
 void __ufifo_update_cached_min_out(ufifo_t *handle);
 size_t __ufifo_unused_len(ufifo_t *handle);
+size_t __ufifo_peek_len(ufifo_t *handle, size_t offset, size_t in_val);
 
 /*
- * Notify blocked writers / epoll-TX listeners that write-space may be available.
- * Must be called after any operation that may increase available buffer capacity:
- *   - reader consumes data (get / skip / oldest / newest)
- *   - reader unregisters (close)
- *   - dead reader reaped
- *   - FIFO reset
- *   - new reader joins with out=in (attach)
- * No-op when no writers are waiting (tx_waiters == 0 && epoll_tx_armed == 0).
+ * Notify blocked writers that write-space may be available.
+ * Must be called after any operation that may increase available buffer capacity.
+ * No-op when no writers are waiting and epoll is not armed.
  */
 static inline void __ufifo_notify_writers(ufifo_t *handle)
 {
-    __ufifo_efd_notify(handle->efd_wr, &handle->ctrl->tx_waiters, &handle->ctrl->epoll_tx_armed);
+    __ufifo_futex_notify(&handle->ctrl->futex_tx, &handle->ctrl->tx_waiters, &handle->ctrl->futex_tx_armed);
 }
 
 static inline void __ufifo_notify_readers(ufifo_t *handle)
@@ -123,14 +111,15 @@ static inline void __ufifo_notify_readers(ufifo_t *handle)
         for (size_t i = 0; i < handle->ctrl->max_users; i++) {
             if (!smp_load_acquire(&handle->ctrl->users[i].active))
                 continue;
-            __ufifo_efd_notify(
-                handle->efd_rd_all[i], &handle->ctrl->users[i].rx_waiters, &handle->ctrl->users[i].epoll_armed);
+            __ufifo_futex_notify(&handle->ctrl->users[i].futex_rx,
+                                 &handle->ctrl->users[i].rx_waiters,
+                                 &handle->ctrl->users[i].futex_rx_armed);
         }
     } else {
         size_t rx_slot = __ufifo_rx_slot_id(handle);
-        __ufifo_efd_notify(handle->efd_rd_all[rx_slot],
-                           &handle->ctrl->users[rx_slot].rx_waiters,
-                           &handle->ctrl->users[rx_slot].epoll_armed);
+        __ufifo_futex_notify(&handle->ctrl->users[rx_slot].futex_rx,
+                             &handle->ctrl->users[rx_slot].rx_waiters,
+                             &handle->ctrl->users[rx_slot].futex_rx_armed);
     }
 }
 

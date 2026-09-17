@@ -13,28 +13,6 @@ typedef enum {
     UFIFO_WAIT_TIMED = 2,
 } ufifo_wait_type_e;
 
-static inline void __ufifo_calc_deadline(long millisec, struct timespec *deadline)
-{
-    if (millisec < 0) {
-        millisec = 0;
-    }
-    clock_gettime(CLOCK_MONOTONIC, deadline);
-    deadline->tv_sec += millisec / 1000;
-    deadline->tv_nsec += (millisec % 1000) * 1000000L;
-    if (deadline->tv_nsec >= 1000000000L) {
-        deadline->tv_sec += 1;
-        deadline->tv_nsec -= 1000000000L;
-    }
-}
-
-static inline long __ufifo_remaining_ms(const struct timespec *deadline)
-{
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    long remaining = (deadline->tv_sec - now.tv_sec) * 1000L + (deadline->tv_nsec - now.tv_nsec) / 1000000L;
-    return remaining > 0 ? remaining : 0;
-}
-
 static size_t __ufifo_min_out(ufifo_t *handle)
 {
     size_t in_val = smp_load_acquire(handle->kfifo.in);
@@ -83,7 +61,7 @@ size_t __ufifo_unused_len(ufifo_t *handle)
     return handle->kfifo.mask + 1 - len;
 }
 
-static size_t __ufifo_peek_len(ufifo_t *handle, size_t offset, size_t in_val)
+size_t __ufifo_peek_len(ufifo_t *handle, size_t offset, size_t in_val)
 {
     size_t len = (in_val == offset) ? 0 : 1;
     if (len && handle->hook.recsize) {
@@ -91,24 +69,6 @@ static size_t __ufifo_peek_len(ufifo_t *handle, size_t offset, size_t in_val)
         len = handle->hook.recsize(handle->shm_mem + offset, handle->kfifo.mask - offset + 1, handle->shm_mem);
     }
     return len;
-}
-
-static size_t __ufifo_peek_tag(ufifo_t *handle, size_t offset)
-{
-    size_t ret = 0;
-
-    if (handle->hook.rectag) {
-        offset &= handle->kfifo.mask;
-        ret = handle->hook.rectag(handle->shm_mem + offset, handle->kfifo.mask - offset + 1, handle->shm_mem);
-    }
-
-    return ret;
-}
-
-size_t ufifo_size(ufifo_t *handle)
-{
-    UFIFO_CHECK_HANDLE(handle, 0);
-    return handle->kfifo.mask + 1;
 }
 
 void ufifo_reset(ufifo_t *handle)
@@ -128,18 +88,6 @@ void ufifo_reset(ufifo_t *handle)
     }
     __ufifo_notify_writers(handle);
     __ufifo_data_unlock(handle);
-}
-
-size_t ufifo_len(ufifo_t *handle)
-{
-    size_t len;
-    UFIFO_CHECK_HANDLE(handle, 0);
-
-    __ufifo_data_lock(handle);
-    len = READ_ONCE(handle->kfifo.in) - READ_ONCE(handle->kfifo.out);
-    __ufifo_data_unlock(handle);
-
-    return len;
 }
 
 void ufifo_skip(ufifo_t *handle)
@@ -245,10 +193,10 @@ __ufifo_wait_for_space(ufifo_t *handle, size_t size, ufifo_wait_type_e wait_type
         }
 
         if (wait_type == UFIFO_WAIT_BLOCK) {
-            ret = __ufifo_efd_wait(handle->efd_wr, handle);
+            ret = __ufifo_futex_wait(&handle->ctrl->futex_tx, handle);
         } else {
             long rem = __ufifo_remaining_ms(&deadline);
-            ret = __ufifo_efd_timedwait(handle->efd_wr, handle, rem);
+            ret = __ufifo_futex_timedwait(&handle->ctrl->futex_tx, handle, rem);
         }
         atomic_fetch_sub(&handle->ctrl->tx_waiters, 1);
 
@@ -296,10 +244,10 @@ static inline int __ufifo_wait_for_data(ufifo_t *handle, ufifo_wait_type_e wait_
         }
 
         if (wait_type == UFIFO_WAIT_BLOCK) {
-            ret = __ufifo_efd_wait(handle->efd_rd, handle);
+            ret = __ufifo_futex_wait(&rx_ctrl->futex_rx, handle);
         } else {
             long rem = __ufifo_remaining_ms(&deadline);
-            ret = __ufifo_efd_timedwait(handle->efd_rd, handle, rem);
+            ret = __ufifo_futex_timedwait(&rx_ctrl->futex_rx, handle, rem);
         }
         atomic_fetch_sub(&rx_ctrl->rx_waiters, 1);
 
@@ -485,59 +433,4 @@ size_t ufifo_peek_timeout(ufifo_t *handle, void *buf, size_t size, long millisec
 {
     UFIFO_CHECK_HANDLE(handle, 0);
     return __ufifo_peek(handle, buf, size, UFIFO_WAIT_TIMED, millisec);
-}
-
-static int __ufifo_seek_tag(ufifo_t *handle, uint32_t tag, bool newest)
-{
-    int ret = -ESPIPE;
-    size_t len, tmp;
-    size_t target_pos = 0;
-    bool found = false;
-
-    __ufifo_data_lock(handle);
-    tmp = READ_ONCE(handle->kfifo.out);
-    size_t in_val = READ_ONCE(handle->kfifo.in);
-    while (tmp != in_val) {
-        len = __ufifo_peek_len(handle, tmp, in_val);
-        if (len == 0)
-            break;
-        if (__ufifo_peek_tag(handle, tmp) == tag) {
-            found = true;
-            target_pos = tmp;
-            if (!newest)
-                break;
-        }
-        tmp += len;
-    }
-
-    if (found) {
-        tmp = target_pos;
-        ret = 0;
-    } else {
-        ret = -ESPIPE;
-    }
-
-    size_t old_out = READ_ONCE(handle->kfifo.out);
-    smp_store_release(handle->kfifo.out, tmp);
-    if (__ufifo_is_shared(handle)) {
-        if (old_out == smp_load_acquire(&handle->ctrl->cached_min_out)) {
-            __ufifo_update_cached_min_out(handle);
-        }
-    }
-    __ufifo_notify_writers(handle);
-
-    __ufifo_data_unlock(handle);
-    return ret;
-}
-
-int ufifo_oldest(ufifo_t *handle, uint32_t tag)
-{
-    UFIFO_CHECK_HANDLE(handle, -EINVAL);
-    return __ufifo_seek_tag(handle, tag, false);
-}
-
-int ufifo_newest(ufifo_t *handle, uint32_t tag)
-{
-    UFIFO_CHECK_HANDLE(handle, -EINVAL);
-    return __ufifo_seek_tag(handle, tag, true);
 }

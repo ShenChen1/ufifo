@@ -36,4 +36,28 @@
 #define READ_ONCE(p) __atomic_load_n((p), __ATOMIC_RELAXED)
 #define WRITE_ONCE(p, v) __atomic_store_n((p), (v), __ATOMIC_RELAXED)
 
+#include <time.h>
+
+static inline void __ufifo_calc_deadline(long millisec, struct timespec *deadline)
+{
+    if (millisec < 0) {
+        millisec = 0;
+    }
+    clock_gettime(CLOCK_MONOTONIC, deadline);
+    deadline->tv_sec += millisec / 1000;
+    deadline->tv_nsec += (millisec % 1000) * 1000000L;
+    if (deadline->tv_nsec >= 1000000000L) {
+        deadline->tv_sec += 1;
+        deadline->tv_nsec -= 1000000000L;
+    }
+}
+
+static inline long __ufifo_remaining_ms(const struct timespec *deadline)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    long remaining = (deadline->tv_sec - now.tv_sec) * 1000L + (deadline->tv_nsec - now.tv_nsec) / 1000000L;
+    return remaining > 0 ? remaining : 0;
+}
+
 #endif /* _UTILS_H_ */

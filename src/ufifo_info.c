@@ -69,11 +69,13 @@ void ufifo_dump(ufifo_t *handle)
 
     __ufifo_log("Pointers: in = %zu (offset: %zu), out = %zu (offset: %zu)\n", in, in & mask, out, out & mask);
 
-    /* eventfd info */
-    __ufifo_log("Efd Wr: %d, Efd Rd: %d, Broker Owner: %s\n",
-                handle->efd_wr,
-                handle->efd_rd,
-                handle->is_broker_owner ? "yes" : "no");
+    /* Futex and io_uring ring info */
+    __ufifo_log("Futex Tx: %u (waiters: %d), Futex Rx: %u (waiters: %d)\n",
+                handle->ctrl->futex_tx,
+                handle->ctrl->tx_waiters,
+                __ufifo_rx_ctrl(handle)->futex_rx,
+                __ufifo_rx_ctrl(handle)->rx_waiters);
+    __ufifo_log("Ring Rx fd: %d, Ring Tx fd: %d\n", handle->rx_ring_fd, handle->tx_ring_fd);
 
     for (size_t i = 0; i < handle->ctrl->max_users; i++) {
         if (READ_ONCE(&handle->ctrl->users[i].active)) {
@@ -121,4 +123,89 @@ int ufifo_get_version_info(ufifo_t *handle, ufifo_version_t *ver)
     UFIFO_CHECK_HANDLE(handle, -EINVAL);
     memcpy(ver, &handle->ctrl->ver, sizeof(*ver));
     return 0;
+}
+
+size_t ufifo_size(ufifo_t *handle)
+{
+    UFIFO_CHECK_HANDLE(handle, 0);
+    return handle->kfifo.mask + 1;
+}
+
+size_t ufifo_len(ufifo_t *handle)
+{
+    size_t len;
+    UFIFO_CHECK_HANDLE(handle, 0);
+
+    __ufifo_data_lock(handle);
+    len = READ_ONCE(handle->kfifo.in) - READ_ONCE(handle->kfifo.out);
+    __ufifo_data_unlock(handle);
+
+    return len;
+}
+
+static size_t __ufifo_peek_tag(ufifo_t *handle, size_t offset)
+{
+    size_t ret = 0;
+
+    if (handle->hook.rectag) {
+        offset &= handle->kfifo.mask;
+        ret = handle->hook.rectag(handle->shm_mem + offset, handle->kfifo.mask - offset + 1, handle->shm_mem);
+    }
+
+    return ret;
+}
+
+static int __ufifo_seek_tag(ufifo_t *handle, uint32_t tag, bool newest)
+{
+    int ret = -ESPIPE;
+    size_t len, tmp;
+    size_t target_pos = 0;
+    bool found = false;
+
+    __ufifo_data_lock(handle);
+    tmp = READ_ONCE(handle->kfifo.out);
+    size_t in_val = READ_ONCE(handle->kfifo.in);
+    while (tmp != in_val) {
+        len = __ufifo_peek_len(handle, tmp, in_val);
+        if (len == 0)
+            break;
+        if (__ufifo_peek_tag(handle, tmp) == tag) {
+            found = true;
+            target_pos = tmp;
+            if (!newest)
+                break;
+        }
+        tmp += len;
+    }
+
+    if (found) {
+        tmp = target_pos;
+        ret = 0;
+    } else {
+        ret = -ESPIPE;
+    }
+
+    size_t old_out = READ_ONCE(handle->kfifo.out);
+    smp_store_release(handle->kfifo.out, tmp);
+    if (__ufifo_is_shared(handle)) {
+        if (old_out == smp_load_acquire(&handle->ctrl->cached_min_out)) {
+            __ufifo_update_cached_min_out(handle);
+        }
+    }
+    __ufifo_notify_writers(handle);
+
+    __ufifo_data_unlock(handle);
+    return ret;
+}
+
+int ufifo_oldest(ufifo_t *handle, uint32_t tag)
+{
+    UFIFO_CHECK_HANDLE(handle, -EINVAL);
+    return __ufifo_seek_tag(handle, tag, false);
+}
+
+int ufifo_newest(ufifo_t *handle, uint32_t tag)
+{
+    UFIFO_CHECK_HANDLE(handle, -EINVAL);
+    return __ufifo_seek_tag(handle, tag, true);
 }

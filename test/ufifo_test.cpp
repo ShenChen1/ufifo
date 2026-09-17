@@ -12,6 +12,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <gtest/gtest.h>
+#include <linux/futex.h>
 #include <map>
 #include <mutex>
 #include <string>
@@ -19,6 +20,7 @@
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
@@ -501,6 +503,202 @@ TEST_F(UfifoApiTest, PutOversized)
     EXPECT_EQ(EMSGSIZE, errno);
 
     ufifo_destroy(fifo);
+}
+
+static inline int WaitEpoll(int epfd, struct epoll_event *events, int maxevents, int timeout_ms)
+{
+    int n;
+    while ((n = epoll_wait(epfd, events, maxevents, timeout_ms)) < 0 && errno == EINTR) {
+    }
+    return n;
+}
+
+// Verify cross-process epoll wakeup backed by io_uring + futex
+TEST_F(UfifoApiTest, CrossProcessEpollWakeup)
+{
+    std::string name = GenerateName("epoll_xproc");
+    ufifo_init_t init = {};
+    init.opt = UFIFO_OPT_ALLOC;
+    init.alloc.size = 1024;
+    init.alloc.force = 1;
+    init.alloc.lock = UFIFO_LOCK_PROCESS;
+    init.alloc.data_mode = UFIFO_DATA_SOLE;
+    init.alloc.max_users = 3;
+
+    ufifo_t *writer = nullptr;
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &writer));
+
+    ufifo_init_t attach = {};
+    attach.opt = UFIFO_OPT_ATTACH;
+    ufifo_t *reader = nullptr;
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &attach, &reader));
+
+    int epfd = epoll_create1(0);
+    ASSERT_GE(epfd, 0);
+
+    int rx_fd = ufifo_get_rx_fd(reader);
+    ASSERT_GE(rx_fd, 0);
+
+    struct epoll_event ev = {};
+    ev.events = EPOLLIN;
+    ev.data.fd = rx_fd;
+    ASSERT_EQ(0, epoll_ctl(epfd, EPOLL_CTL_ADD, rx_fd, &ev));
+
+    // Fork child as producer
+    pid_t pid = fork();
+    if (pid == 0) {
+        ufifo_init_t child_init = {};
+        child_init.opt = UFIFO_OPT_ATTACH;
+        ufifo_t *child_writer = nullptr;
+        if (ufifo_open(name.c_str(), &child_init, &child_writer) != 0) {
+            _exit(1);
+        }
+        usleep(50000); // 50ms delay
+        int msg = 12345;
+        if (ufifo_put(child_writer, &msg, sizeof(msg)) != sizeof(msg)) {
+            _exit(2);
+        }
+        ufifo_close(child_writer);
+        _exit(0);
+    }
+
+    ASSERT_GT(pid, 0);
+
+    // Parent waits on epoll (retrying if interrupted by SIGCHLD from exiting child)
+    struct epoll_event events[1];
+    int nfds = WaitEpoll(epfd, events, 1, 3000);
+    EXPECT_EQ(1, nfds);
+    EXPECT_EQ(rx_fd, events[0].data.fd);
+
+    ASSERT_EQ(0, ufifo_drain_rx_fd(reader));
+
+    int received = 0;
+    EXPECT_EQ(sizeof(received), ufifo_get(reader, &received, sizeof(received)));
+    EXPECT_EQ(12345, received);
+
+    int status = 0;
+    waitpid(pid, &status, 0);
+    EXPECT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+
+    close(epfd);
+    ufifo_close(reader);
+    ufifo_destroy(writer);
+}
+
+// Verify Edge-Triggered (ET) epoll semantics: notify once on write, drain and consume in loop
+TEST_F(UfifoApiTest, EpollEdgeTriggeredDrainAndRead)
+{
+    std::string name = GenerateName("epoll_et_drain");
+    ufifo_init_t init = {};
+    init.opt = UFIFO_OPT_ALLOC;
+    init.alloc.size = 1024;
+    init.alloc.force = 1;
+    init.alloc.lock = UFIFO_LOCK_THREAD;
+    init.alloc.data_mode = UFIFO_DATA_SOLE;
+    init.alloc.max_users = 2;
+
+    ufifo_t *fifo = nullptr;
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &fifo));
+
+    int epfd = epoll_create1(0);
+    ASSERT_GE(epfd, 0);
+
+    int rx_fd = ufifo_get_rx_fd(fifo);
+    ASSERT_GE(rx_fd, 0);
+
+    struct epoll_event ev = {};
+    ev.events = EPOLLIN;
+    ev.data.fd = rx_fd;
+    ASSERT_EQ(0, epoll_ctl(epfd, EPOLL_CTL_ADD, rx_fd, &ev));
+
+    // Phase 1: Write first batch of data
+    char buf[10] = "012345678";
+    EXPECT_EQ(10u, ufifo_put(fifo, buf, 10));
+
+    // First epoll_wait: must be ready on edge trigger
+    struct epoll_event events[1];
+    int n = WaitEpoll(epfd, events, 1, 1000);
+    EXPECT_EQ(1, n);
+
+    // Drain epoll notification to re-arm
+    ASSERT_EQ(0, ufifo_drain_rx_fd(fifo));
+
+    // ET pattern: drain all available data in a loop
+    char out[64];
+    size_t total_read = 0;
+    size_t bytes = 0;
+    while ((bytes = ufifo_get(fifo, out + total_read, sizeof(out) - total_read)) > 0) {
+        total_read += bytes;
+    }
+    EXPECT_EQ(10u, total_read);
+
+    // Buffer is now drained; subsequent epoll_wait must timeout (no new edge)
+    n = WaitEpoll(epfd, events, 1, 50);
+    EXPECT_EQ(0, n);
+
+    // Phase 2: A subsequent write triggers another edge notification
+    char buf2[6] = "world";
+    EXPECT_EQ(5u, ufifo_put(fifo, buf2, 5));
+
+    n = WaitEpoll(epfd, events, 1, 1000);
+    EXPECT_EQ(1, n);
+
+    ASSERT_EQ(0, ufifo_drain_rx_fd(fifo));
+    total_read = 0;
+    while ((bytes = ufifo_get(fifo, out + total_read, sizeof(out) - total_read)) > 0) {
+        total_read += bytes;
+    }
+    EXPECT_EQ(5u, total_read);
+
+    // Timeout again after reading
+    n = WaitEpoll(epfd, events, 1, 50);
+    EXPECT_EQ(0, n);
+
+    close(epfd);
+    ufifo_destroy(fifo);
+}
+
+// Verify slot synchronization state is cleanly reset when consumer closes and new one attaches
+TEST_F(UfifoApiTest, SlotStateCleanResetOnClose)
+{
+    std::string name = GenerateName("slot_clean_reset");
+    ufifo_init_t init = {};
+    init.opt = UFIFO_OPT_ALLOC;
+    init.alloc.size = 1024;
+    init.alloc.force = 1;
+    init.alloc.lock = UFIFO_LOCK_PROCESS;
+    init.alloc.data_mode = UFIFO_DATA_SHARED;
+    init.alloc.max_users = 2;
+
+    ufifo_t *writer = nullptr;
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &writer));
+
+    ufifo_init_t attach = {};
+    attach.opt = UFIFO_OPT_ATTACH;
+    ufifo_t *reader1 = nullptr;
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &attach, &reader1));
+
+    // Reader 1 arms epoll
+    int rx_fd = ufifo_get_rx_fd(reader1);
+    ASSERT_GE(rx_fd, 0);
+    ufifo_sub_ctrl_t *ctrl1 = __ufifo_rx_ctrl(reader1);
+    EXPECT_EQ(1, ctrl1->futex_rx_armed);
+
+    // Reader 1 closes: slot must be cleanly disarmed
+    size_t reader1_slot = reader1->user_id;
+    ufifo_close(reader1);
+    EXPECT_EQ(0, writer->ctrl->users[reader1_slot].futex_rx_armed);
+    EXPECT_EQ(0, writer->ctrl->users[reader1_slot].rx_waiters);
+
+    // Reader 2 attaches: slot reused, must not inherit stale armed state
+    ufifo_t *reader2 = nullptr;
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &attach, &reader2));
+    ufifo_sub_ctrl_t *ctrl2 = __ufifo_rx_ctrl(reader2);
+    EXPECT_EQ(0, ctrl2->futex_rx_armed);
+    EXPECT_EQ(0, ctrl2->rx_waiters);
+
+    ufifo_close(reader2);
+    ufifo_destroy(writer);
 }
 
 // =============================================================================
@@ -1457,7 +1655,10 @@ TEST_P(EpollTest, NoEventWhenEmpty)
     ASSERT_EQ(0, epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev));
 
     struct epoll_event events[1];
-    EXPECT_EQ(0, epoll_wait(epfd, events, 1, 50));
+    int n;
+    while ((n = epoll_wait(epfd, events, 1, 50)) < 0 && errno == EINTR) {
+    }
+    EXPECT_EQ(0, n);
 
     close(epfd);
 }
@@ -1700,7 +1901,7 @@ TEST_P(EpollTest, PutWakeupOnGet)
 
     // Verify epoll_wait blocks because there is no new activity
     struct epoll_event events[1];
-    EXPECT_EQ(0, epoll_wait(epfd, events, 1, 50));
+    EXPECT_EQ(0, WaitEpoll(epfd, events, 1, 50));
 
     // Reader consumes one item
     int out = 0;
@@ -1708,7 +1909,7 @@ TEST_P(EpollTest, PutWakeupOnGet)
     EXPECT_EQ(0, out); // Should match the very first item (put_count started at 0)
 
     // The reader's get() should have triggered a notification to the writer
-    int n = epoll_wait(epfd, events, 1, 1000);
+    int n = WaitEpoll(epfd, events, 1, 1000);
     EXPECT_EQ(1, n);
     EXPECT_EQ(writer_fd, events[0].data.fd);
 
@@ -1758,7 +1959,7 @@ TEST_P(EpollTest, PeekDoesNotNotifyWriter)
 
     // Verify epoll_wait blocks because there is no new activity
     struct epoll_event events[1];
-    EXPECT_EQ(0, epoll_wait(epfd, events, 1, 50));
+    EXPECT_EQ(0, WaitEpoll(epfd, events, 1, 50));
 
     // Reader peeks — data is available, but nothing is consumed
     char buf[64];
@@ -1777,7 +1978,7 @@ TEST_P(EpollTest, PeekDoesNotNotifyWriter)
     EXPECT_GT(peeked, 0u) << "Peek should see data without consuming";
 
     // Peek must not signal the writer: available capacity is unchanged
-    EXPECT_EQ(0, epoll_wait(epfd, events, 1, 100)) << "peek must not wake the writer";
+    EXPECT_EQ(0, WaitEpoll(epfd, events, 1, 100)) << "peek must not wake the writer";
 
     close(epfd);
 }
@@ -2043,22 +2244,12 @@ TEST_F(UfifoErrnoTest, StrictTimeoutWithSpuriousWakeup)
 {
     char data = 'A';
 
-    struct ufifo_dummy {
-        void *ctrl;
-        unsigned char *shm_mem;
-        int shm_fd;
-        unsigned int shm_size;
-        int efd_rd;
-        int efd_wr;
-    };
-
     std::thread t([&]() {
         for (int i = 0; i < 5; i++) {
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
-            uint64_t val = 1;
-            int fd = ((ufifo_dummy *)fifo)->efd_rd;
-            auto _ = write(fd, &val, sizeof(val));
-            (void)_;
+            uint32_t *futex = &__ufifo_rx_ctrl(fifo)->futex_rx;
+            __atomic_fetch_add(futex, 1, __ATOMIC_RELEASE);
+            syscall(SYS_futex, futex, FUTEX_WAKE, 1, NULL, NULL, 0);
         }
     });
 

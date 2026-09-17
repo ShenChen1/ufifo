@@ -3,7 +3,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/epoll.h>
-#include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
 
@@ -133,7 +132,7 @@ int main(void)
         for (int i = 0; i < nfds; i++) {
             int client_id = events[i].data.u32;
 
-            // Clear the wake-up signal from socket using library API
+            // Rearm the futex listener and drain read events
             ufifo_drain_rx_fd(readers[client_id]);
 
             char buf[64];

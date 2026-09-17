@@ -16,8 +16,9 @@ typedef struct {
     pid_t pid;
     bool active;
     size_t out;
-    int32_t rx_waiters;  /* count of threads blocked in poll() waiting for data */
-    int32_t epoll_armed; /* 1 = epoll listener waiting; 0 = already notified or idle */
+    int32_t rx_waiters;     /* count of threads blocked in futex waiting for data */
+    int32_t futex_rx_armed; /* 1 = epoll listener waiting; 0 = notified or idle */
+    uint32_t futex_rx;      /* futex variable: writer increments to wake this consumer */
 } ufifo_sub_ctrl_t;
 
 /* Global FIFO control data (stored in shared memory) */
@@ -33,10 +34,9 @@ typedef struct {
     pthread_mutex_t ctrl_mutex; /* always active: protects control data */
     pthread_mutex_t data_mutex; /* governed by ufifo_lock_e: protects index movement */
 
-    int32_t tx_waiters;     /* count of threads blocked in poll() waiting for space */
-    int32_t epoll_tx_armed; /* 1 = epoll listener waiting; 0 = already notified or idle */
-
-    uint32_t broker_gen;
+    int32_t tx_waiters;     /* count of threads blocked in futex waiting for space */
+    int32_t futex_tx_armed; /* 1 = epoll listener waiting; 0 = notified or idle */
+    uint32_t futex_tx;      /* futex variable: reader increments to wake writers */
 
     ufifo_data_mode_e data_mode;
     size_t max_users;

@@ -2,11 +2,11 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
-#include <poll.h>
+#include <linux/futex.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <sys/eventfd.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 #include "utils.h"
@@ -152,88 +152,61 @@ int __ufifo_lock_deinit(ufifo_t *handle)
     return ret;
 }
 
-int __ufifo_efd_create(void)
-{
-    return eventfd(0, EFD_SEMAPHORE | EFD_NONBLOCK | EFD_CLOEXEC);
-}
+/* ------------------------------------------------------------------ */
+/*  Futex-based wait/notify                                            */
+/* ------------------------------------------------------------------ */
 
-int __ufifo_efd_wait(int efd, ufifo_t *handle)
+/*
+ * Block until the futex variable changes from its current value.
+ * Releases data_mutex before sleeping and re-acquires it after waking.
+ * Returns 0 on success (woken or spurious), never propagates EAGAIN/EINTR.
+ */
+int __ufifo_futex_wait(uint32_t *futex, ufifo_t *handle)
 {
-    uint64_t val;
-    int ret;
+    uint32_t snapshot = smp_load_acquire(futex);
 
     __ufifo_data_unlock(handle);
-
-    /* Block until eventfd becomes readable */
-    struct pollfd pfd = { .fd = efd, .events = POLLIN };
-    ret = poll(&pfd, 1, -1); /* infinite wait */
-    if (ret > 0) {
-        if (read(efd, &val, sizeof(val)) < 0) {
-            ret = errno == EAGAIN ? 0 : -errno;
-        } else {
-            ret = 0;
-        }
-    } else {
-        ret = -errno;
-    }
-
+    /* EAGAIN (value changed) and EINTR are both benign — just retry */
+    syscall(SYS_futex, futex, FUTEX_WAIT, snapshot, NULL, NULL, 0);
     __ufifo_data_lock(handle);
-    return ret;
-}
 
-int __ufifo_efd_timedwait(int efd, ufifo_t *handle, long millisec)
-{
-    uint64_t val;
-    int ret;
-
-    __ufifo_data_unlock(handle);
-
-    struct pollfd pfd = { .fd = efd, .events = POLLIN };
-    int poll_timeout = range(millisec, 0L, (long)INT_MAX);
-    ret = poll(&pfd, 1, poll_timeout);
-    if (ret > 0) {
-        if (read(efd, &val, sizeof(val)) < 0) {
-            ret = errno == EAGAIN ? 0 : -errno;
-        } else {
-            ret = 0;
-        }
-    } else if (ret == 0) {
-        ret = ETIMEDOUT;
-    } else {
-        ret = -errno;
-    }
-
-    __ufifo_data_lock(handle);
-    return ret;
-}
-
-int __ufifo_efd_post(int efd)
-{
-    uint64_t val = 1;
-    int ret = write(efd, &val, sizeof(val));
-    return ret < 0 ? -errno : 0;
-}
-
-int __ufifo_efd_drain(int efd)
-{
-    uint64_t val;
-    while (read(efd, &val, sizeof(val)) > 0) {
-    }
     return 0;
 }
 
-int __ufifo_efd_notify(int efd, int32_t *waiters, int32_t *epoll_armed)
+/*
+ * Block until the futex variable changes, with a timeout in milliseconds.
+ * Returns 0 on success/spurious wake, ETIMEDOUT on expiry.
+ */
+int __ufifo_futex_timedwait(uint32_t *futex, ufifo_t *handle, long millisec)
 {
-    int ret = 0;
-    int32_t w = smp_load_acquire(waiters);
-    int32_t armed = smp_load_acquire(epoll_armed);
+    uint32_t snapshot = smp_load_acquire(futex);
+    struct timespec ts = { .tv_sec = millisec / 1000, .tv_nsec = (millisec % 1000) * 1000000L };
 
-    if (w > 0 || armed > 0) {
-        armed = atomic_xchg(epoll_armed, 0);
-        uint64_t post_count = (w > 0 ? w : 0) + armed;
-        if (post_count > 0) {
-            ret = write(efd, &post_count, sizeof(post_count));
-        }
+    __ufifo_data_unlock(handle);
+    int ret = syscall(SYS_futex, futex, FUTEX_WAIT, snapshot, &ts, NULL, 0);
+    __ufifo_data_lock(handle);
+
+    if (ret < 0 && errno == ETIMEDOUT)
+        return ETIMEDOUT;
+    return 0;
+}
+
+/*
+ * Wake all threads waiting on this futex variable.
+ * Increments the futex counter to invalidate any pending FUTEX_WAIT snapshots.
+ * No-op when no waiters are registered and epoll is not armed.
+ */
+void __ufifo_futex_notify(uint32_t *futex, int32_t *waiters, int32_t *armed)
+{
+    bool need_wake = false;
+    if (smp_load_acquire(waiters) > 0) {
+        need_wake = true;
     }
-    return ret < 0 ? -errno : 0;
+    if (armed && atomic_xchg(armed, 0) == 1) {
+        need_wake = true;
+    }
+    if (need_wake) {
+        __atomic_fetch_add(futex, 1, __ATOMIC_RELEASE);
+        syscall(SYS_futex, futex, FUTEX_WAKE, INT_MAX, NULL, NULL, 0);
+    }
 }
