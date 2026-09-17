@@ -42,13 +42,23 @@ set(LIB_SOURCES
     src/ufifo_info.c
 )
 
-# liburing static library
-set(LIBURING_INSTALL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/liburing/install")
-add_library(liburing_static STATIC IMPORTED)
-set_target_properties(liburing_static PROPERTIES
-    IMPORTED_LOCATION "${LIBURING_INSTALL_DIR}/lib/liburing.a"
-    INTERFACE_INCLUDE_DIRECTORIES "${LIBURING_INSTALL_DIR}/include"
-)
+# liburing library
+find_package(PkgConfig QUIET)
+if(PKG_CONFIG_FOUND)
+    pkg_check_modules(LIBURING IMPORTED_TARGET liburing)
+endif()
+
+if(TARGET PkgConfig::LIBURING)
+    add_library(liburing ALIAS PkgConfig::LIBURING)
+else()
+    find_path(LIBURING_INCLUDE_DIR NAMES liburing.h REQUIRED)
+    find_library(LIBURING_LIBRARY NAMES uring REQUIRED)
+    add_library(liburing INTERFACE IMPORTED)
+    set_target_properties(liburing PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${LIBURING_INCLUDE_DIR}"
+        INTERFACE_LINK_LIBRARIES "${LIBURING_LIBRARY}"
+    )
+endif()
 
 # Create static library
 add_library(ufifo_static STATIC ${LIB_SOURCES})
@@ -57,7 +67,7 @@ set_target_properties(ufifo_static PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 target_include_directories(ufifo_static PUBLIC inc)
-target_link_libraries(ufifo_static PUBLIC liburing_static)
+target_link_libraries(ufifo_static PUBLIC liburing)
 target_compile_options(ufifo_static PRIVATE -g -O3 -Wall -Werror)
 if(COVERAGE)
     ufifo_enable_coverage(ufifo_static)
@@ -72,7 +82,7 @@ set_target_properties(ufifo_shared PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 target_include_directories(ufifo_shared PUBLIC inc)
-target_link_libraries(ufifo_shared PRIVATE liburing_static)
+target_link_libraries(ufifo_shared PRIVATE liburing)
 target_compile_options(ufifo_shared PRIVATE -g -O3 -flto -Wall -Werror -fvisibility=hidden)
 if(COVERAGE)
     ufifo_enable_coverage(ufifo_shared)

@@ -36,7 +36,7 @@ Here is how `ufifo` compares to other common alternatives:
 - **Customizable Diagnostics**: Inject your own logging callback via `ufifo_set_log_handler` to integrate `ufifo` warnings and debug outputs seamlessly into your application's logging infrastructure.
 - **Safe Across Versions**: A version stamp is embedded into shared memory at creation time. If a client links against an incompatible library version, `ufifo_open` rejects it immediately — no silent corruption.
 - **Three Blocking Flavors**: Every read/write operation comes in non-blocking, blocking (`poll()`-based), and timed variants (`_block`, `_timeout`), so you choose the back-pressure strategy that fits your architecture.
-- **Lightweight, Minimal Runtime Overhead**: Written in pure C99 + POSIX and statically links `liburing` for kernel-level async futex event multiplexing. No background broker daemons, no socket passing, no complex runtime.
+- **Lightweight, Minimal Runtime Overhead**: Written in pure C99 + POSIX and links `liburing` for kernel-level async futex event multiplexing. No background broker daemons, no socket passing, no complex runtime.
 
 ## Common Topologies & Use Cases
 
@@ -177,7 +177,7 @@ Run the Google Benchmark suite `ufifo_bench` to test throughput and latency metr
 
 ## Build Instructions
 
-`ufifo` requires CMake 3.16+ and GCC/Clang on Linux. The build system automatically compiles and statically links the required `liburing` component.
+`ufifo` requires CMake 3.16+, `liburing-dev`, and GCC/Clang on Linux.
 
 ### Building the Project
 

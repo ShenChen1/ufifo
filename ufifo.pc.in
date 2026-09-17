@@ -6,5 +6,6 @@ includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
 Name: @CMAKE_PROJECT_NAME@
 Description: High performance shared memory ring buffer IPC
 Version: @UFIFO_VERSION_MAJOR@.@UFIFO_VERSION_MINOR@.@UFIFO_VERSION_PATCH@
-Libs: -L${libdir} -lufifo -lrt -lpthread
+Requires.private: liburing
+Libs: -L${libdir} -lufifo -lrt -lpthread -luring
 Cflags: -I${includedir}/ufifo

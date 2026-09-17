@@ -11,7 +11,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y lcov cmake
+        run: sudo apt-get update && sudo apt-get install -y lcov cmake pkg-config liburing-dev
 
       - name: Configure CMake
         run: cmake -B build -DCOVERAGE=ON
@@ -37,7 +37,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake
+        run: sudo apt-get update && sudo apt-get install -y cmake pkg-config liburing-dev
 
       - name: Configure CMake
         run: cmake -B build -DSANITIZER=${{ matrix.sanitizer }}
@@ -57,7 +57,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake doxygen
+        run: sudo apt-get update && sudo apt-get install -y cmake doxygen pkg-config liburing-dev
 
       - name: Configure CMake
         run: cmake -B build
@@ -79,7 +79,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake
+        run: sudo apt-get update && sudo apt-get install -y cmake pkg-config liburing-dev
 
       - name: Configure
         run: cmake -B build -DCMAKE_INSTALL_PREFIX=install_test
