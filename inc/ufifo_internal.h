@@ -12,6 +12,12 @@
 #define UFIFO_CTRL_NAME_SUFFIX "_ctrl"
 #define UFIFO_CTRL_NAME_BUF_SIZE (UFIFO_NAME_MAX + sizeof(UFIFO_CTRL_NAME_SUFFIX))
 
+typedef enum {
+    UFIFO_WAIT_NONE = 0,
+    UFIFO_WAIT_BLOCK = 1,
+    UFIFO_WAIT_TIMED = 2,
+} ufifo_wait_type_e;
+
 #define UFIFO_CHECK_HANDLE(handle, ...)                    \
     do {                                                   \
         if (!(handle) || (handle)->magic != UFIFO_MAGIC) { \
@@ -108,6 +114,13 @@ void __ufifo_log(const char *fmt, ...);
 /* ufifo_opts.c */
 void __ufifo_update_cached_min_out(ufifo_t *handle);
 size_t __ufifo_unused_len(ufifo_t *handle);
+size_t __ufifo_peek_data_len(ufifo_t *handle, size_t offset, size_t in_val);
+int __ufifo_wait_for_space(ufifo_t *handle,
+                           size_t size,
+                           ufifo_wait_type_e wait_type,
+                           long millisec,
+                           size_t *out_len);
+int __ufifo_wait_for_data(ufifo_t *handle, ufifo_wait_type_e wait_type, long millisec, size_t *out_len);
 
 /*
  * Notify blocked writers / epoll-TX listeners that write-space may be available.
@@ -121,6 +134,7 @@ size_t __ufifo_unused_len(ufifo_t *handle);
  */
 static inline void __ufifo_notify_writers(ufifo_t *handle)
 {
+    __ufifo_wait_notify(&handle->ctrl->tx_wait_word);
     __ufifo_efd_notify(handle->efd_wr, &handle->ctrl->tx_waiters, &handle->ctrl->epoll_tx_armed);
 }
 
@@ -130,11 +144,13 @@ static inline void __ufifo_notify_readers(ufifo_t *handle)
         for (size_t i = 0; i < handle->ctrl->max_users; i++) {
             if (!smp_load_acquire(&handle->ctrl->users[i].active))
                 continue;
+            __ufifo_wait_notify(&handle->ctrl->users[i].rx_wait_word);
             __ufifo_efd_notify(
                 handle->efd_rd_all[i], &handle->ctrl->users[i].rx_waiters, &handle->ctrl->users[i].epoll_armed);
         }
     } else {
         size_t rx_slot = __ufifo_rx_slot_id(handle);
+        __ufifo_wait_notify(&handle->ctrl->users[rx_slot].rx_wait_word);
         __ufifo_efd_notify(handle->efd_rd_all[rx_slot],
                            &handle->ctrl->users[rx_slot].rx_waiters,
                            &handle->ctrl->users[rx_slot].epoll_armed);
