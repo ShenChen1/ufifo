@@ -42,26 +42,51 @@ set(LIB_SOURCES
     src/ufifo_info.c
 )
 
-# liburing library
-find_package(PkgConfig QUIET)
-if(PKG_CONFIG_FOUND)
-    pkg_check_modules(LIBURING IMPORTED_TARGET liburing)
+# liburing library (built from third_party/liburing submodule)
+include(ExternalProject)
+
+set(LIBURING_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/liburing")
+set(LIBURING_INSTALL_DIR "${CMAKE_CURRENT_BINARY_DIR}/liburing_install")
+set(LIBURING_INCLUDE_DIR "${LIBURING_INSTALL_DIR}/include")
+set(LIBURING_LIB "${LIBURING_INSTALL_DIR}/lib/liburing.a")
+
+if(NOT EXISTS "${LIBURING_SOURCE_DIR}/configure")
+    find_package(Git QUIET)
+    if(GIT_FOUND AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
+        message(STATUS "Submodule third_party/liburing not initialized, updating...")
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} submodule update --init --recursive third_party/liburing
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            RESULT_VARIABLE GIT_SUBMOD_RESULT
+        )
+        if(NOT GIT_SUBMOD_RESULT EQUAL 0)
+            message(FATAL_ERROR "Failed to initialize submodule third_party/liburing")
+        endif()
+    else()
+        message(FATAL_ERROR "third_party/liburing is missing and git is not available.")
+    endif()
 endif()
 
-if(TARGET PkgConfig::LIBURING)
-    add_library(liburing ALIAS PkgConfig::LIBURING)
-else()
-    find_path(LIBURING_INCLUDE_DIR NAMES liburing.h REQUIRED)
-    find_library(LIBURING_LIBRARY NAMES uring REQUIRED)
-    add_library(liburing INTERFACE IMPORTED)
-    set_target_properties(liburing PROPERTIES
-        INTERFACE_INCLUDE_DIRECTORIES "${LIBURING_INCLUDE_DIR}"
-        INTERFACE_LINK_LIBRARIES "${LIBURING_LIBRARY}"
-    )
-endif()
+file(MAKE_DIRECTORY "${LIBURING_INCLUDE_DIR}")
+
+ExternalProject_Add(liburing_ep
+    SOURCE_DIR "${LIBURING_SOURCE_DIR}"
+    BUILD_IN_SOURCE 1
+    CONFIGURE_COMMAND <SOURCE_DIR>/configure --prefix=${LIBURING_INSTALL_DIR} --libdir=${LIBURING_INSTALL_DIR}/lib --includedir=${LIBURING_INCLUDE_DIR}
+    BUILD_COMMAND make "CFLAGS=-fPIC -O3" -C src liburing.a
+    INSTALL_COMMAND make -C src install prefix=${LIBURING_INSTALL_DIR} includedir=${LIBURING_INCLUDE_DIR} libdevdir=${LIBURING_INSTALL_DIR}/lib libdir=${LIBURING_INSTALL_DIR}/lib
+    BUILD_BYPRODUCTS "${LIBURING_LIB}"
+)
+
+add_library(liburing STATIC IMPORTED GLOBAL)
+set_target_properties(liburing PROPERTIES
+    IMPORTED_LOCATION "${LIBURING_LIB}"
+    INTERFACE_INCLUDE_DIRECTORIES "${LIBURING_INCLUDE_DIR}"
+)
 
 # Create static library
 add_library(ufifo_static STATIC ${LIB_SOURCES})
+add_dependencies(ufifo_static liburing_ep)
 set_target_properties(ufifo_static PROPERTIES
     OUTPUT_NAME ufifo
     POSITION_INDEPENDENT_CODE ON
@@ -75,6 +100,7 @@ endif()
 
 # Create shared library
 add_library(ufifo_shared SHARED ${LIB_SOURCES})
+add_dependencies(ufifo_shared liburing_ep)
 set_target_properties(ufifo_shared PROPERTIES
     OUTPUT_NAME ufifo
     VERSION ${UFIFO_VERSION_MAJOR}.${UFIFO_VERSION_MINOR}.${UFIFO_VERSION_PATCH}
