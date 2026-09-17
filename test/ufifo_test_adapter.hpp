@@ -32,7 +32,7 @@ struct TaggedRecord {
 };
 
 // Hooks
-size_t test_recsize(uint8_t *p1, size_t n1, uint8_t *p2)
+inline size_t test_recsize(uint8_t *p1, size_t n1, uint8_t *p2)
 {
     size_t size = sizeof(TestRecord);
     if (n1 >= size) {
@@ -48,7 +48,7 @@ size_t test_recsize(uint8_t *p1, size_t n1, uint8_t *p2)
     return sizeof(TestRecord) + size;
 }
 
-size_t tagged_recsize(uint8_t *p1, size_t n1, uint8_t *p2)
+inline size_t tagged_recsize(uint8_t *p1, size_t n1, uint8_t *p2)
 {
     size_t size = sizeof(TaggedRecord);
     if (n1 >= size) {
@@ -64,7 +64,7 @@ size_t tagged_recsize(uint8_t *p1, size_t n1, uint8_t *p2)
     return sizeof(TaggedRecord) + size;
 }
 
-size_t tagged_rectag(uint8_t *p1, size_t n1, uint8_t *p2)
+inline size_t tagged_rectag(uint8_t *p1, size_t n1, uint8_t *p2)
 {
     size_t tag = 0;
     size_t size = sizeof(TaggedRecord);
