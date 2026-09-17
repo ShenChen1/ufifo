@@ -66,7 +66,7 @@ size_t __ufifo_peek_len(ufifo_t *handle, size_t offset, size_t in_val)
     size_t len = (in_val == offset) ? 0 : 1;
     if (len && handle->hook.recsize) {
         offset &= handle->kfifo.mask;
-        len = handle->hook.recsize(handle->shm_mem + offset, handle->kfifo.mask - offset + 1, handle->shm_mem);
+        len = handle->hook.recsize(handle->data_mem + offset, handle->kfifo.mask - offset + 1, handle->data_mem);
     }
     return len;
 }
@@ -130,7 +130,7 @@ static int __ufifo_try_reap_dead_readers(ufifo_t *handle)
         if (i == handle->user_id)
             continue;
         if (smp_load_acquire(&handle->ctrl->users[i].active)) {
-            if (__ufifo_is_user_dead(handle->ctrl_fd, i)) {
+            if (__ufifo_is_user_dead(handle->shm_fd, i)) {
                 __ufifo_ctrl_lock(handle);
                 if (READ_ONCE(&handle->ctrl->users[i].active)) {
                     __ufifo_reap_dead_user(handle, i);
@@ -183,20 +183,25 @@ __ufifo_wait_for_space(ufifo_t *handle, size_t size, ufifo_wait_type_e wait_type
             break;
         }
 
+        uint32_t seq = smp_load_acquire(&handle->ctrl->futex_tx);
         atomic_fetch_add(&handle->ctrl->tx_waiters, 1);
-        if (handle->lock_type == UFIFO_LOCK_NONE) {
+        smp_mb();
+
+        len = __ufifo_unused_len(handle);
+        if (__ufifo_is_shared(handle) && len < size) {
+            __ufifo_update_cached_min_out(handle);
             len = __ufifo_unused_len(handle);
-            if (len >= size) {
-                atomic_fetch_sub(&handle->ctrl->tx_waiters, 1);
-                break;
-            }
+        }
+        if (len >= size) {
+            atomic_fetch_sub(&handle->ctrl->tx_waiters, 1);
+            break;
         }
 
         if (wait_type == UFIFO_WAIT_BLOCK) {
-            ret = __ufifo_futex_wait(&handle->ctrl->futex_tx, handle);
+            ret = __ufifo_futex_wait(&handle->ctrl->futex_tx, seq, handle);
         } else {
             long rem = __ufifo_remaining_ms(&deadline);
-            ret = __ufifo_futex_timedwait(&handle->ctrl->futex_tx, handle, rem);
+            ret = __ufifo_futex_timedwait(&handle->ctrl->futex_tx, seq, handle, rem);
         }
         atomic_fetch_sub(&handle->ctrl->tx_waiters, 1);
 
@@ -223,7 +228,7 @@ static inline int __ufifo_wait_for_data(ufifo_t *handle, ufifo_wait_type_e wait_
     }
 
     while (1) {
-        len = __ufifo_peek_len(handle, READ_ONCE(handle->kfifo.out), READ_ONCE(handle->kfifo.in));
+        len = __ufifo_peek_len(handle, READ_ONCE(handle->kfifo.out), smp_load_acquire(handle->kfifo.in));
         if (len > 0)
             break;
 
@@ -234,20 +239,21 @@ static inline int __ufifo_wait_for_data(ufifo_t *handle, ufifo_wait_type_e wait_
             break;
         }
 
+        uint32_t seq = smp_load_acquire(&rx_ctrl->futex_rx);
         atomic_fetch_add(&rx_ctrl->rx_waiters, 1);
-        if (handle->lock_type == UFIFO_LOCK_NONE) {
-            len = __ufifo_peek_len(handle, READ_ONCE(handle->kfifo.out), smp_load_acquire(handle->kfifo.in));
-            if (len > 0) {
-                atomic_fetch_sub(&rx_ctrl->rx_waiters, 1);
-                break;
-            }
+        smp_mb();
+
+        len = __ufifo_peek_len(handle, READ_ONCE(handle->kfifo.out), smp_load_acquire(handle->kfifo.in));
+        if (len > 0) {
+            atomic_fetch_sub(&rx_ctrl->rx_waiters, 1);
+            break;
         }
 
         if (wait_type == UFIFO_WAIT_BLOCK) {
-            ret = __ufifo_futex_wait(&rx_ctrl->futex_rx, handle);
+            ret = __ufifo_futex_wait(&rx_ctrl->futex_rx, seq, handle);
         } else {
             long rem = __ufifo_remaining_ms(&deadline);
-            ret = __ufifo_futex_timedwait(&rx_ctrl->futex_rx, handle, rem);
+            ret = __ufifo_futex_timedwait(&rx_ctrl->futex_rx, seq, handle, rem);
         }
         atomic_fetch_sub(&rx_ctrl->rx_waiters, 1);
 
@@ -282,7 +288,7 @@ __ufifo_put(ufifo_t *handle, void *buf, size_t size, ufifo_wait_type_e wait_type
     if (unlikely(handle->hook.recput)) {
         size_t in = READ_ONCE(handle->kfifo.in);
         len = handle->kfifo.mask & in;
-        len = handle->hook.recput(handle->shm_mem + len, handle->kfifo.mask - len + 1, handle->shm_mem, buf);
+        len = handle->hook.recput(handle->data_mem + len, handle->kfifo.mask - len + 1, handle->data_mem, buf);
         if (size != len) {
             errno = EIO;
             len = 0;
@@ -290,7 +296,7 @@ __ufifo_put(ufifo_t *handle, void *buf, size_t size, ufifo_wait_type_e wait_type
         }
         smp_store_release(handle->kfifo.in, in + len);
     } else {
-        len = kfifo_in(&handle->kfifo, handle->shm_mem, buf, size);
+        len = kfifo_in(&handle->kfifo, handle->data_mem, buf, size);
     }
 
     __ufifo_notify_readers(handle);
@@ -340,7 +346,7 @@ __ufifo_get(ufifo_t *handle, void *buf, size_t size, ufifo_wait_type_e wait_type
     if (unlikely(handle->hook.recget)) {
         size_t out = old_out;
         len = handle->kfifo.mask & out;
-        len = handle->hook.recget(handle->shm_mem + len, handle->kfifo.mask - len + 1, handle->shm_mem, buf);
+        len = handle->hook.recget(handle->data_mem + len, handle->kfifo.mask - len + 1, handle->data_mem, buf);
         if (len == 0) {
             errno = EIO;
             goto end;
@@ -348,7 +354,7 @@ __ufifo_get(ufifo_t *handle, void *buf, size_t size, ufifo_wait_type_e wait_type
         smp_store_release(handle->kfifo.out, out + len);
     } else {
         size = handle->hook.recsize ? min(size, len) : size;
-        len = kfifo_out(&handle->kfifo, handle->shm_mem, buf, size);
+        len = kfifo_out(&handle->kfifo, handle->data_mem, buf, size);
     }
 
     if (__ufifo_is_shared(handle)) {
@@ -403,14 +409,14 @@ __ufifo_peek(ufifo_t *handle, void *buf, size_t size, ufifo_wait_type_e wait_typ
     if (unlikely(handle->hook.recget)) {
         size_t out = READ_ONCE(handle->kfifo.out);
         len = handle->kfifo.mask & out;
-        len = handle->hook.recget(handle->shm_mem + len, handle->kfifo.mask - len + 1, handle->shm_mem, buf);
+        len = handle->hook.recget(handle->data_mem + len, handle->kfifo.mask - len + 1, handle->data_mem, buf);
         if (len == 0) {
             errno = EIO;
             goto end;
         }
     } else {
         size = handle->hook.recsize ? min(size, len) : size;
-        len = kfifo_out_peek(&handle->kfifo, handle->shm_mem, buf, size);
+        len = kfifo_out_peek(&handle->kfifo, handle->data_mem, buf, size);
     }
 end:
     __ufifo_data_unlock(handle);

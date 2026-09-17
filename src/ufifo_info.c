@@ -47,11 +47,13 @@ void ufifo_dump(ufifo_t *handle)
     size_t out = READ_ONCE(handle->kfifo.out);
 
     __ufifo_log("=== ufifo_dump: %s ===\n", handle->name);
-    __ufifo_log("Shm fd: %d, Size: %zu (Mask: 0x%zx)\n", handle->shm_fd, size, mask);
-    __ufifo_log("Ctrl fd: %d, Max Users: %zu, Num Users: %zu\n",
-                handle->ctrl_fd,
-                handle->ctrl->max_users,
-                handle->ctrl->num_users);
+    __ufifo_log("Shm fd: %d, Size: %zu (Mask: 0x%zx), Total Size: %zu, Data Offset: %zu\n",
+                handle->shm_fd,
+                size,
+                mask,
+                handle->shm_size,
+                handle->ctrl->data_offset);
+    __ufifo_log("Max Users: %zu, Num Users: %zu\n", handle->ctrl->max_users, handle->ctrl->num_users);
 
     __ufifo_log("Data Mode: %s\n", __ufifo_is_shared(handle) ? "SHARED" : "SOLE");
 
@@ -149,7 +151,7 @@ static size_t __ufifo_peek_tag(ufifo_t *handle, size_t offset)
 
     if (handle->hook.rectag) {
         offset &= handle->kfifo.mask;
-        ret = handle->hook.rectag(handle->shm_mem + offset, handle->kfifo.mask - offset + 1, handle->shm_mem);
+        ret = handle->hook.rectag(handle->data_mem + offset, handle->kfifo.mask - offset + 1, handle->data_mem);
     }
 
     return ret;

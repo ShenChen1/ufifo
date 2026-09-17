@@ -45,7 +45,7 @@ static int __ufifo_register(ufifo_t *handle)
             ctrl->users[i].pid = mypid;
             ctrl->users[i].futex_rx_armed = 0;
             ctrl->users[i].rx_waiters = 0;
-            __ufifo_ofd_lock(handle->ctrl_fd, i);
+            __ufifo_ofd_lock(handle->shm_fd, i);
             smp_store_release(&ctrl->users[i].active, true);
             ctrl->num_users++;
             return i;
@@ -53,14 +53,14 @@ static int __ufifo_register(ufifo_t *handle)
     }
 
     for (i = 0; i < ctrl->max_users; i++) {
-        if (READ_ONCE(&ctrl->users[i].active) && __ufifo_is_user_dead(handle->ctrl_fd, i)) {
+        if (READ_ONCE(&ctrl->users[i].active) && __ufifo_is_user_dead(handle->shm_fd, i)) {
             __ufifo_reap_dead_user(handle, i);
             if (ctrl->data_mode == UFIFO_DATA_SHARED)
                 WRITE_ONCE(&ctrl->users[i].out, READ_ONCE(&ctrl->in));
             ctrl->users[i].pid = mypid;
             ctrl->users[i].futex_rx_armed = 0;
             ctrl->users[i].rx_waiters = 0;
-            __ufifo_ofd_lock(handle->ctrl_fd, i);
+            __ufifo_ofd_lock(handle->shm_fd, i);
             smp_store_release(&ctrl->users[i].active, true);
             ctrl->num_users++;
             return i;
@@ -78,7 +78,7 @@ static void __ufifo_unregister(ufifo_t *handle)
         smp_store_release(&ctrl->users[handle->user_id].active, false);
         atomic_xchg(&ctrl->users[handle->user_id].futex_rx_armed, 0);
         atomic_xchg(&ctrl->users[handle->user_id].rx_waiters, 0);
-        __ufifo_ofd_unlock(handle->ctrl_fd, handle->user_id);
+        __ufifo_ofd_unlock(handle->shm_fd, handle->user_id);
         ctrl->num_users--;
         __ufifo_update_cached_min_out(handle);
         __ufifo_notify_writers(handle);
@@ -124,55 +124,64 @@ static int __ufifo_init_from_shm(ufifo_t *handle)
 {
     int ret = 0;
     struct stat st;
-    char ctrl_name[UFIFO_CTRL_NAME_BUF_SIZE];
 
-    snprintf(ctrl_name, sizeof(ctrl_name), "%s%s", handle->name, UFIFO_CTRL_NAME_SUFFIX);
-    handle->ctrl_fd = shm_open(ctrl_name, O_RDWR, (S_IRUSR | S_IWUSR));
-    if (handle->ctrl_fd < 0) {
-        ret = -errno;
-        goto end;
-    }
-
-    ret = fstat(handle->ctrl_fd, &st);
+    ret = fstat(handle->shm_fd, &st);
     if (ret < 0) {
-        ret = -errno;
-        goto err_ctrl_fd;
+        return -errno;
     }
 
-    handle->ctrl_size = st.st_size;
-    handle->ctrl = mmap(NULL, handle->ctrl_size, (PROT_READ | PROT_WRITE), MAP_SHARED, handle->ctrl_fd, 0);
-    if (handle->ctrl == MAP_FAILED) {
-        ret = -errno;
-        goto err_ctrl_fd;
+    if ((size_t)st.st_size < sizeof(ufifo_ctrl_t)) {
+        return -EIO;
     }
+
+    handle->shm_size = (size_t)st.st_size;
+    handle->shm_base = mmap(NULL, handle->shm_size, (PROT_READ | PROT_WRITE), MAP_SHARED, handle->shm_fd, 0);
+    if (handle->shm_base == MAP_FAILED) {
+        return -errno;
+    }
+    handle->ctrl = (ufifo_ctrl_t *)handle->shm_base;
 
     if (!smp_load_acquire(&handle->ctrl->init_done)) {
         ret = -EIO;
-        goto err_ctrl_mmap;
+        goto err_mmap;
     }
 
     ret = __ufifo_version_check(handle->ctrl);
     if (ret < 0)
-        goto err_ctrl_mmap;
+        goto err_mmap;
 
-    ret = fstat(handle->shm_fd, &st);
-    if (ret < 0) {
-        ret = -errno;
-        goto err_ctrl_mmap;
+    if (handle->ctrl->total_size != handle->shm_size) {
+        ret = -EIO;
+        goto err_mmap;
     }
 
-    handle->shm_size = st.st_size;
-    handle->shm_mem = mmap(NULL, handle->shm_size, (PROT_READ | PROT_WRITE), MAP_SHARED, handle->shm_fd, 0);
-    if (handle->shm_mem == MAP_FAILED) {
-        ret = -errno;
-        goto err_ctrl_mmap;
+    if (handle->ctrl->max_users < 1 || handle->ctrl->max_users > UFIFO_MAX_NUM_USERS) {
+        ret = -EINVAL;
+        goto err_mmap;
     }
+
+    size_t slot_count = handle->ctrl->max_users + 1;
+    size_t min_ctrl_size = sizeof(ufifo_ctrl_t) + slot_count * sizeof(ufifo_sub_ctrl_t);
+    if (handle->ctrl->data_offset < min_ctrl_size
+        || handle->ctrl->data_offset + handle->ctrl->data_size > handle->shm_size) {
+        ret = -EIO;
+        goto err_mmap;
+    }
+
+    if (handle->ctrl->data_size < 2 || (handle->ctrl->data_size & (handle->ctrl->data_size - 1)) != 0
+        || handle->ctrl->mask != handle->ctrl->data_size - 1) {
+        ret = -EIO;
+        goto err_mmap;
+    }
+
+    handle->data_mem = (char *)handle->shm_base + handle->ctrl->data_offset;
 
     __ufifo_ctrl_lock(handle);
     ret = __ufifo_register(handle);
     __ufifo_ctrl_unlock(handle);
     if (ret < 0)
-        goto err_data_mmap;
+        goto err_mmap;
+
     handle->user_id = (size_t)ret;
     handle->is_shared = (handle->ctrl->data_mode == UFIFO_DATA_SHARED);
     handle->lock_type = handle->ctrl->lock;
@@ -188,13 +197,8 @@ static int __ufifo_init_from_shm(ufifo_t *handle)
 
     return 0;
 
-err_data_mmap:
-    munmap(handle->shm_mem, handle->shm_size);
-err_ctrl_mmap:
-    munmap(handle->ctrl, handle->ctrl_size);
-err_ctrl_fd:
-    close(handle->ctrl_fd);
-end:
+err_mmap:
+    munmap(handle->shm_base, handle->shm_size);
     return ret;
 }
 
@@ -207,69 +211,59 @@ static int __ufifo_init_from_user(ufifo_t *handle, ufifo_alloc_t *alloc)
     int ret = 0;
     size_t i;
     size_t slot_count = alloc->max_users + 1;
-    char ctrl_name[UFIFO_CTRL_NAME_BUF_SIZE];
+    size_t ctrl_meta_size = sizeof(ufifo_ctrl_t) + slot_count * sizeof(ufifo_sub_ctrl_t);
+    size_t data_offset = (ctrl_meta_size + (UFIFO_DATA_ALIGN - 1)) & ~(UFIFO_DATA_ALIGN - 1);
+    size_t data_size;
+    size_t total_size;
 
     if (!alloc->size)
         return -EINVAL;
 
-    snprintf(ctrl_name, sizeof(ctrl_name), "%s%s", handle->name, UFIFO_CTRL_NAME_SUFFIX);
-    handle->ctrl_size = sizeof(ufifo_ctrl_t) + slot_count * sizeof(ufifo_sub_ctrl_t);
-    handle->ctrl_fd = shm_open(ctrl_name, O_RDWR | O_CREAT, (S_IRUSR | S_IWUSR));
-    if (handle->ctrl_fd < 0) {
-        ret = -errno;
-        goto end;
-    }
+    data_size = roundup_pow_of_two(alloc->size);
+    total_size = data_offset + data_size;
 
-    ret = ftruncate(handle->ctrl_fd, handle->ctrl_size);
+    handle->shm_size = total_size;
+    ret = ftruncate(handle->shm_fd, handle->shm_size);
     if (ret < 0) {
-        ret = -errno;
-        goto err_ctrl_fd;
+        return -errno;
     }
 
-    handle->ctrl = mmap(NULL, handle->ctrl_size, (PROT_READ | PROT_WRITE), MAP_SHARED, handle->ctrl_fd, 0);
-    if (handle->ctrl == MAP_FAILED) {
-        ret = -errno;
-        goto err_ctrl_fd;
+    handle->shm_base = mmap(NULL, handle->shm_size, (PROT_READ | PROT_WRITE), MAP_SHARED, handle->shm_fd, 0);
+    if (handle->shm_base == MAP_FAILED) {
+        return -errno;
     }
+    handle->ctrl = (ufifo_ctrl_t *)handle->shm_base;
+    handle->data_mem = (char *)handle->shm_base + data_offset;
 
     WRITE_ONCE(&handle->ctrl->init_done, false);
 
     ret = __ufifo_lock_init(handle, alloc->lock);
     if (ret < 0)
-        goto err_ctrl_mmap;
+        goto err_mmap;
 
+    handle->ctrl->total_size = total_size;
+    handle->ctrl->data_offset = data_offset;
+    handle->ctrl->data_size = data_size;
     handle->ctrl->data_mode = alloc->data_mode;
     handle->ctrl->max_users = alloc->max_users;
     handle->ctrl->futex_tx = 0;
     handle->ctrl->futex_tx_armed = 0;
+    handle->ctrl->cached_min_out = 0;
     for (i = 0; i < slot_count; i++)
         memset(&handle->ctrl->users[i], 0, sizeof(handle->ctrl->users[i]));
-
-    handle->shm_size = roundup_pow_of_two(alloc->size);
-    ret = ftruncate(handle->shm_fd, handle->shm_size);
-    if (ret < 0) {
-        ret = -errno;
-        goto err_lock;
-    }
-
-    handle->shm_mem = mmap(NULL, handle->shm_size, (PROT_READ | PROT_WRITE), MAP_SHARED, handle->shm_fd, 0);
-    if (handle->shm_mem == MAP_FAILED) {
-        ret = -errno;
-        goto err_lock;
-    }
 
     __ufifo_ctrl_lock(handle);
     ret = __ufifo_register(handle);
     __ufifo_ctrl_unlock(handle);
     if (ret < 0)
-        goto err_data_mmap;
+        goto err_lock;
     handle->user_id = (size_t)ret;
     handle->is_shared = (handle->ctrl->data_mode == UFIFO_DATA_SHARED);
     handle->lock_type = handle->ctrl->lock;
 
     handle->kfifo.in = &handle->ctrl->in;
     handle->kfifo.out = &__ufifo_rx_ctrl(handle)->out;
-    ret = kfifo_init(&handle->kfifo, handle->shm_size);
+    ret = kfifo_init(&handle->kfifo, data_size);
     if (ret < 0)
         goto err_register;
     handle->ctrl->mask = handle->kfifo.mask;
@@ -283,16 +277,10 @@ err_register:
     __ufifo_ctrl_lock(handle);
     __ufifo_unregister(handle);
     __ufifo_ctrl_unlock(handle);
-err_data_mmap:
-    munmap(handle->shm_mem, handle->shm_size);
 err_lock:
     __ufifo_lock_deinit(handle);
-err_ctrl_mmap:
-    munmap(handle->ctrl, handle->ctrl_size);
-err_ctrl_fd:
-    close(handle->ctrl_fd);
-    shm_unlink(ctrl_name);
-end:
+err_mmap:
+    munmap(handle->shm_base, handle->shm_size);
     return ret;
 }
 
@@ -361,10 +349,7 @@ int ufifo_open(const char *name, const ufifo_init_t *init, ufifo_t **handle)
             /*
              * force=1: nuke old shm and recreate.
              */
-            char ctrl_name[UFIFO_CTRL_NAME_BUF_SIZE];
-            snprintf(ctrl_name, sizeof(ctrl_name), "%s%s", name, UFIFO_CTRL_NAME_SUFFIX);
             shm_unlink(name);
-            shm_unlink(ctrl_name);
             fifo->shm_fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, (S_IRUSR | S_IWUSR));
         } else {
             fifo->shm_fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, (S_IRUSR | S_IWUSR));
@@ -418,8 +403,6 @@ err1:
 
 static int __ufifo_close(ufifo_t *handle, bool destroy)
 {
-    char ctrl_name[UFIFO_CTRL_NAME_BUF_SIZE];
-
     /* Destroy io_uring rings if allocated */
     __ufifo_ring_destroy(handle);
     pthread_mutex_destroy(&handle->ring_mutex);
@@ -432,16 +415,11 @@ static int __ufifo_close(ufifo_t *handle, bool destroy)
         __ufifo_lock_deinit(handle);
     }
 
-    munmap(handle->shm_mem, handle->shm_size);
+    munmap(handle->shm_base, handle->shm_size);
     close(handle->shm_fd);
-
-    munmap(handle->ctrl, handle->ctrl_size);
-    close(handle->ctrl_fd);
 
     if (destroy) {
         shm_unlink(handle->name);
-        snprintf(ctrl_name, sizeof(ctrl_name), "%s%s", handle->name, UFIFO_CTRL_NAME_SUFFIX);
-        shm_unlink(ctrl_name);
     }
 
     /* Best-effort invalidation to defend against double-free / stale pointer */

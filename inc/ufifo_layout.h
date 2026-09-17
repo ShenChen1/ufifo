@@ -21,10 +21,16 @@ typedef struct {
     uint32_t futex_rx;      /* futex variable: writer increments to wake this consumer */
 } ufifo_sub_ctrl_t;
 
-/* Global FIFO control data (stored in shared memory) */
+#define UFIFO_DATA_ALIGN (64UL)
+
+/* Global FIFO control data (stored at start of shared memory) */
 typedef struct {
     ufifo_version_t ver;
     bool init_done; /* false = initializing, true = ready (atomic) */
+
+    size_t total_size;  /* total size of shared memory in bytes */
+    size_t data_offset; /* byte offset from shm base to ring data buffer */
+    size_t data_size;   /* ring buffer data capacity in bytes (power of 2) */
 
     size_t in;
     size_t mask;

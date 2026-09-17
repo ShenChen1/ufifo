@@ -7,8 +7,14 @@
 
 #define UFIFO_MAGIC (0xf1f0f1f0)
 #define UFIFO_NAME_BUF_SIZE (UFIFO_NAME_MAX)
-#define UFIFO_CTRL_NAME_SUFFIX "_ctrl"
-#define UFIFO_CTRL_NAME_BUF_SIZE (UFIFO_NAME_MAX + sizeof(UFIFO_CTRL_NAME_SUFFIX))
+
+/*
+ * Byte range definition for Open File Description (OFD) locks:
+ * Offset 0: Exclusively reserved for queue initialization lock (__ufifo_init_lock).
+ * Offset 1..1+max_users: Exclusively reserved for user slot liveness detection (__ufifo_ofd_lock).
+ */
+#define UFIFO_OFD_INIT_OFFSET (0ULL)
+#define UFIFO_OFD_USER_OFFSET_BASE (1ULL)
 
 #define UFIFO_CHECK_HANDLE(handle, ...)                    \
     do {                                                   \
@@ -31,10 +37,8 @@ struct ufifo {
 
     int shm_fd;
     size_t shm_size;
-    void *shm_mem;
-
-    int ctrl_fd;
-    size_t ctrl_size;
+    void *shm_base;
+    void *data_mem;
     ufifo_ctrl_t *ctrl;
 
     /* io_uring epoll bridge (lazily initialized) */
@@ -63,8 +67,8 @@ int __ufifo_lock_deinit(ufifo_t *handle);
 void __ufifo_recover_state(ufifo_t *handle);
 
 /* futex-based wait/notify (ufifo_sync.c) */
-int __ufifo_futex_wait(uint32_t *futex, ufifo_t *handle);
-int __ufifo_futex_timedwait(uint32_t *futex, ufifo_t *handle, long millisec);
+int __ufifo_futex_wait(uint32_t *futex, uint32_t expected, ufifo_t *handle);
+int __ufifo_futex_timedwait(uint32_t *futex, uint32_t expected, ufifo_t *handle, long millisec);
 void __ufifo_futex_notify(uint32_t *futex, int32_t *waiters, int32_t *armed);
 
 /* io_uring epoll bridge (ufifo_epoll.c) */

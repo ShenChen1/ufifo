@@ -19,7 +19,7 @@ void __ufifo_recover_state(ufifo_t *handle)
 
     for (i = 0; i < ctrl->max_users; i++) {
         if (smp_load_acquire(&ctrl->users[i].active)) {
-            if (__ufifo_is_user_dead(handle->ctrl_fd, i)) {
+            if (__ufifo_is_user_dead(handle->shm_fd, i)) {
                 smp_store_release(&ctrl->users[i].active, false);
             } else {
                 count++;
@@ -80,19 +80,25 @@ int __ufifo_data_unlock(ufifo_t *handle)
 
 int __ufifo_ofd_lock(int fd, size_t user_id)
 {
-    struct flock fl = { .l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = user_id, .l_len = 1 };
+    struct flock fl = {
+        .l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = UFIFO_OFD_USER_OFFSET_BASE + user_id, .l_len = 1
+    };
     return fcntl(fd, F_OFD_SETLK, &fl);
 }
 
 int __ufifo_ofd_unlock(int fd, size_t user_id)
 {
-    struct flock fl = { .l_type = F_UNLCK, .l_whence = SEEK_SET, .l_start = user_id, .l_len = 1 };
+    struct flock fl = {
+        .l_type = F_UNLCK, .l_whence = SEEK_SET, .l_start = UFIFO_OFD_USER_OFFSET_BASE + user_id, .l_len = 1
+    };
     return fcntl(fd, F_OFD_SETLK, &fl);
 }
 
 int __ufifo_is_user_dead(int fd, size_t user_id)
 {
-    struct flock fl = { .l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = user_id, .l_len = 1 };
+    struct flock fl = {
+        .l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = UFIFO_OFD_USER_OFFSET_BASE + user_id, .l_len = 1
+    };
     if (fcntl(fd, F_OFD_GETLK, &fl) < 0)
         return 0;                /* cannot query, be conservative */
     return fl.l_type == F_UNLCK; /* unlocked = holder is dead */
@@ -100,19 +106,19 @@ int __ufifo_is_user_dead(int fd, size_t user_id)
 
 int __ufifo_init_lock(int fd)
 {
-    struct flock fl = { .l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = 0, .l_len = 1 };
+    struct flock fl = { .l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = UFIFO_OFD_INIT_OFFSET, .l_len = 1 };
     return fcntl(fd, F_OFD_SETLK, &fl);
 }
 
 int __ufifo_init_wait(int fd)
 {
-    struct flock fl = { .l_type = F_RDLCK, .l_whence = SEEK_SET, .l_start = 0, .l_len = 1 };
+    struct flock fl = { .l_type = F_RDLCK, .l_whence = SEEK_SET, .l_start = UFIFO_OFD_INIT_OFFSET, .l_len = 1 };
     return fcntl(fd, F_OFD_SETLKW, &fl);
 }
 
 int __ufifo_init_unlock(int fd)
 {
-    struct flock fl = { .l_type = F_UNLCK, .l_whence = SEEK_SET, .l_start = 0, .l_len = 1 };
+    struct flock fl = { .l_type = F_UNLCK, .l_whence = SEEK_SET, .l_start = UFIFO_OFD_INIT_OFFSET, .l_len = 1 };
     return fcntl(fd, F_OFD_SETLK, &fl);
 }
 
@@ -157,33 +163,30 @@ int __ufifo_lock_deinit(ufifo_t *handle)
 /* ------------------------------------------------------------------ */
 
 /*
- * Block until the futex variable changes from its current value.
+ * Block until the futex variable changes from the expected value.
  * Releases data_mutex before sleeping and re-acquires it after waking.
  * Returns 0 on success (woken or spurious), never propagates EAGAIN/EINTR.
  */
-int __ufifo_futex_wait(uint32_t *futex, ufifo_t *handle)
+int __ufifo_futex_wait(uint32_t *futex, uint32_t expected, ufifo_t *handle)
 {
-    uint32_t snapshot = smp_load_acquire(futex);
-
     __ufifo_data_unlock(handle);
     /* EAGAIN (value changed) and EINTR are both benign — just retry */
-    syscall(SYS_futex, futex, FUTEX_WAIT, snapshot, NULL, NULL, 0);
+    syscall(SYS_futex, futex, FUTEX_WAIT, expected, NULL, NULL, 0);
     __ufifo_data_lock(handle);
 
     return 0;
 }
 
 /*
- * Block until the futex variable changes, with a timeout in milliseconds.
+ * Block until the futex variable changes from the expected value, with a timeout in milliseconds.
  * Returns 0 on success/spurious wake, ETIMEDOUT on expiry.
  */
-int __ufifo_futex_timedwait(uint32_t *futex, ufifo_t *handle, long millisec)
+int __ufifo_futex_timedwait(uint32_t *futex, uint32_t expected, ufifo_t *handle, long millisec)
 {
-    uint32_t snapshot = smp_load_acquire(futex);
     struct timespec ts = { .tv_sec = millisec / 1000, .tv_nsec = (millisec % 1000) * 1000000L };
 
     __ufifo_data_unlock(handle);
-    int ret = syscall(SYS_futex, futex, FUTEX_WAIT, snapshot, &ts, NULL, 0);
+    int ret = syscall(SYS_futex, futex, FUTEX_WAIT, expected, &ts, NULL, 0);
     __ufifo_data_lock(handle);
 
     if (ret < 0 && errno == ETIMEDOUT)
@@ -198,6 +201,7 @@ int __ufifo_futex_timedwait(uint32_t *futex, ufifo_t *handle, long millisec)
  */
 void __ufifo_futex_notify(uint32_t *futex, int32_t *waiters, int32_t *armed)
 {
+    smp_mb();
     bool need_wake = false;
     if (smp_load_acquire(waiters) > 0) {
         need_wake = true;

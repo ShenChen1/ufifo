@@ -260,15 +260,13 @@ TEST_F(UfifoApiTest, VersionMismatchMajor)
     ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &fifo));
 
     /*
-     * Tamper with version_major in shared memory ctrl via fork.
-     * The child directly corrupts the ctrl region and attempts attach,
+     * Tamper with version_major in shared memory via fork.
+     * The child directly corrupts the header in the single shm object and attempts attach,
      * which should report -EPROTO (version mismatch).
      */
     pid_t pid = fork();
     if (pid == 0) {
-        /* Child: open ctrl shm directly and corrupt version_major */
-        std::string ctrl_name = name + "_ctrl";
-        int fd = shm_open(ctrl_name.c_str(), O_RDWR, 0600);
+        int fd = shm_open(name.c_str(), O_RDWR, 0600);
         if (fd < 0)
             _exit(1);
 
@@ -283,7 +281,7 @@ TEST_F(UfifoApiTest, VersionMismatchMajor)
         if (mem == MAP_FAILED)
             _exit(1);
 
-        /* version_major is the first unsigned int in ctrl */
+        /* version_major is the first unsigned int in ufifo_ctrl_t */
         unsigned int *ver_major = (unsigned int *)mem;
         *ver_major = 0xDEAD; /* bogus major version */
         munmap(mem, st.st_size);
@@ -305,53 +303,132 @@ TEST_F(UfifoApiTest, VersionMismatchMajor)
     ufifo_destroy(fifo);
 }
 
-// Construct raw shm ctrl with mismatched version — no fork needed
+// Construct raw single-shm object with mismatched version — no fork needed
 TEST_F(UfifoApiTest, VersionMismatchViaRawShm)
 {
     std::string name = GenerateName("ver_raw");
-    std::string ctrl_name = name + "_ctrl";
 
-    // 1. Create data shm
-    int data_fd = shm_open(name.c_str(), O_RDWR | O_CREAT, 0600);
-    ASSERT_GE(data_fd, 0);
-    ASSERT_EQ(0, ftruncate(data_fd, 4096));
-    close(data_fd);
+    const size_t total_size = 4096;
+    int shm_fd = shm_open(name.c_str(), O_RDWR | O_CREAT, 0600);
+    ASSERT_GE(shm_fd, 0);
+    ASSERT_EQ(0, ftruncate(shm_fd, total_size));
 
-    // 2. Create ctrl shm with fake version header
-    //    ufifo_ctrl_t layout starts with ufifo_version_t ver (first field).
-    //    We allocate a generous buffer to hold a plausible ctrl.
-    const size_t ctrl_size = 4096;
-    int ctrl_fd = shm_open(ctrl_name.c_str(), O_RDWR | O_CREAT, 0600);
-    ASSERT_GE(ctrl_fd, 0);
-    ASSERT_EQ(0, ftruncate(ctrl_fd, ctrl_size));
+    void *shm_mem = mmap(NULL, total_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    close(shm_fd);
+    ASSERT_NE(MAP_FAILED, shm_mem);
 
-    void *ctrl_mem = mmap(NULL, ctrl_size, PROT_READ | PROT_WRITE, MAP_SHARED, ctrl_fd, 0);
-    close(ctrl_fd);
-    ASSERT_NE(MAP_FAILED, ctrl_mem);
+    ufifo_ctrl_t *ctrl = (ufifo_ctrl_t *)shm_mem;
+    memset(ctrl, 0, total_size);
+    ctrl->ver.major = 99; // intentionally mismatched
+    ctrl->ver.minor = 88;
+    ctrl->ver.patch = 77;
+    snprintf(ctrl->ver.version, sizeof(ctrl->ver.version), "v99.88.77-fake");
+    ctrl->init_done = true;
+    ctrl->total_size = total_size;
+    ctrl->max_users = 2;
+    ctrl->data_offset = 512;
+    ctrl->data_size = 2048;
+    ctrl->mask = 2047;
 
-    // Write a fake ufifo_version_t at offset 0 (matches ctrl layout)
-    ufifo_version_t fake_ver = {};
-    fake_ver.major = 99; // intentionally mismatched
-    fake_ver.minor = 88;
-    fake_ver.patch = 77;
-    snprintf(fake_ver.version, sizeof(fake_ver.version), "v99.88.77-fake");
-    memcpy(ctrl_mem, &fake_ver, sizeof(fake_ver));
+    munmap(shm_mem, total_size);
 
-    unsigned int *init_done = (unsigned int *)((char *)ctrl_mem + sizeof(fake_ver));
-    *init_done = 1;
-
-    munmap(ctrl_mem, ctrl_size);
-
-    // 3. Try ATTACH — version check should reject with -EPROTO
+    // Try ATTACH — version check should reject with -EPROTO
     ufifo_init_t init = {};
     init.opt = UFIFO_OPT_ATTACH;
     ufifo_t *fifo = nullptr;
     EXPECT_EQ(-EPROTO, ufifo_open(name.c_str(), &init, &fifo));
     EXPECT_EQ(nullptr, fifo);
 
-    // 4. Cleanup shm
+    // Cleanup shm
     shm_unlink(name.c_str());
-    shm_unlink(ctrl_name.c_str());
+}
+
+// Verify that only a single POSIX shared memory object is created (no separate _ctrl shm)
+TEST_F(UfifoApiTest, SingleShmObjectLifecycle)
+{
+    std::string name = GenerateName("single_shm");
+    std::string ctrl_name = name + "_ctrl";
+
+    ufifo_init_t init = {};
+    init.opt = UFIFO_OPT_ALLOC;
+    init.alloc.size = 256;
+    init.alloc.force = 1;
+    init.alloc.lock = UFIFO_LOCK_PROCESS;
+    init.alloc.data_mode = UFIFO_DATA_SOLE;
+    init.alloc.max_users = 2;
+
+    ufifo_t *fifo = nullptr;
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &fifo));
+
+    // The single data+ctrl shm must exist
+    int data_fd = shm_open(name.c_str(), O_RDONLY, 0);
+    EXPECT_GE(data_fd, 0);
+    if (data_fd >= 0) {
+        close(data_fd);
+    }
+
+    // No legacy _ctrl shm should exist
+    int ctrl_fd = shm_open(ctrl_name.c_str(), O_RDONLY, 0);
+    EXPECT_EQ(-1, ctrl_fd);
+    EXPECT_EQ(ENOENT, errno);
+
+    ufifo_destroy(fifo);
+
+    // After destroy, the shm must be completely gone
+    data_fd = shm_open(name.c_str(), O_RDONLY, 0);
+    EXPECT_EQ(-1, data_fd);
+    EXPECT_EQ(ENOENT, errno);
+}
+
+// Verify cross-generation isolation: force recreate creates a clean new generation without corrupting old readers
+TEST_F(UfifoApiTest, CrossGenerationIsolationOnForceRecreate)
+{
+    std::string name = GenerateName("cross_gen");
+
+    ufifo_init_t init = {};
+    init.opt = UFIFO_OPT_ALLOC;
+    init.alloc.size = 256;
+    init.alloc.force = 1;
+    init.alloc.lock = UFIFO_LOCK_PROCESS;
+    init.alloc.data_mode = UFIFO_DATA_SOLE;
+    init.alloc.max_users = 2;
+
+    ufifo_t *gen1_writer = nullptr;
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &gen1_writer));
+
+    ufifo_init_t attach = {};
+    attach.opt = UFIFO_OPT_ATTACH;
+    ufifo_t *gen1_reader = nullptr;
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &attach, &gen1_reader));
+
+    int val1 = 11111;
+    EXPECT_EQ(sizeof(val1), ufifo_put(gen1_writer, &val1, sizeof(val1)));
+
+    // Process B recreates the queue with force=1
+    ufifo_t *gen2_writer = nullptr;
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &gen2_writer));
+
+    int val2 = 22222;
+    EXPECT_EQ(sizeof(val2), ufifo_put(gen2_writer, &val2, sizeof(val2)));
+
+    // Process C attaches to the newly created generation 2 queue
+    ufifo_t *gen2_reader = nullptr;
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &attach, &gen2_reader));
+
+    // Old generation reader must consistently read from generation 1
+    int out1 = 0;
+    EXPECT_EQ(sizeof(out1), ufifo_get(gen1_reader, &out1, sizeof(out1)));
+    EXPECT_EQ(val1, out1);
+
+    // New generation reader must consistently read from generation 2
+    int out2 = 0;
+    EXPECT_EQ(sizeof(out2), ufifo_get(gen2_reader, &out2, sizeof(out2)));
+    EXPECT_EQ(val2, out2);
+
+    ufifo_close(gen1_reader);
+    ufifo_close(gen1_writer);
+    ufifo_close(gen2_reader);
+    ufifo_destroy(gen2_writer);
 }
 
 // ufifo_get_version_info: NULL ver should return -EINVAL
@@ -2688,6 +2765,81 @@ TEST_F(FaultInjectionTest, LockNoneWaiterRace)
     reader.join();
 
     EXPECT_EQ(total_written.load(), total_read.load());
+    ufifo_destroy(fifo);
+}
+
+TEST_F(FaultInjectionTest, LockNoneBlockingPingPong)
+{
+    std::string name = UniqueName("pingpong");
+    ufifo_t *fifo = nullptr;
+    {
+        ufifo_init_t init = {};
+        init.opt = UFIFO_OPT_ALLOC;
+        init.alloc.size = 4096;
+        init.alloc.force = 1;
+        init.alloc.lock = UFIFO_LOCK_NONE;
+        init.alloc.data_mode = UFIFO_DATA_SOLE;
+        init.alloc.max_users = 4;
+        ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &fifo));
+    }
+
+    const int target = 2000;
+    std::thread writer([&]() {
+        for (int i = 0; i < target; i++) {
+            char val = (char)(i & 0xFF);
+            size_t put = ufifo_put_block(fifo, &val, 1);
+            ASSERT_EQ(1U, put);
+        }
+    });
+
+    std::thread reader([&]() {
+        for (int i = 0; i < target; i++) {
+            char buf = 0;
+            size_t get = ufifo_get_block(fifo, &buf, 1);
+            ASSERT_EQ(1U, get);
+            ASSERT_EQ((char)(i & 0xFF), buf);
+        }
+    });
+
+    writer.join();
+    reader.join();
+
+    ufifo_destroy(fifo);
+}
+
+TEST_F(FaultInjectionTest, FutexWaitEagainOnChangedValue)
+{
+    std::string name = UniqueName("futex_eagain");
+    ufifo_t *fifo = nullptr;
+    {
+        ufifo_init_t init = {};
+        init.opt = UFIFO_OPT_ALLOC;
+        init.alloc.size = 4096;
+        init.alloc.force = 1;
+        init.alloc.lock = UFIFO_LOCK_NONE;
+        init.alloc.data_mode = UFIFO_DATA_SOLE;
+        init.alloc.max_users = 4;
+        ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &fifo));
+    }
+
+    ufifo_sub_ctrl_t *rx_ctrl = __ufifo_rx_ctrl(fifo);
+    uint32_t expected = smp_load_acquire(&rx_ctrl->futex_rx);
+
+    // Modify futex value before wait
+    __atomic_fetch_add(&rx_ctrl->futex_rx, 1, __ATOMIC_RELEASE);
+
+    // Passing obsolete expected must return immediately without blocking
+    int ret = __ufifo_futex_wait(&rx_ctrl->futex_rx, expected, fifo);
+    EXPECT_EQ(0, ret);
+
+    // For timedwait: passing obsolete expected must return immediately, not wait for timeout
+    auto start = std::chrono::steady_clock::now();
+    ret = __ufifo_futex_timedwait(&rx_ctrl->futex_rx, expected, fifo, 5000);
+    auto duration_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+    EXPECT_EQ(0, ret);
+    EXPECT_LT(duration_ms, 500);
+
     ufifo_destroy(fifo);
 }
 
