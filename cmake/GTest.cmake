@@ -10,7 +10,16 @@ FetchContent_MakeAvailable(googletest)
 
 # ufifo test executable
 add_executable(ufifo_test
-    test/ufifo_test.cpp
+    test/ufifo_api_test.cpp
+    test/ufifo_broker_test.cpp
+    test/ufifo_edge_basic_test.cpp
+    test/ufifo_edge_wait_test.cpp
+    test/ufifo_errno_reap_test.cpp
+    test/ufifo_fault_test.cpp
+    test/ufifo_legacy_epoll_test.cpp
+    test/ufifo_tag_test.cpp
+    test/ufifo_test_support.cpp
+    test/ufifo_topology_test.cpp
     test/ufifo_wait_test.cpp
 )
 target_link_libraries(ufifo_test PRIVATE
