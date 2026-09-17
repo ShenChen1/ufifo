@@ -9,7 +9,10 @@ set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
 # ufifo test executable
-add_executable(ufifo_test test/ufifo_test.cpp)
+add_executable(ufifo_test
+    test/ufifo_test.cpp
+    test/ufifo_wait_test.cpp
+)
 target_link_libraries(ufifo_test PRIVATE
     ufifo_static
     ${RT_LIBRARY}

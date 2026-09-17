@@ -37,6 +37,7 @@ find_library(PTHREAD_LIBRARY pthread)
 set(LIB_SOURCES
     src/ufifo_opts.c
     src/ufifo_sync.c
+    src/ufifo_wait.c
     src/ufifo_epoll.c
     src/ufifo_broker.c
     src/ufifo_init.c

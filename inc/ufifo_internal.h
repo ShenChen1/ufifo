@@ -1,6 +1,8 @@
 #ifndef UFIFO_INTERNAL_H
 #define UFIFO_INTERNAL_H
 
+#include <time.h>
+
 #include "kfifo.h"
 #include "ufifo.h"
 #include "ufifo_layout.h"
@@ -62,6 +64,11 @@ int __ufifo_init_unlock(int fd);
 int __ufifo_lock_init(ufifo_t *handle, ufifo_lock_e type);
 int __ufifo_lock_deinit(ufifo_t *handle);
 void __ufifo_recover_state(ufifo_t *handle);
+
+/* ufifo_wait.c */
+uint32_t __ufifo_wait_arm(uint32_t *wait_word);
+int __ufifo_futex_wait(uint32_t *wait_word, uint32_t expected, const struct timespec *deadline);
+void __ufifo_wait_notify(uint32_t *wait_word);
 
 /* eventfd operations */
 int __ufifo_efd_create(void);
