@@ -1,12 +1,8 @@
 #include "ufifo_internal.h"
 #include <errno.h>
 #include <fcntl.h>
-#include <limits.h>
-#include <poll.h>
 #include <pthread.h>
-#include <stdint.h>
 #include <stdlib.h>
-#include <sys/eventfd.h>
 #include <unistd.h>
 
 #include "utils.h"
@@ -150,90 +146,4 @@ int __ufifo_lock_deinit(ufifo_t *handle)
     }
 
     return ret;
-}
-
-int __ufifo_efd_create(void)
-{
-    return eventfd(0, EFD_SEMAPHORE | EFD_NONBLOCK | EFD_CLOEXEC);
-}
-
-int __ufifo_efd_wait(int efd, ufifo_t *handle)
-{
-    uint64_t val;
-    int ret;
-
-    __ufifo_data_unlock(handle);
-
-    /* Block until eventfd becomes readable */
-    struct pollfd pfd = { .fd = efd, .events = POLLIN };
-    ret = poll(&pfd, 1, -1); /* infinite wait */
-    if (ret > 0) {
-        if (read(efd, &val, sizeof(val)) < 0) {
-            ret = errno == EAGAIN ? 0 : -errno;
-        } else {
-            ret = 0;
-        }
-    } else {
-        ret = -errno;
-    }
-
-    __ufifo_data_lock(handle);
-    return ret;
-}
-
-int __ufifo_efd_timedwait(int efd, ufifo_t *handle, long millisec)
-{
-    uint64_t val;
-    int ret;
-
-    __ufifo_data_unlock(handle);
-
-    struct pollfd pfd = { .fd = efd, .events = POLLIN };
-    int poll_timeout = range(millisec, 0L, (long)INT_MAX);
-    ret = poll(&pfd, 1, poll_timeout);
-    if (ret > 0) {
-        if (read(efd, &val, sizeof(val)) < 0) {
-            ret = errno == EAGAIN ? 0 : -errno;
-        } else {
-            ret = 0;
-        }
-    } else if (ret == 0) {
-        ret = ETIMEDOUT;
-    } else {
-        ret = -errno;
-    }
-
-    __ufifo_data_lock(handle);
-    return ret;
-}
-
-int __ufifo_efd_post(int efd)
-{
-    uint64_t val = 1;
-    int ret = write(efd, &val, sizeof(val));
-    return ret < 0 ? -errno : 0;
-}
-
-int __ufifo_efd_drain(int efd)
-{
-    uint64_t val;
-    while (read(efd, &val, sizeof(val)) > 0) {
-    }
-    return 0;
-}
-
-int __ufifo_efd_notify(int efd, int32_t *waiters, int32_t *epoll_armed)
-{
-    int ret = 0;
-    int32_t w = smp_load_acquire(waiters);
-    int32_t armed = smp_load_acquire(epoll_armed);
-
-    if (w > 0 || armed > 0) {
-        armed = atomic_xchg(epoll_armed, 0);
-        uint64_t post_count = (w > 0 ? w : 0) + armed;
-        if (post_count > 0) {
-            ret = write(efd, &post_count, sizeof(post_count));
-        }
-    }
-    return ret < 0 ? -errno : 0;
 }

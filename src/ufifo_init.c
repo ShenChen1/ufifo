@@ -90,11 +90,15 @@ static int __ufifo_hook_init(ufifo_t *handle, ufifo_hook_t *hook)
     return 0;
 }
 
-static int __ufifo_version_check(ufifo_ctrl_t *ctrl)
+static int __ufifo_compatibility_check(ufifo_ctrl_t *ctrl)
 {
     ufifo_version_t ver = {};
     ufifo_get_version_info(NULL, &ver);
 
+    if (ctrl->layout_abi != UFIFO_LAYOUT_ABI) {
+        __ufifo_log("ufifo: shared layout mismatch (shm=%u, lib=%u)\n", ctrl->layout_abi, UFIFO_LAYOUT_ABI);
+        return -EPROTO;
+    }
     if (ctrl->ver.major != ver.major) {
         __ufifo_log("ufifo: version mismatch (shm=%u.%u.%u, lib=%u.%u.%u)\n",
                     ctrl->ver.major,
@@ -138,14 +142,13 @@ static int __ufifo_init_from_shm(ufifo_t *handle)
         goto err_ctrl_fd;
     }
 
+    ret = __ufifo_compatibility_check(handle->ctrl);
+    if (ret < 0)
+        goto err_ctrl_mmap;
     if (!smp_load_acquire(&handle->ctrl->init_done)) {
         ret = -EIO;
         goto err_ctrl_mmap;
     }
-
-    ret = __ufifo_version_check(handle->ctrl);
-    if (ret < 0)
-        goto err_ctrl_mmap;
 
     ret = fstat(handle->shm_fd, &st);
     if (ret < 0) {
@@ -173,13 +176,6 @@ static int __ufifo_init_from_shm(ufifo_t *handle)
     handle->kfifo.mask = handle->ctrl->mask;
     handle->kfifo.out = &__ufifo_rx_ctrl(handle)->out;
 
-    /* Acquire eventfds via broker (connect or bootstrap) */
-    ret = __ufifo_acquire_eventfds(handle, false);
-    if (ret < 0)
-        goto err_unregister;
-
-    handle->local_broker_gen = handle->ctrl->broker_gen;
-
     if (__ufifo_is_shared(handle)) {
         __ufifo_update_cached_min_out(handle);
         __ufifo_notify_writers(handle);
@@ -187,10 +183,6 @@ static int __ufifo_init_from_shm(ufifo_t *handle)
 
     return 0;
 
-err_unregister:
-    __ufifo_ctrl_lock(handle);
-    __ufifo_unregister(handle);
-    __ufifo_ctrl_unlock(handle);
 err_data_mmap:
     munmap(handle->shm_mem, handle->shm_size);
 err_ctrl_mmap:
@@ -244,7 +236,7 @@ static int __ufifo_init_from_user(ufifo_t *handle, ufifo_alloc_t *alloc)
     handle->ctrl->data_mode = alloc->data_mode;
     handle->ctrl->max_users = alloc->max_users;
     handle->ctrl->num_users = 0;
-    handle->ctrl->broker_gen = 0;
+    handle->ctrl->layout_abi = UFIFO_LAYOUT_ABI;
     for (i = 0; i < slot_count; i++)
         memset(&handle->ctrl->users[i], 0, sizeof(handle->ctrl->users[i]));
 
@@ -276,13 +268,6 @@ static int __ufifo_init_from_user(ufifo_t *handle, ufifo_alloc_t *alloc)
     if (ret < 0)
         goto err_register;
     handle->ctrl->mask = handle->kfifo.mask;
-
-    /* Acquire eventfds via broker (create + fork broker) */
-    ret = __ufifo_acquire_eventfds(handle, true);
-    if (ret < 0)
-        goto err_register;
-
-    handle->local_broker_gen = handle->ctrl->broker_gen;
 
     ufifo_get_version_info(NULL, &handle->ctrl->ver);
     smp_store_release(&handle->ctrl->init_done, true);
@@ -355,9 +340,6 @@ int ufifo_open(const char *name, const ufifo_init_t *init, ufifo_t **handle)
     fifo = calloc(1, sizeof(ufifo_t));
     if (fifo == NULL)
         return -ENOMEM;
-    fifo->efd_wr = -1;
-    fifo->efd_rd = -1;
-
     strncpy(fifo->name, name, sizeof(fifo->name) - 1);
     ret = __ufifo_hook_init(fifo, &fifo_init.hook);
     if (ret < 0)
@@ -365,15 +347,11 @@ int ufifo_open(const char *name, const ufifo_init_t *init, ufifo_t **handle)
 
     if (fifo_init.opt == UFIFO_OPT_ALLOC) {
         if (fifo_init.alloc.force) {
-            /*
-             * force=1: nuke old shm to trigger old broker exit,
-             * then recreate. This is a cold-restart operation.
-             */
+            /* force=1 performs a cold restart of both shared-memory objects. */
             char ctrl_name[UFIFO_CTRL_NAME_BUF_SIZE];
             snprintf(ctrl_name, sizeof(ctrl_name), "%s%s", name, UFIFO_CTRL_NAME_SUFFIX);
             shm_unlink(name);
             shm_unlink(ctrl_name);
-            __ufifo_broker_wake_to_exit(name);
             fifo->shm_fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, (S_IRUSR | S_IWUSR));
         } else {
             fifo->shm_fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, (S_IRUSR | S_IWUSR));
@@ -428,21 +406,10 @@ static int __ufifo_close(ufifo_t *handle, bool destroy)
 {
     char ctrl_name[UFIFO_CTRL_NAME_BUF_SIZE];
 
-    if (destroy && handle->local_broker_gen != smp_load_acquire(&handle->ctrl->broker_gen)) {
-        destroy = false;
-    }
-
     __ufifo_ctrl_lock(handle);
     __ufifo_unregister(handle);
     __ufifo_ctrl_unlock(handle);
 
-    /* Close this process's eventfds */
-    __ufifo_efd_close_all(handle);
-
-    /*
-     * Destroy mutexes after eventfds are closed: defense-in-depth to
-     * keep mutexes valid for the entire eventfd lifetime of this handle.
-     */
     if (destroy) {
         __ufifo_lock_deinit(handle);
     }
@@ -454,11 +421,9 @@ static int __ufifo_close(ufifo_t *handle, bool destroy)
     close(handle->ctrl_fd);
 
     if (destroy) {
-        /* Unlink shm → broker daemon detects and exits */
         shm_unlink(handle->name);
         snprintf(ctrl_name, sizeof(ctrl_name), "%s%s", handle->name, UFIFO_CTRL_NAME_SUFFIX);
         shm_unlink(ctrl_name);
-        __ufifo_broker_wake_to_exit(handle->name);
     }
 
     /* Best-effort invalidation to defend against double-free / stale pointer */

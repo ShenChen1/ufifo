@@ -1,5 +1,8 @@
 #include "ufifo_test_support.hpp"
 
+#include <linux/futex.h>
+#include <sys/syscall.h>
+
 class UfifoReapTest : public ::testing::Test {
   protected:
     std::string name;
@@ -212,23 +215,12 @@ TEST_F(UfifoErrnoTest, LongTimeoutOverflow)
 TEST_F(UfifoErrnoTest, StrictTimeoutWithSpuriousWakeup)
 {
     char data = 'A';
-
-    struct ufifo_dummy {
-        void *ctrl;
-        unsigned char *shm_mem;
-        int shm_fd;
-        unsigned int shm_size;
-        int efd_rd;
-        int efd_wr;
-    };
+    uint32_t *wait_word = &__ufifo_rx_ctrl(fifo)->rx_wait_word;
 
     std::thread t([&]() {
         for (int i = 0; i < 5; i++) {
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
-            uint64_t val = 1;
-            int fd = ((ufifo_dummy *)fifo)->efd_rd;
-            auto _ = write(fd, &val, sizeof(val));
-            (void)_;
+            syscall(SYS_futex, wait_word, FUTEX_WAKE, INT_MAX, nullptr, nullptr, 0);
         }
     });
 
@@ -244,8 +236,7 @@ TEST_F(UfifoErrnoTest, StrictTimeoutWithSpuriousWakeup)
 
     t.join();
 
-    // The elapsed time should be approximately 200ms despite spurious wakeups resetting the poll loop.
-    // Without the fix, each spurious wakeup would refresh the timeout to the full 200ms.
+    // The absolute deadline must survive repeated futex wakeups with no data publication.
     EXPECT_GE(elapsed, 150);
     EXPECT_LT(elapsed, 400);
 }

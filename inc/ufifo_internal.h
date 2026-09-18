@@ -44,16 +44,6 @@ struct ufifo {
     int ctrl_fd;
     size_t ctrl_size;
     ufifo_ctrl_t *ctrl;
-
-    /* eventfd-based notification */
-    int efd_wr;       /* eventfd: write-space available (shared, one per FIFO) */
-    int efd_rd;       /* eventfd: read-data available (this user's) */
-    int *efd_rd_all;  /* SHARED: user eventfds; SOLE: user eventfds + reserved global eventfd */
-    size_t efd_count; /* size of efd_rd_all */
-
-    /* fd broker lifecycle (forked daemon, started by first open) */
-    bool is_broker_owner; /* true if this process forked the broker daemon */
-    uint32_t local_broker_gen;
 };
 
 /* ufifo_sync.c */
@@ -75,21 +65,6 @@ void __ufifo_recover_state(ufifo_t *handle);
 uint32_t __ufifo_wait_arm(uint32_t *wait_word);
 int __ufifo_futex_wait(uint32_t *wait_word, uint32_t expected, const struct timespec *deadline);
 void __ufifo_wait_notify(uint32_t *wait_word);
-
-/* eventfd operations */
-int __ufifo_efd_create(void);
-int __ufifo_efd_wait(int efd, ufifo_t *handle);
-int __ufifo_efd_timedwait(int efd, ufifo_t *handle, long millisec);
-int __ufifo_efd_post(int efd);
-int __ufifo_efd_drain(int efd);
-int __ufifo_efd_notify(int efd, int32_t *waiters, int32_t *epoll_armed);
-
-/* ufifo_broker.c — eventfd lifecycle (fork-based broker daemon) */
-int __ufifo_acquire_eventfds(ufifo_t *handle, bool is_alloc);
-int __ufifo_broker_start(ufifo_t *handle);
-void __ufifo_broker_wake_to_exit(const char *name);
-int __ufifo_efd_create_all(ufifo_t *handle, size_t count);
-void __ufifo_efd_close_all(ufifo_t *handle);
 
 /* ufifo_init.c */
 void __ufifo_reap_dead_user(ufifo_t *handle, size_t user_id);
@@ -123,19 +98,18 @@ int __ufifo_wait_for_space(ufifo_t *handle,
 int __ufifo_wait_for_data(ufifo_t *handle, ufifo_wait_type_e wait_type, long millisec, size_t *out_len);
 
 /*
- * Notify blocked writers / epoll-TX listeners that write-space may be available.
+ * Notify blocked writers that write-space may be available.
  * Must be called after any operation that may increase available buffer capacity:
  *   - reader consumes data (get / skip / oldest / newest)
  *   - reader unregisters (close)
  *   - dead reader reaped
  *   - FIFO reset
  *   - new reader joins with out=in (attach)
- * No-op when no writers are waiting (tx_waiters == 0 && epoll_tx_armed == 0).
+ * No-op when the TX wait word is not armed.
  */
 static inline void __ufifo_notify_writers(ufifo_t *handle)
 {
     __ufifo_wait_notify(&handle->ctrl->tx_wait_word);
-    __ufifo_efd_notify(handle->efd_wr, &handle->ctrl->tx_waiters, &handle->ctrl->epoll_tx_armed);
 }
 
 static inline void __ufifo_notify_readers(ufifo_t *handle)
@@ -145,15 +119,10 @@ static inline void __ufifo_notify_readers(ufifo_t *handle)
             if (!smp_load_acquire(&handle->ctrl->users[i].active))
                 continue;
             __ufifo_wait_notify(&handle->ctrl->users[i].rx_wait_word);
-            __ufifo_efd_notify(
-                handle->efd_rd_all[i], &handle->ctrl->users[i].rx_waiters, &handle->ctrl->users[i].epoll_armed);
         }
     } else {
         size_t rx_slot = __ufifo_rx_slot_id(handle);
         __ufifo_wait_notify(&handle->ctrl->users[rx_slot].rx_wait_word);
-        __ufifo_efd_notify(handle->efd_rd_all[rx_slot],
-                           &handle->ctrl->users[rx_slot].rx_waiters,
-                           &handle->ctrl->users[rx_slot].epoll_armed);
     }
 }
 

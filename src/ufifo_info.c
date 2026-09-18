@@ -69,11 +69,9 @@ void ufifo_dump(ufifo_t *handle)
 
     __ufifo_log("Pointers: in = %zu (offset: %zu), out = %zu (offset: %zu)\n", in, in & mask, out, out & mask);
 
-    /* eventfd info */
-    __ufifo_log("Efd Wr: %d, Efd Rd: %d, Broker Owner: %s\n",
-                handle->efd_wr,
-                handle->efd_rd,
-                handle->is_broker_owner ? "yes" : "no");
+    __ufifo_log("Wait Words: tx = %u, rx = %u\n",
+                smp_load_acquire(&handle->ctrl->tx_wait_word),
+                smp_load_acquire(&__ufifo_rx_ctrl(handle)->rx_wait_word));
 
     for (size_t i = 0; i < handle->ctrl->max_users; i++) {
         if (READ_ONCE(&handle->ctrl->users[i].active)) {
