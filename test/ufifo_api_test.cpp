@@ -389,18 +389,18 @@ TEST_F(UfifoApiTest, PutOversized)
     std::vector<char> large_buf(capacity + 1, 'x');
 
     errno = 0;
-    unsigned int written = ufifo_put_block(fifo, large_buf.data(), large_buf.size());
-    EXPECT_EQ(0u, written);
+    ssize_t written = ufifo_put_block(fifo, large_buf.data(), large_buf.size());
+    EXPECT_EQ(-EMSGSIZE, written);
     EXPECT_EQ(EMSGSIZE, errno);
 
     errno = 0;
     written = ufifo_put(fifo, large_buf.data(), large_buf.size());
-    EXPECT_EQ(0u, written);
+    EXPECT_EQ(-EMSGSIZE, written);
     EXPECT_EQ(EMSGSIZE, errno);
 
     errno = 0;
     written = ufifo_put_timeout(fifo, large_buf.data(), large_buf.size(), 100);
-    EXPECT_EQ(0u, written);
+    EXPECT_EQ(-EMSGSIZE, written);
     EXPECT_EQ(EMSGSIZE, errno);
 
     ufifo_destroy(fifo);

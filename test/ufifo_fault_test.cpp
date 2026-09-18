@@ -99,16 +99,16 @@ TEST_F(FaultInjectionTest, ReaderCrashRecovery)
     // Parent fills the FIFO
     char fill[256];
     memset(fill, 'A', sizeof(fill));
-    unsigned int written = ufifo_put(fifo, fill, sizeof(fill));
+    ssize_t written = ufifo_put(fifo, fill, sizeof(fill));
 
     // In SHARED mode, the parent must also consume to advance its out
-    for (unsigned int i = 0; i < written; i++) {
+    for (ssize_t i = 0; i < written; i++) {
         ufifo_skip(fifo);
     }
 
     // Now parent uses put_timeout, should succeed because dead reader is reaped
     char data = 'B';
-    unsigned int ret = ufifo_put_timeout(fifo, &data, 1, 1000);
+    ssize_t ret = ufifo_put_timeout(fifo, &data, 1, 1000);
     EXPECT_EQ(1u, ret);
 
     ufifo_destroy(fifo);
@@ -160,7 +160,7 @@ TEST_F(FaultInjectionTest, AllReadersCrash)
 
     // Parent verifies it can put data
     char data[10] = "hello";
-    unsigned int ret = ufifo_put(fifo, data, 10);
+    ssize_t ret = ufifo_put(fifo, data, 10);
     EXPECT_EQ(10u, ret);
 
     ufifo_destroy(fifo);

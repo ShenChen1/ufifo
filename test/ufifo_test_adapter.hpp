@@ -188,7 +188,7 @@ class UfifoTestAdapter {
     }
 
     // Unifies putting an integer value with a payload. (Tag uses modulo of value for tag if TAG format)
-    int PutValue(ufifo_t *handle, int value, int tag = -1, long timeout_ms = 0)
+    ssize_t PutValue(ufifo_t *handle, int value, int tag = -1, long timeout_ms = 0)
     {
         char buf[64];
         size_t size = sizeof(buf);
@@ -218,11 +218,11 @@ class UfifoTestAdapter {
         }
     }
 
-    int GetValue(ufifo_t *handle, int &value, long timeout_ms = 0)
+    ssize_t GetValue(ufifo_t *handle, int &value, long timeout_ms = 0)
     {
         char buf[64] = {};
         size_t size = sizeof(buf);
-        size_t ret = 0;
+        ssize_t ret = 0;
         if (format_ == DataFormat::BYTESTREAM) {
             size = sizeof(value);
         } else if (format_ == DataFormat::RECORD) {
@@ -238,6 +238,8 @@ class UfifoTestAdapter {
         } else {
             ret = ufifo_get_block(handle, buf, size);
         }
+        if (ret < 0)
+            return ret;
         if (ret == 0)
             return 0;
 
