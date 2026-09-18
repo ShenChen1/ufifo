@@ -77,7 +77,7 @@ class ParameterizedTestBase : public ::testing::TestWithParam<TestParam> {
                 while (count < msgs_per_producer) {
                     const int val = p * 100000 + count;
                     ssize_t ret = adapter_->PutValue(h, val, p);
-                    if (ret == 0) {
+                    if (ret <= 0) {
                         if (is_shared) {
                             std::this_thread::yield();
                             int out = 0;
@@ -186,7 +186,7 @@ TEST_P(SingletonTest, FifoFullEmpty)
     ASSERT_EQ(0, adapter_->Create(128));
     // Empty grab
     int out;
-    EXPECT_EQ(0, adapter_->GetValue(adapter_->GetMainHandle(), out));
+    EXPECT_EQ(-EAGAIN, adapter_->GetValue(adapter_->GetMainHandle(), out));
 
     int count = 0;
     while (adapter_->PutValue(adapter_->GetMainHandle(), ++count) > 0) {

@@ -67,7 +67,7 @@ static size_t recsize(uint8_t *p1, size_t n1, uint8_t *p2)
 static void *producer_thread(void *arg)
 {
     (void)arg;
-    size_t ret;
+    ssize_t ret;
     char buf[64];
     record_t *rec = (record_t *)buf;
 
@@ -76,7 +76,7 @@ static void *producer_thread(void *arg)
         rec->size = PAYLOAD_SIZE;
         memcpy(rec->buf, PAYLOAD, rec->size);
         ret = ufifo_put(producer_fifo, rec, RECORD_SIZE);
-        if (ret) {
+        if (ret > 0) {
             assert(ret == RECORD_SIZE);
             /* Advance producer's own out pointer */
             ufifo_newest(producer_fifo, rec->index);
@@ -105,7 +105,7 @@ static atomic_int consumers_failed = 0;
 static void *consumer_thread(void *arg)
 {
     consumer_arg_t *ctx = (consumer_arg_t *)arg;
-    size_t ret;
+    ssize_t ret;
     char buf[64];
     record_t *rec = (record_t *)buf;
     unsigned int expected_index = 0;
@@ -113,7 +113,7 @@ static void *consumer_thread(void *arg)
     while (1) {
         memset(buf, 0, sizeof(buf));
         ret = ufifo_get(ctx->handle, rec, sizeof(buf));
-        if (ret == 0) {
+        if (ret <= 0) {
             sched_yield();
             continue;
         }

@@ -190,7 +190,7 @@ TEST(UfifoWaitIntegrationTest, TimedOutArmIsClearedByNextPublish)
 
     char received = 0;
     errno = 0;
-    EXPECT_EQ(0u, ufifo_get_timeout(fifo, &received, 1, 20));
+    EXPECT_EQ(-ETIMEDOUT, ufifo_get_timeout(fifo, &received, 1, 20));
     EXPECT_EQ(ETIMEDOUT, errno);
     EXPECT_EQ(1U, __ufifo_rx_ctrl(fifo)->rx_wait_word & 1U);
 

@@ -18,7 +18,7 @@ int main()
 {
     unsigned char buf[6];
     unsigned char i, j;
-    size_t ret;
+    ssize_t ret;
 
     printf("byte stream fifo test start\n");
 
@@ -41,33 +41,39 @@ int main()
     printf("fifo len: %zu\n", ufifo_len(test));
 
     /* get max of 5 bytes from the fifo */
-    i = ufifo_get(test, buf, 5);
-    printf("buf: %.*s\n", i, buf);
+    ret = ufifo_get(test, buf, 5);
+    if (ret < 0)
+        return (int)ret;
+    printf("buf: %.*s\n", (int)ret, buf);
 
     /* get max of 2 elements from the fifo */
     ret = ufifo_get(test, buf, 2);
-    printf("ret: %zu\n", ret);
+    if (ret < 0)
+        return (int)ret;
+    printf("ret: %zd\n", ret);
     /* and put it back to the end of the zfifo */
-    ret = ufifo_put(test, buf, ret);
-    printf("ret: %zu\n", ret);
+    ret = ufifo_put(test, buf, (size_t)ret);
+    if (ret < 0)
+        return (int)ret;
+    printf("ret: %zd\n", ret);
 
     /* skip first element of the fifo */
     printf("skip 1st element\n");
     ufifo_skip(test);
 
     /* put values into the fifo until is full */
-    for (i = 20; ufifo_put(test, &i, 1); i++)
+    for (i = 20; ufifo_put(test, &i, 1) > 0; i++)
         ;
 
     printf("queue len: %zu\n", ufifo_len(test));
 
     /* show the first value without removing from the fifo */
-    if (ufifo_peek(test, &i, 1))
+    if (ufifo_peek(test, &i, 1) > 0)
         printf("%d\n", i);
 
     /* check the correctness of all values in the fifo */
     j = 0;
-    while (ufifo_get(test, &i, 1)) {
+    while (ufifo_get(test, &i, 1) > 0) {
         printf("item = %d\n", i);
         if (i != expected_result[j++]) {
             printf("value mismatch: test failed\n");
