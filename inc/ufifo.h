@@ -110,6 +110,17 @@ typedef struct {
 typedef struct ufifo ufifo_t;
 
 /**
+ * @brief Handle process-ownership and recovery contract.
+ *
+ * A handle is valid only in the process that opened it. Handle APIs return
+ * @c -ECHILD for a fork-inherited handle and set @c errno to @c ECHILD. All
+ * failures return a negative errno and also set @c errno to its positive
+ * value. If a process dies while owning the robust data mutex, the next locker
+ * discards the uncertain contents and returns @c -EOWNERDEAD; later operations
+ * continue normally.
+ */
+
+/**
  * @brief Open or create a FIFO.
  * @param name   Shared-memory name (must be unique and no longer than UFIFO_NAME_MAX bytes).
  * @param init   Initialization parameters (mode, hooks, alloc config).
@@ -123,49 +134,51 @@ UFIFO_API int ufifo_open(const char *name, const ufifo_init_t *init, ufifo_t **h
 /**
  * @brief Close handle (detach only, shared memory persists).
  * @param handle FIFO handle to close.
- * @return 0 on success.
+ * @return 0 on success, or a negative errno on failure.
  */
 UFIFO_API int ufifo_close(ufifo_t *handle);
 
 /**
  * @brief Destroy handle and unlink the underlying shared memory.
  * @param handle FIFO handle to destroy.
- * @return 0 on success, -EBUSY while another opened handle is active.
+ * @return 0 on success, -EBUSY while another opened handle is active, or another negative errno on failure.
  */
 UFIFO_API int ufifo_destroy(ufifo_t *handle);
 
 /**
  * @brief Get total buffer capacity.
  * @param handle FIFO handle.
- * @return Buffer size in bytes.
+ * @return Non-negative buffer size in bytes, or a negative errno on failure.
  */
-UFIFO_API size_t ufifo_size(ufifo_t *handle);
+UFIFO_API ssize_t ufifo_size(ufifo_t *handle);
 
 /**
- * @brief Reset all read/write pointers to zero (clear data).
+ * @brief Reset all read/write pointers.
  * @param handle FIFO handle.
+ * @return 0 on success, or a negative errno on failure.
  */
-UFIFO_API void ufifo_reset(ufifo_t *handle);
+UFIFO_API int ufifo_reset(ufifo_t *handle);
 
 /**
  * @brief Get bytes of data currently stored.
  * @param handle FIFO handle.
- * @return Number of bytes used.
+ * @return Non-negative number of bytes used, or a negative errno on failure.
  */
-UFIFO_API size_t ufifo_len(ufifo_t *handle);
+UFIFO_API ssize_t ufifo_len(ufifo_t *handle);
 
 /**
- * @brief Discard the next record (record mode) or data (byte-stream).
+ * @brief Discard the next record (record mode) or one byte (byte-stream).
  * @param handle FIFO handle.
+ * @return Non-negative number of bytes discarded, or a negative errno on failure.
  */
-UFIFO_API void ufifo_skip(ufifo_t *handle);
+UFIFO_API ssize_t ufifo_skip(ufifo_t *handle);
 
 /**
  * @brief Get byte-length of the next record.
  * @param handle FIFO handle.
- * @return Record size in bytes, 0 if FIFO is empty.
+ * @return Non-negative record size in bytes, 0 if empty, or a negative errno on failure.
  */
-UFIFO_API size_t ufifo_peek_len(ufifo_t *handle);
+UFIFO_API ssize_t ufifo_peek_len(ufifo_t *handle);
 
 /**
  * @brief Non-blocking write.
@@ -294,8 +307,9 @@ UFIFO_API void ufifo_set_log_handler(ufifo_log_cb cb, void *arg);
 /**
  * @brief Dump the internal status of the FIFO for debugging.
  * @param handle FIFO handle.
+ * @return 0 on success, or a negative errno on failure.
  */
-UFIFO_API void ufifo_dump(ufifo_t *handle);
+UFIFO_API int ufifo_dump(ufifo_t *handle);
 
 /**
  * @brief Get the currently linked library's version string.

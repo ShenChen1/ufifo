@@ -152,6 +152,46 @@ class UfifoErrnoTest : public ::testing::Test {
 TEST_F(UfifoErrnoTest, InvalidHandle)
 {
     errno = 0;
+    EXPECT_EQ(-EINVAL, ufifo_size(nullptr));
+    EXPECT_EQ(EINVAL, errno);
+
+    errno = 0;
+    EXPECT_EQ(-EINVAL, ufifo_len(nullptr));
+    EXPECT_EQ(EINVAL, errno);
+
+    errno = 0;
+    EXPECT_EQ(-EINVAL, ufifo_reset(nullptr));
+    EXPECT_EQ(EINVAL, errno);
+
+    errno = 0;
+    EXPECT_EQ(-EINVAL, ufifo_skip(nullptr));
+    EXPECT_EQ(EINVAL, errno);
+
+    errno = 0;
+    EXPECT_EQ(-EINVAL, ufifo_peek_len(nullptr));
+    EXPECT_EQ(EINVAL, errno);
+
+    errno = 0;
+    EXPECT_EQ(-EINVAL, ufifo_dump(nullptr));
+    EXPECT_EQ(EINVAL, errno);
+
+    errno = 0;
+    EXPECT_EQ(-EINVAL, ufifo_close(nullptr));
+    EXPECT_EQ(EINVAL, errno);
+
+    errno = 0;
+    EXPECT_EQ(-EINVAL, ufifo_destroy(nullptr));
+    EXPECT_EQ(EINVAL, errno);
+
+    errno = 0;
+    EXPECT_EQ(-EINVAL, ufifo_oldest(nullptr, 0));
+    EXPECT_EQ(EINVAL, errno);
+
+    errno = 0;
+    EXPECT_EQ(-EINVAL, ufifo_newest(nullptr, 0));
+    EXPECT_EQ(EINVAL, errno);
+
+    errno = 0;
     EXPECT_EQ(-EINVAL, ufifo_put(nullptr, nullptr, 1));
     EXPECT_EQ(EINVAL, errno);
 
@@ -162,6 +202,23 @@ TEST_F(UfifoErrnoTest, InvalidHandle)
     errno = 0;
     EXPECT_EQ(-EINVAL, ufifo_peek(nullptr, nullptr, 1));
     EXPECT_EQ(EINVAL, errno);
+}
+
+TEST_F(UfifoErrnoTest, LengthAndControlResults)
+{
+    EXPECT_EQ(64, ufifo_size(fifo));
+    EXPECT_EQ(0, ufifo_len(fifo));
+    EXPECT_EQ(0, ufifo_peek_len(fifo));
+
+    char data[] = { 'A', 'B', 'C' };
+    ASSERT_EQ(3, ufifo_put(fifo, data, sizeof(data)));
+    EXPECT_EQ(3, ufifo_len(fifo));
+    EXPECT_EQ(1, ufifo_peek_len(fifo));
+    EXPECT_EQ(1, ufifo_skip(fifo));
+    EXPECT_EQ(2, ufifo_len(fifo));
+    EXPECT_EQ(0, ufifo_reset(fifo));
+    EXPECT_EQ(0, ufifo_len(fifo));
+    EXPECT_EQ(0, ufifo_skip(fifo));
 }
 
 TEST_F(UfifoErrnoTest, EmptyAndFull)

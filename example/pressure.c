@@ -57,7 +57,7 @@ void *product(void *arg)
         } else {
             ret = ufifo_put_block(test_product, rec, rec->size + sizeof(record_t));
         }
-        printf("-----[%zu]: put end: %zd fifo:%zu\n", (size_t)arg, ret, ufifo_len(test_product));
+        printf("-----[%zu]: put end: %zd fifo:%zd\n", (size_t)arg, ret, ufifo_len(test_product));
         if (ret > 0) {
             assert(ret == rec->size + sizeof(record_t));
             if (rec->index == NUM) {
@@ -84,7 +84,7 @@ void *consume(void *arg)
         } else {
             ret = ufifo_get_block(test_consume, rec, sizeof(buf));
         }
-        printf("-----[%zu]: get end: %zd fifo:%zu\n", (size_t)arg, ret, ufifo_len(test_consume));
+        printf("-----[%zu]: get end: %zd fifo:%zd\n", (size_t)arg, ret, ufifo_len(test_consume));
         if (ret > 0) {
             assert(!strcmp("hello", rec->buf));
             if (rec->index == NUM) {

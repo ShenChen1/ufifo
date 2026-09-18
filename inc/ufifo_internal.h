@@ -1,7 +1,9 @@
 #ifndef UFIFO_INTERNAL_H
 #define UFIFO_INTERNAL_H
 
+#include <errno.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "kfifo.h"
 #include "ufifo.h"
@@ -18,16 +20,15 @@ typedef enum {
     UFIFO_WAIT_TIMED = 2,
 } ufifo_wait_type_e;
 
-#define UFIFO_CHECK_HANDLE(handle, ...)                    \
-    do {                                                   \
-        if (!(handle) || (handle)->magic != UFIFO_MAGIC) { \
-            errno = EINVAL;                                \
-            return __VA_ARGS__;                            \
-        }                                                  \
-    } while (0)
+typedef struct {
+    size_t length;
+    bool data_lock_held;
+} ufifo_wait_result_t;
 
 struct ufifo {
     uint32_t magic;
+    pid_t owner_pid;
+    bool registered;
 
     char name[UFIFO_NAME_BUF_SIZE];
     size_t user_id;
@@ -45,6 +46,18 @@ struct ufifo {
     ufifo_ctrl_t *ctrl;
 };
 
+static inline int __ufifo_validate_handle(const ufifo_t *handle)
+{
+    int error = 0;
+    if (handle == NULL || handle->magic != UFIFO_MAGIC)
+        error = EINVAL;
+    else if (handle->owner_pid != getpid())
+        error = ECHILD;
+    if (error != 0)
+        errno = error;
+    return -error;
+}
+
 /* ufifo_sync.c */
 int __ufifo_ctrl_lock(ufifo_t *handle);
 int __ufifo_ctrl_unlock(ufifo_t *handle);
@@ -60,6 +73,7 @@ int __ufifo_lock_deinit(ufifo_t *handle);
 void __ufifo_recover_state(ufifo_t *handle);
 
 /* ufifo_lifetime.c */
+int __ufifo_open_fd(const char *name, ufifo_init_t *init, bool *is_alloc);
 int __ufifo_open_attached_fd(const char *name);
 int __ufifo_force_unlink(const char *name);
 int __ufifo_name_matches_fd(const char *name, int fd);
@@ -68,6 +82,10 @@ int __ufifo_name_matches_fd(const char *name, int fd);
 uint32_t __ufifo_wait_arm(uint32_t *wait_word);
 int __ufifo_futex_wait(uint32_t *wait_word, uint32_t expected, const struct timespec *deadline);
 void __ufifo_wait_notify(uint32_t *wait_word);
+int __ufifo_wait_for_space(
+    ufifo_t *handle, size_t size, ufifo_wait_type_e wait_type, long millisec, ufifo_wait_result_t *result);
+int __ufifo_wait_for_data(
+    ufifo_t *handle, ufifo_wait_type_e wait_type, long millisec, ufifo_wait_result_t *result);
 
 /* ufifo_init.c */
 void __ufifo_reap_dead_user(ufifo_t *handle, size_t user_id);
@@ -93,8 +111,8 @@ void __ufifo_log(const char *fmt, ...);
 void __ufifo_update_cached_min_out(ufifo_t *handle);
 size_t __ufifo_unused_len(ufifo_t *handle);
 size_t __ufifo_peek_data_len(ufifo_t *handle, size_t offset, size_t in_val);
-int __ufifo_wait_for_space(ufifo_t *handle, size_t size, ufifo_wait_type_e wait_type, long millisec, size_t *out_len);
-int __ufifo_wait_for_data(ufifo_t *handle, ufifo_wait_type_e wait_type, long millisec, size_t *out_len);
+/* Caller must hold data_mutex unless the FIFO uses UFIFO_LOCK_NONE. */
+void __ufifo_reset_data_locked(ufifo_t *handle);
 
 /*
  * Notify blocked writers that write-space may be available.

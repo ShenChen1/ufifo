@@ -38,7 +38,7 @@ int main()
         ufifo_put(test, &i, 1);
 
     /* show the number of used elements */
-    printf("fifo len: %zu\n", ufifo_len(test));
+    printf("fifo len: %zd\n", ufifo_len(test));
 
     /* get max of 5 bytes from the fifo */
     ret = ufifo_get(test, buf, 5);
@@ -65,7 +65,7 @@ int main()
     for (i = 20; ufifo_put(test, &i, 1) > 0; i++)
         ;
 
-    printf("queue len: %zu\n", ufifo_len(test));
+    printf("queue len: %zd\n", ufifo_len(test));
 
     /* show the first value without removing from the fifo */
     if (ufifo_peek(test, &i, 1) > 0)

@@ -23,9 +23,8 @@ typedef struct {
 
 /* Global FIFO control data (stored in shared memory) */
 typedef struct {
-    ufifo_version_t ver;
     uint32_t layout_abi;
-    bool init_done; /* false = initializing, true = ready (atomic) */
+    ufifo_version_t ver;
 
     size_t mapping_size;
     size_t data_offset;

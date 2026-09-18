@@ -56,8 +56,8 @@ ufifo 当前以共享内存 ring buffer 传输数据，同时用同一组 `event
 - 构建环境必须提供含 `IORING_OP_FUTEX_WAIT` 和 `FUTEX2_SIZE_U32` 的 Linux UAPI headers。
 - 不新增运行时第三方依赖。
 - 公共函数参数不超过 5 个；单函数不超过 80 行；单源码文件不超过 500 行。
-- 控制接口和数据长度接口统一使用“成功返回非负值、失败返回负 errno”；数据长度接口失败时同时设置
-  `errno`，便于旧调用方诊断，但调用方必须以返回值的符号判断成功或失败。
+- 控制接口和数据长度接口统一使用“成功返回非负值、失败返回负 errno”；失败时同时设置
+  `errno`，但调用方必须以返回值的符号判断成功或失败。
 - 所有共享 futex 必须使用 shared futex 语义，禁止 `FUTEX_PRIVATE`/`FUTEX2_PRIVATE`。
 
 ## 2. 已确认的假设
@@ -222,17 +222,20 @@ int ufifo_epoll_close(ufifo_epoll_t *ep);
 - `drain`：成功为返回事件数量，失败为负 errno。
 - 控制 API 不使用“`-1` 并设置 errno”的混合约定。
 
-### 6.2 Core 数据长度接口
+### 6.2 Core 返回约定
 
-`ufifo_put*()`、`ufifo_get*()` 和 `ufifo_peek*()`（包括 blocking 与 timed 变体）统一返回
-`ssize_t`：
+`ufifo_size()`、`ufifo_len()`、`ufifo_skip()`、`ufifo_peek_len()`、`ufifo_put*()`、
+`ufifo_get*()` 和 `ufifo_peek*()`（包括 blocking 与 timed 变体）统一返回 `ssize_t`：
 
-- `ret >= 0`：实际写入、读出或 peek 的字节数；操作成功但没有传输字节时可为 `0`；
+- `ret >= 0`：容量、当前长度，或实际写入、读出、跳过、peek 的字节数；操作成功但没有传输字节时可为 `0`；
 - `ret < 0`：异常，值为对应的 `-errno`，例如 `-EAGAIN`、`-ETIMEDOUT`、`-EMSGSIZE`、
   `-ENOBUFS` 或 `-EIO`；
 - 失败路径同时设置 `errno = -ret`，但不能只检查 `errno` 或把负返回值转换为无符号长度。
 
-因此，非阻塞数据循环应使用 `ret > 0` 判断成功；`ret <= 0` 都不能视为写入或读出成功。
+`ufifo_reset()`、`ufifo_dump()`、`ufifo_close()`、`ufifo_destroy()`、`ufifo_oldest()` 和
+`ufifo_newest()` 成功返回 `0`，失败返回负 errno。所有失败路径同时设置 `errno = -ret`。
+
+因此，非阻塞数据循环应使用 `ret > 0` 判断传输成功；`ret <= 0` 都不能视为写入或读出成功。
 
 ### 6.3 参数规则
 
@@ -298,7 +301,7 @@ wait only while *wait_word == expected
 
 ### 8.2 Notify
 
-数据/索引必须先以 release 语义发布，然后执行：
+数据/索引先以 release 语义发布，再执行通知：
 
 ```text
 old = atomic_load(wait_word)
@@ -314,6 +317,9 @@ while old has ARMED:
 - 多个 waiter 共用一个 ARMED bit，成功的 waker 广播唤醒；
 - waiter 超时或进程崩溃最多留下一个 ARMED bit；下一次状态变化会清除它；
 - epoch 回绕只在 arm-to-wait 窗口内恰好发生 `2^31` 次通知时构成 ABA，作为不可实现的运行边界记录，不额外增加 64 位 ABI。
+
+进程死亡本身不会唤醒睡在 RX/TX wait word 上的 waiter。robust mutex owner death 只在
+下一个 locker 获取 data mutex 时被检测；core 不承诺仅因 peer 死亡就立即结束无限等待。
 
 ### 8.3 Blocking loop
 

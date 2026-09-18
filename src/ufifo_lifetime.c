@@ -12,6 +12,44 @@ static int __ufifo_lock_result(int ret)
     return (ret == -EACCES || ret == -EAGAIN) ? -EBUSY : ret;
 }
 
+static int __ufifo_create_fd(const char *name, bool force)
+{
+    for (;;) {
+        if (force) {
+            int ret = __ufifo_force_unlink(name);
+            if (ret < 0)
+                return ret;
+        }
+        int fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR);
+        if (fd < 0) {
+            if (errno == EEXIST && force)
+                continue;
+            return -errno;
+        }
+        int ret = __ufifo_lifetime_lock_exclusive(fd, true);
+        if (ret == 0)
+            return fd;
+        close(fd);
+        shm_unlink(name);
+        return ret;
+    }
+}
+
+int __ufifo_open_fd(const char *name, ufifo_init_t *init, bool *is_alloc)
+{
+    if (init->opt == UFIFO_OPT_ATTACH)
+        return __ufifo_open_attached_fd(name);
+    int fd = __ufifo_create_fd(name, init->alloc.force != 0);
+    if (fd >= 0) {
+        *is_alloc = true;
+        return fd;
+    }
+    if (fd != -EEXIST)
+        return fd;
+    init->opt = UFIFO_OPT_ATTACH;
+    return __ufifo_open_attached_fd(name);
+}
+
 int __ufifo_name_matches_fd(const char *name, int fd)
 {
     struct stat candidate_stat;
@@ -38,7 +76,9 @@ int __ufifo_open_attached_fd(const char *name)
     if (fd < 0)
         return -errno;
 
-    int ret = __ufifo_lifetime_lock_shared(fd, true);
+    int ret = __ufifo_lifetime_lock_shared(fd, false);
+    if (ret == -EACCES || ret == -EAGAIN)
+        ret = -EAGAIN;
     if (ret < 0)
         goto error;
     ret = __ufifo_name_matches_fd(name, fd);
@@ -64,7 +104,6 @@ error:
 
 int __ufifo_force_unlink(const char *name)
 {
-    uint32_t layout_abi = 0;
     int fd = shm_open(name, O_RDWR, 0);
     int ret;
 
@@ -73,11 +112,6 @@ int __ufifo_force_unlink(const char *name)
     ret = __ufifo_lock_result(__ufifo_lifetime_lock_exclusive(fd, false));
     if (ret < 0)
         goto out;
-    ssize_t size = pread(fd, &layout_abi, sizeof(layout_abi), offsetof(ufifo_ctrl_t, layout_abi));
-    if (size != (ssize_t)sizeof(layout_abi) || layout_abi != UFIFO_LAYOUT_ABI) {
-        ret = -EPROTO;
-        goto out;
-    }
     ret = __ufifo_name_matches_fd(name, fd);
     if (ret != 1) {
         ret = ret < 0 ? ret : -ESTALE;

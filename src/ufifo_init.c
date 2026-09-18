@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -71,11 +72,16 @@ static void __ufifo_unregister(ufifo_t *handle)
 {
     ufifo_ctrl_t *ctrl = handle->ctrl;
 
-    if (handle->user_id >= ctrl->max_users || !READ_ONCE(&ctrl->users[handle->user_id].active))
+    if (!handle->registered)
         return;
+    if (handle->user_id >= ctrl->max_users || !READ_ONCE(&ctrl->users[handle->user_id].active)) {
+        handle->registered = false;
+        return;
+    }
     smp_store_release(&ctrl->users[handle->user_id].active, false);
     __ufifo_ofd_unlock(handle->shm_fd, handle->user_id);
     ctrl->num_users--;
+    handle->registered = false;
     __ufifo_update_cached_min_out(handle);
     __ufifo_notify_writers(handle);
 }
@@ -158,6 +164,8 @@ __ufifo_calculate_layout(const ufifo_alloc_t *alloc, size_t *data_offset, size_t
         return -EOVERFLOW;
     if (*data_size < 2)
         *data_size = 2;
+    if (*data_size > SSIZE_MAX)
+        return -EOVERFLOW;
     return __ufifo_checked_add(*data_offset, *data_size, mapping_size);
 }
 
@@ -182,14 +190,15 @@ static int __ufifo_validate_layout(ufifo_t *handle, size_t file_size)
     size_t expected_mapping;
     int ret = __ufifo_compatibility_check(ctrl);
 
-    if (ret < 0 || !smp_load_acquire(&ctrl->init_done))
-        return ret < 0 ? ret : -EPROTO;
+    if (ret < 0)
+        return ret;
     if (ctrl->max_users < 1 || ctrl->lock >= UFIFO_LOCK_MAX || ctrl->data_mode >= UFIFO_DATA_MAX)
         return -EPROTO;
     ret = __ufifo_expected_data_offset(ctrl->max_users, &expected_offset);
     if (ret < 0 || ctrl->data_offset != expected_offset)
         return -EPROTO;
-    if (ctrl->data_size < 2 || (ctrl->data_size & (ctrl->data_size - 1)) != 0)
+    if (ctrl->data_size < 2 || ctrl->data_size > SSIZE_MAX
+        || (ctrl->data_size & (ctrl->data_size - 1)) != 0)
         return -EPROTO;
     ret = __ufifo_checked_add(ctrl->data_offset, ctrl->data_size, &expected_mapping);
     if (ret < 0 || ctrl->mapping_size != expected_mapping || ctrl->mapping_size != file_size)
@@ -216,17 +225,23 @@ static int __ufifo_register_handle(ufifo_t *handle, bool initialize)
     size_t user_id;
     int ret;
 
-    __ufifo_ctrl_lock(handle);
-    ret = __ufifo_register(handle, &user_id);
-    __ufifo_ctrl_unlock(handle);
+    ret = __ufifo_ctrl_lock(handle);
     if (ret < 0)
         return ret;
+    ret = __ufifo_register(handle, &user_id);
+    int unlock_ret = __ufifo_ctrl_unlock(handle);
+    if (ret < 0)
+        return ret;
+    if (unlock_ret < 0)
+        return unlock_ret;
     handle->user_id = user_id;
+    handle->registered = true;
     ret = __ufifo_configure_data(handle, initialize);
     if (ret < 0) {
-        __ufifo_ctrl_lock(handle);
-        __ufifo_unregister(handle);
-        __ufifo_ctrl_unlock(handle);
+        if (__ufifo_ctrl_lock(handle) == 0) {
+            __ufifo_unregister(handle);
+            __ufifo_ctrl_unlock(handle);
+        }
         return ret;
     }
     if (__ufifo_is_shared(handle)) {
@@ -296,18 +311,17 @@ static int __ufifo_init_from_user(ufifo_t *handle, const ufifo_alloc_t *alloc)
         return -errno;
     }
     handle->shm_mem = (char *)handle->ctrl + data_offset;
-    WRITE_ONCE(&handle->ctrl->init_done, false);
     ret = __ufifo_lock_init(handle, alloc->lock);
     if (ret < 0)
         goto error_mapping;
 
+    handle->ctrl->layout_abi = UFIFO_LAYOUT_ABI;
     handle->ctrl->mapping_size = handle->mapping_size;
     handle->ctrl->data_offset = data_offset;
     handle->ctrl->data_size = handle->shm_size;
     handle->ctrl->data_mode = alloc->data_mode;
     handle->ctrl->max_users = alloc->max_users;
     handle->ctrl->num_users = 0;
-    handle->ctrl->layout_abi = UFIFO_LAYOUT_ABI;
     memset(handle->ctrl->users, 0, slot_count * sizeof(ufifo_sub_ctrl_t));
 
     ret = __ufifo_register_handle(handle, true);
@@ -315,15 +329,14 @@ static int __ufifo_init_from_user(ufifo_t *handle, const ufifo_alloc_t *alloc)
         goto error_lock;
     handle->ctrl->mask = handle->kfifo.mask;
     ufifo_get_version_info(NULL, &handle->ctrl->ver);
-    smp_store_release(&handle->ctrl->init_done, true);
     ret = __ufifo_lifetime_lock_shared(handle->shm_fd, false);
     if (ret == 0)
         return 0;
 
-    WRITE_ONCE(&handle->ctrl->init_done, false);
-    __ufifo_ctrl_lock(handle);
-    __ufifo_unregister(handle);
-    __ufifo_ctrl_unlock(handle);
+    if (__ufifo_ctrl_lock(handle) == 0) {
+        __ufifo_unregister(handle);
+        __ufifo_ctrl_unlock(handle);
+    }
 error_lock:
     __ufifo_lock_deinit(handle);
 error_mapping:
@@ -342,46 +355,6 @@ static int __ufifo_init_validate(const ufifo_init_t *init)
     if (init->alloc.lock >= UFIFO_LOCK_MAX || init->alloc.data_mode >= UFIFO_DATA_MAX)
         return -EINVAL;
     return 0;
-}
-
-static int __ufifo_create_fd(const char *name, bool force)
-{
-    for (;;) {
-        if (force) {
-            int ret = __ufifo_force_unlink(name);
-            if (ret < 0)
-                return ret;
-        }
-        int fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR);
-        if (fd < 0) {
-            if (errno == EEXIST && force)
-                continue;
-            return -errno;
-        }
-        int ret = __ufifo_lifetime_lock_exclusive(fd, true);
-        if (ret == 0)
-            return fd;
-        close(fd);
-        shm_unlink(name);
-        return ret;
-    }
-}
-
-static int __ufifo_open_fd(const char *name, ufifo_init_t *init, bool *is_alloc)
-{
-    int fd;
-
-    if (init->opt == UFIFO_OPT_ATTACH)
-        return __ufifo_open_attached_fd(name);
-    fd = __ufifo_create_fd(name, init->alloc.force != 0);
-    if (fd >= 0) {
-        *is_alloc = true;
-        return fd;
-    }
-    if (fd != -EEXIST)
-        return fd;
-    init->opt = UFIFO_OPT_ATTACH;
-    return __ufifo_open_attached_fd(name);
 }
 
 int ufifo_open(const char *name, const ufifo_init_t *init, ufifo_t **handle)
@@ -407,6 +380,7 @@ int ufifo_open(const char *name, const ufifo_init_t *init, ufifo_t **handle)
     if (fifo == NULL)
         return -ENOMEM;
     strncpy(fifo->name, name, sizeof(fifo->name) - 1);
+    fifo->owner_pid = getpid();
     __ufifo_hook_init(fifo, &fifo_init.hook);
     ret = __ufifo_open_fd(name, &fifo_init, &is_alloc);
     if (ret < 0)
@@ -463,9 +437,19 @@ static int __ufifo_close(ufifo_t *handle, bool destroy)
         }
     }
 
-    __ufifo_ctrl_lock(handle);
+    ret = __ufifo_ctrl_lock(handle);
+    if (ret < 0) {
+        if (destroy)
+            __ufifo_lifetime_lock_shared(handle->shm_fd, false);
+        return ret;
+    }
     __ufifo_unregister(handle);
-    __ufifo_ctrl_unlock(handle);
+    ret = __ufifo_ctrl_unlock(handle);
+    if (ret < 0) {
+        if (destroy)
+            __ufifo_lifetime_lock_shared(handle->shm_fd, false);
+        return ret;
+    }
     if (destroy)
         __ufifo_lock_deinit(handle);
     __ufifo_release_handle(handle);
@@ -474,12 +458,20 @@ static int __ufifo_close(ufifo_t *handle, bool destroy)
 
 int ufifo_close(ufifo_t *handle)
 {
-    UFIFO_CHECK_HANDLE(handle, -EINVAL);
-    return __ufifo_close(handle, false);
+    int ret = __ufifo_validate_handle(handle);
+    if (ret == 0)
+        ret = __ufifo_close(handle, false);
+    if (ret < 0)
+        errno = -ret;
+    return ret;
 }
 
 int ufifo_destroy(ufifo_t *handle)
 {
-    UFIFO_CHECK_HANDLE(handle, -EINVAL);
-    return __ufifo_close(handle, true);
+    int ret = __ufifo_validate_handle(handle);
+    if (ret == 0)
+        ret = __ufifo_close(handle, true);
+    if (ret < 0)
+        errno = -ret;
+    return ret;
 }

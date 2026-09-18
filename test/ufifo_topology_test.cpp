@@ -172,9 +172,10 @@ TEST_P(SingletonTest, BasicPutGet)
 TEST_P(SingletonTest, SkipOperation)
 {
     ASSERT_EQ(0, adapter_->Create(512));
-    adapter_->PutValue(adapter_->GetMainHandle(), 1);
+    ssize_t first_size = adapter_->PutValue(adapter_->GetMainHandle(), 1);
+    ASSERT_GT(first_size, 0);
     adapter_->PutValue(adapter_->GetMainHandle(), 2);
-    adapter_->Skip(adapter_->GetMainHandle());
+    EXPECT_EQ(first_size, adapter_->Skip(adapter_->GetMainHandle()));
 
     int out = 0;
     adapter_->GetValue(adapter_->GetMainHandle(), out);
@@ -207,14 +208,14 @@ TEST_P(SingletonTest, PeekLen)
 TEST_P(SingletonTest, SizeAndLenAndReset)
 {
     ASSERT_EQ(0, adapter_->Create(256));
-    EXPECT_GT(ufifo_size(adapter_->GetMainHandle()), 0u);
-    EXPECT_EQ(0u, ufifo_len(adapter_->GetMainHandle()));
+    EXPECT_GT(ufifo_size(adapter_->GetMainHandle()), 0);
+    EXPECT_EQ(0, ufifo_len(adapter_->GetMainHandle()));
 
     adapter_->PutValue(adapter_->GetMainHandle(), 1);
-    EXPECT_GT(ufifo_len(adapter_->GetMainHandle()), 0u);
+    EXPECT_GT(ufifo_len(adapter_->GetMainHandle()), 0);
 
-    ufifo_reset(adapter_->GetMainHandle());
-    EXPECT_EQ(0u, ufifo_len(adapter_->GetMainHandle()));
+    EXPECT_EQ(0, ufifo_reset(adapter_->GetMainHandle()));
+    EXPECT_EQ(0, ufifo_len(adapter_->GetMainHandle()));
 }
 
 TEST_P(SingletonTest, LargeDataThroughput)

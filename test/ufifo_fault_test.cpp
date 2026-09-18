@@ -253,6 +253,73 @@ TEST_F(FaultInjectionTest, CtrlMutexOwnerDeath)
     ufifo_destroy(fifo);
 }
 
+TEST_F(FaultInjectionTest, ExistingHandleSurvivesCtrlMutexRecovery)
+{
+    std::string name = UniqueName("ctrl_self");
+    ufifo_t *fifo = nullptr;
+    ASSERT_EQ(0, CreateFifo(name, &fifo, 4096, 2));
+
+    pid_t pid = fork();
+    ASSERT_GE(pid, 0);
+    if (pid == 0) {
+        ufifo_t *child_fifo = nullptr;
+        if (AttachFifo(name, &child_fifo) != 0)
+            _exit(1);
+        if (pthread_mutex_lock(&child_fifo->ctrl->ctrl_mutex) != 0)
+            _exit(2);
+        child_fifo->ctrl->num_users = 99;
+        _exit(0);
+    }
+
+    int status = 0;
+    ASSERT_EQ(pid, waitpid(pid, &status, 0));
+    ASSERT_TRUE(WIFEXITED(status));
+    ASSERT_EQ(0, WEXITSTATUS(status));
+
+    ASSERT_EQ(0, __ufifo_ctrl_lock(fifo));
+    EXPECT_TRUE(READ_ONCE(&fifo->ctrl->users[fifo->user_id].active));
+    EXPECT_EQ(1U, fifo->ctrl->num_users);
+    EXPECT_EQ(0, __ufifo_ctrl_unlock(fifo));
+    EXPECT_EQ(0, ufifo_destroy(fifo));
+}
+
+TEST_F(FaultInjectionTest, DataMutexOwnerDeathResetsAndReportsOnce)
+{
+    std::string name = UniqueName("data_owner_death");
+    ufifo_t *fifo = nullptr;
+    ASSERT_EQ(0, CreateFifo(name, &fifo, 256, 2));
+
+    pid_t pid = fork();
+    ASSERT_GE(pid, 0);
+    if (pid == 0) {
+        ufifo_t *child_fifo = nullptr;
+        if (AttachFifo(name, &child_fifo) != 0)
+            _exit(1);
+        if (pthread_mutex_lock(&child_fifo->ctrl->data_mutex) != 0)
+            _exit(2);
+        static_cast<char *>(child_fifo->shm_mem)[0] = 'Q';
+        smp_store_release(&child_fifo->ctrl->in, 1);
+        _exit(0);
+    }
+
+    int status = 0;
+    ASSERT_EQ(pid, waitpid(pid, &status, 0));
+    ASSERT_TRUE(WIFEXITED(status));
+    ASSERT_EQ(0, WEXITSTATUS(status));
+
+    char output = 0;
+    errno = 0;
+    EXPECT_EQ(-EOWNERDEAD, ufifo_get(fifo, &output, sizeof(output)));
+    EXPECT_EQ(EOWNERDEAD, errno);
+    EXPECT_EQ(0, ufifo_len(fifo));
+
+    char input = 'R';
+    EXPECT_EQ(1, ufifo_put(fifo, &input, sizeof(input)));
+    EXPECT_EQ(1, ufifo_get(fifo, &output, sizeof(output)));
+    EXPECT_EQ(input, output);
+    EXPECT_EQ(0, ufifo_destroy(fifo));
+}
+
 TEST_F(FaultInjectionTest, LockNoneWaiterRace)
 {
     std::string name = UniqueName("not04");

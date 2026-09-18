@@ -36,10 +36,17 @@ void __ufifo_log(const char *fmt, ...)
     va_end(ap);
 }
 
-void ufifo_dump(ufifo_t *handle)
+int ufifo_dump(ufifo_t *handle)
 {
-    UFIFO_CHECK_HANDLE(handle);
-    __ufifo_ctrl_lock(handle);
+    int ret = __ufifo_validate_handle(handle);
+    if (ret < 0)
+        return ret;
+
+    ret = __ufifo_ctrl_lock(handle);
+    if (ret < 0) {
+        errno = -ret;
+        return ret;
+    }
 
     size_t mask = handle->kfifo.mask;
     size_t size = mask + 1;
@@ -80,7 +87,10 @@ void ufifo_dump(ufifo_t *handle)
     }
     __ufifo_log("=========================\n");
 
-    __ufifo_ctrl_unlock(handle);
+    ret = __ufifo_ctrl_unlock(handle);
+    if (ret < 0)
+        errno = -ret;
+    return ret;
 }
 
 const char *ufifo_get_version(void)
@@ -103,6 +113,7 @@ int ufifo_get_version_info(ufifo_t *handle, ufifo_version_t *ver)
 #define UFIFO_VERSION_PATCH 0
 #endif
     if (ver == NULL) {
+        errno = EINVAL;
         return -EINVAL;
     }
 
@@ -114,7 +125,9 @@ int ufifo_get_version_info(ufifo_t *handle, ufifo_version_t *ver)
         return 0;
     }
 
-    UFIFO_CHECK_HANDLE(handle, -EINVAL);
+    int ret = __ufifo_validate_handle(handle);
+    if (ret < 0)
+        return ret;
     memcpy(ver, &handle->ctrl->ver, sizeof(*ver));
     return 0;
 }
