@@ -340,8 +340,17 @@ static int __ufifo_create_fd(const char *name, bool force)
                 return ret;
         }
         int fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR);
-        if (fd >= 0 || errno != EEXIST || !force)
-            return fd >= 0 ? fd : -errno;
+        if (fd < 0) {
+            if (errno == EEXIST && force)
+                continue;
+            return -errno;
+        }
+        int ret = __ufifo_lifetime_lock_exclusive(fd, true);
+        if (ret == 0)
+            return fd;
+        close(fd);
+        shm_unlink(name);
+        return ret;
     }
 }
 
@@ -391,13 +400,10 @@ int ufifo_open(const char *name, const ufifo_init_t *init, ufifo_t **handle)
         goto error_handle;
     fifo->shm_fd = ret;
 
-    if (is_alloc) {
-        ret = __ufifo_lifetime_lock_exclusive(fifo->shm_fd, true);
-        if (ret == 0)
-            ret = __ufifo_init_from_user(fifo, &fifo_init.alloc);
-    } else {
+    if (is_alloc)
+        ret = __ufifo_init_from_user(fifo, &fifo_init.alloc);
+    else
         ret = __ufifo_init_from_shm(fifo);
-    }
     if (ret < 0)
         goto error_fd;
 
