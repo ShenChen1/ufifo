@@ -7,7 +7,6 @@ class FaultInjectionTest : public ::testing::Test {
         // Clean up any leftover shared memory
         for (auto &name : shm_names_) {
             shm_unlink(name.c_str());
-            shm_unlink((name + "_ctrl").c_str());
         }
     }
 

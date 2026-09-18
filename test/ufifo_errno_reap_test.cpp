@@ -13,7 +13,6 @@ class UfifoReapTest : public ::testing::Test {
     void TearDown() override
     {
         shm_unlink(name.c_str());
-        shm_unlink((name + "_ctrl").c_str());
     }
 };
 

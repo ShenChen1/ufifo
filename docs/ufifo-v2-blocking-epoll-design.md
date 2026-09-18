@@ -48,7 +48,7 @@ ufifo 当前以共享内存 ring buffer 传输数据，同时用同一组 `event
 - 不提供严格 level-triggered adapter 语义。
 - 不保证 fork 后继续使用继承的 adapter。
 - 本次不改变 SOLE/SHARED、byte-stream/record/tag 的数据分发语义。
-- 不提供旧双-shm 布局的运行时 attach fallback；其 force 迁移规则见单共享内存设计。
+- 不提供旧双-shm 布局的 attach、force 迁移或 broker 清理路径。
 
 ### Constraints
 

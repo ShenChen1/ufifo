@@ -15,7 +15,7 @@ void __ufifo_recover_state(ufifo_t *handle)
 
     for (i = 0; i < ctrl->max_users; i++) {
         if (smp_load_acquire(&ctrl->users[i].active)) {
-            if (__ufifo_is_user_dead(handle->ctrl_fd, i)) {
+            if (__ufifo_is_user_dead(handle->shm_fd, i)) {
                 smp_store_release(&ctrl->users[i].active, false);
             } else {
                 count++;
@@ -74,42 +74,45 @@ int __ufifo_data_unlock(ufifo_t *handle)
     return pthread_mutex_unlock(&handle->ctrl->data_mutex);
 }
 
+static int __ufifo_set_ofd_lock(int fd, short type, off_t start, off_t len, int command)
+{
+    struct flock fl = { .l_type = type, .l_whence = SEEK_SET, .l_start = start, .l_len = len };
+    return fcntl(fd, command, &fl) == 0 ? 0 : -errno;
+}
+
 int __ufifo_ofd_lock(int fd, size_t user_id)
 {
-    struct flock fl = { .l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = user_id, .l_len = 1 };
-    return fcntl(fd, F_OFD_SETLK, &fl);
+    return __ufifo_set_ofd_lock(fd, F_WRLCK, UFIFO_USER_LOCK_OFFSET(user_id), 1, F_OFD_SETLK);
 }
 
 int __ufifo_ofd_unlock(int fd, size_t user_id)
 {
-    struct flock fl = { .l_type = F_UNLCK, .l_whence = SEEK_SET, .l_start = user_id, .l_len = 1 };
-    return fcntl(fd, F_OFD_SETLK, &fl);
+    return __ufifo_set_ofd_lock(fd, F_UNLCK, UFIFO_USER_LOCK_OFFSET(user_id), 1, F_OFD_SETLK);
 }
 
 int __ufifo_is_user_dead(int fd, size_t user_id)
 {
-    struct flock fl = { .l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = user_id, .l_len = 1 };
+    struct flock fl = {
+        .l_type = F_WRLCK,
+        .l_whence = SEEK_SET,
+        .l_start = UFIFO_USER_LOCK_OFFSET(user_id),
+        .l_len = 1,
+    };
     if (fcntl(fd, F_OFD_GETLK, &fl) < 0)
         return 0;                /* cannot query, be conservative */
     return fl.l_type == F_UNLCK; /* unlocked = holder is dead */
 }
 
-int __ufifo_init_lock(int fd)
+int __ufifo_lifetime_lock_exclusive(int fd, bool wait)
 {
-    struct flock fl = { .l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = 0, .l_len = 1 };
-    return fcntl(fd, F_OFD_SETLK, &fl);
+    const int command = wait ? F_OFD_SETLKW : F_OFD_SETLK;
+    return __ufifo_set_ofd_lock(fd, F_WRLCK, UFIFO_LIFETIME_LOCK_OFFSET, 1, command);
 }
 
-int __ufifo_init_wait(int fd)
+int __ufifo_lifetime_lock_shared(int fd, bool wait)
 {
-    struct flock fl = { .l_type = F_RDLCK, .l_whence = SEEK_SET, .l_start = 0, .l_len = 1 };
-    return fcntl(fd, F_OFD_SETLKW, &fl);
-}
-
-int __ufifo_init_unlock(int fd)
-{
-    struct flock fl = { .l_type = F_UNLCK, .l_whence = SEEK_SET, .l_start = 0, .l_len = 1 };
-    return fcntl(fd, F_OFD_SETLK, &fl);
+    const int command = wait ? F_OFD_SETLKW : F_OFD_SETLK;
+    return __ufifo_set_ofd_lock(fd, F_RDLCK, UFIFO_LIFETIME_LOCK_OFFSET, 1, command);
 }
 
 int __ufifo_lock_init(ufifo_t *handle, ufifo_lock_e type)
@@ -134,7 +137,7 @@ int __ufifo_lock_init(ufifo_t *handle, ufifo_lock_e type)
     }
 
     pthread_mutexattr_destroy(&attr);
-    return ret;
+    return ret == 0 ? 0 : -ret;
 }
 
 int __ufifo_lock_deinit(ufifo_t *handle)
@@ -145,5 +148,5 @@ int __ufifo_lock_deinit(ufifo_t *handle)
         ret |= pthread_mutex_destroy(&handle->ctrl->data_mutex);
     }
 
-    return ret;
+    return ret == 0 ? 0 : -ret;
 }

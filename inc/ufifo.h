@@ -78,7 +78,7 @@ typedef enum {
 /** @brief ALLOC-mode configuration. */
 typedef struct {
     size_t size;                 /**< Buffer size in bytes (rounded up to 2^n). */
-    int32_t force;               /**< 1 = recreate if exists; 0 = reuse. */
+    int32_t force;               /**< 1 = recreate if no active handles; 0 = reuse. */
     ufifo_lock_e lock;           /**< Locking strategy. */
     ufifo_data_mode_e data_mode; /**< Data distribution mode. */
     size_t max_users;            /**< Max concurrent consumers (1 <= max_users <= UFIFO_MAX_NUM_USERS). */
@@ -130,7 +130,7 @@ UFIFO_API int ufifo_close(ufifo_t *handle);
 /**
  * @brief Destroy handle and unlink the underlying shared memory.
  * @param handle FIFO handle to destroy.
- * @return 0 on success.
+ * @return 0 on success, -EBUSY while another opened handle is active.
  */
 UFIFO_API int ufifo_destroy(ufifo_t *handle);
 

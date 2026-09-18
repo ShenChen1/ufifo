@@ -38,7 +38,6 @@ unlink 也使“对象仍被谁持有”无法由一个内核对象表达。
    `-EBUSY`，不修改名字或现有对象。
 5. attach 取得 shared lock 后复核名字仍指向同一个 inode；若已换代则重试，绝不
    attach 到已被替换的匿名旧对象。
-6. v2 双-shm 只允许通过无活跃 handle 的 force 路径清理，不提供运行时兼容 attach。
 
 ### Non-Goals
 
@@ -47,6 +46,8 @@ unlink 也使“对象仍被谁持有”无法由一个内核对象表达。
 - 不改变 FIFO 数据分发、record hook 或 futex wait-word 语义。
 - 不让 `ufifo_destroy()` 等待其他 handle 退出；忙时立即返回 `-EBUSY`。
 - 不提供跨主机、持久化或崩溃后保留数据的保证。
+- 不兼容、探测或清理旧双-shm 布局，也不处理遗留 broker；非 ABI 3 对象返回 `-EPROTO`。
+- fork 继承的同一 open file description 不计作独立 lifetime lease；child 若需独立保证必须重新 attach。
 
 ### Constraints
 
@@ -131,6 +132,11 @@ attach 的顺序固定为：
 4. 分别 `fstat()`，比较 `st_dev` 与 `st_ino`；
 5. 相同则关闭 current fd并继续；不同或名字暂时不存在则关闭 candidate 并重试。
 
+新对象在 `shm_open(O_EXCL)` 与取得 exclusive lock 之间存在极短的名字发布窗口。
+attach 若发现名字短暂不存在，或看到小于固定头的文件，会释放 shared lock并最多重试
+100 次，每次间隔 1 ms，让 force/create 完成发布或初始化；超过重试边界仍不完整则返回
+`-EPROTO`。
+
 因此 force/destroy 可以在步骤 1 与步骤 2 之间替换名字，但 attach 不会把旧 inode
 作为成功 handle 返回。一旦步骤 4 通过，shared lock 会阻止该 inode 被合法 force 或
 destroy，直到 handle close。
@@ -155,12 +161,9 @@ exclusive lock 证明不存在其他遵守 v3 协议的活跃 handle，因此不
 
 1. 若名字不存在，直接创建；
 2. 若是 v3 对象，只有取得 exclusive lifetime lock 才能 unlink；否则 `-EBUSY`；
-3. 若检测到旧 `_ctrl`，同时锁定旧 data init byte 和旧 ctrl 用户锁范围；任一冲突均
-   返回 `-EBUSY`；
-4. unlink 旧名字，确定性停止遗留 v1 broker，再创建 v3 单对象；
-5. 全程不在旧对象仍有活跃 handle 时创建同名新代对象。
-
-旧双-shm 清理是一次性迁移边界，不是通知或 attach fallback。
+3. 非 layout ABI 3 对象返回 `-EPROTO`，不自动迁移或清理；
+4. unlink 当前名字，再创建 v3 单对象；
+5. 全程不在当前布局仍有活跃 handle 时创建同名新代对象。
 
 ## 7. 状态与错误
 
@@ -190,8 +193,9 @@ FORCE:      open old -> try EXCLUSIVE -> unlink -> create/init new
 - attach 与 force 并发时只得到旧代或新代完整对象，不出现 mixed generation。
 - owner/attacher SIGKILL 后 lifetime lock 自动释放，可 force/reap。
 - 伪造/截断的 mapping size、data offset、data size、max_users 全部返回 `-EPROTO`。
-- 旧双-shm 无活跃用户时 force 清理 `_ctrl` 和遗留 broker；有用户时返回 `-EBUSY`。
-- futex、SOLE/SHARED、record/tag、全量 CTest、ASan+UBSan、TSan 回归通过。
+- 非 ABI 3 对象的 attach/force 都返回 `-EPROTO`，没有 legacy 或 broker 路径。
+- futex、SOLE/SHARED、record/tag 通过全量 CTest；单 SHM lifetime/layout 通过
+  ASan+UBSan 与 TSan 聚焦回归。
 
 ## 9. 影响说明
 
@@ -200,5 +204,13 @@ FORCE:      open old -> try EXCLUSIVE -> unlink -> create/init new
 - `src/ufifo_sync.c`：lifetime lock 与平移后的 user liveness lock。
 - `src/ufifo_init.c`：按 create/attach/map/validate/destroy 职责拆分。
 - `src/ufifo_info.c`：只报告一个 shm fd/mapping。
-- 测试不再直接创建或清理 `_ctrl`，迁移测试除外。
+- 测试不再创建或清理 `_ctrl`。
 
+## 10. 本阶段验证证据
+
+- 常规构建与全量 CTest：413/413 通过，48 个既有参数组合跳过。
+- ASan（关闭 ptrace 环境下不可用的 LeakSanitizer）：413/413 通过，48 个既有参数组合跳过。
+- TSan 聚焦 lifetime/layout：8/8 通过；attach/force 竞态额外重复 500 次通过。
+- ASan+UBSan 新增 lifetime/layout 用例全部通过；全量为 407/413，其余 6 个失败均来自
+  既有可变长记录回调对非对齐结构体的解引用，与单 SHM lifetime 路径无关，本提交不
+  顺带修改。

@@ -40,6 +40,7 @@ set(LIB_SOURCES
     src/ufifo_opts.c
     src/ufifo_sync.c
     src/ufifo_wait.c
+    src/ufifo_lifetime.c
     src/ufifo_init.c
     src/ufifo_info.c
 )

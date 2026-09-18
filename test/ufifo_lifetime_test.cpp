@@ -22,6 +22,51 @@ ufifo_t *CreateFifo(const std::string &name)
     return fifo;
 }
 
+void RunAttachForceRace()
+{
+    const std::string name = GenerateName("generation_race");
+    ufifo_t *initial = CreateFifo(name);
+    ASSERT_NE(nullptr, initial);
+    ASSERT_EQ(0, ufifo_close(initial));
+
+    std::atomic<bool> start{ false };
+    ufifo_t *attached = nullptr;
+    ufifo_t *replacement = nullptr;
+    int attach_ret = -1;
+    int force_ret = -1;
+    ufifo_init_t attach = {};
+    attach.opt = UFIFO_OPT_ATTACH;
+    ufifo_init_t force = MakeAllocOptions();
+    force.alloc.size = 128;
+
+    std::thread attach_thread([&]() {
+        while (!start.load()) {
+        }
+        attach_ret = ufifo_open(name.c_str(), &attach, &attached);
+    });
+    std::thread force_thread([&]() {
+        while (!start.load()) {
+        }
+        force_ret = ufifo_open(name.c_str(), &force, &replacement);
+    });
+    start.store(true);
+    attach_thread.join();
+    force_thread.join();
+
+    ASSERT_EQ(0, attach_ret);
+    ASSERT_TRUE(force_ret == 0 || force_ret == -EBUSY);
+    if (force_ret == 0) {
+        EXPECT_EQ(128U, ufifo_size(attached));
+        EXPECT_EQ(128U, ufifo_size(replacement));
+        EXPECT_EQ(0, ufifo_close(attached));
+        EXPECT_EQ(0, ufifo_destroy(replacement));
+    } else {
+        EXPECT_EQ(nullptr, replacement);
+        EXPECT_EQ(64U, ufifo_size(attached));
+        EXPECT_EQ(0, ufifo_destroy(attached));
+    }
+}
+
 } // namespace
 
 TEST(UfifoLifetimeTest, UsesOneNamedSharedMemoryObject)
@@ -30,13 +75,20 @@ TEST(UfifoLifetimeTest, UsesOneNamedSharedMemoryObject)
     ufifo_t *owner = CreateFifo(name);
     ASSERT_NE(nullptr, owner);
 
-    const std::string ctrl_name = name + UFIFO_CTRL_NAME_SUFFIX;
+    const std::string ctrl_name = name + "_ctrl";
     errno = 0;
     const int ctrl_fd = shm_open(ctrl_name.c_str(), O_RDWR, 0);
     EXPECT_EQ(-1, ctrl_fd);
     EXPECT_EQ(ENOENT, errno);
     if (ctrl_fd >= 0)
         close(ctrl_fd);
+
+    struct stat stat_buffer = {};
+    ASSERT_EQ(0, fstat(owner->shm_fd, &stat_buffer));
+    EXPECT_EQ(owner->mapping_size, static_cast<size_t>(stat_buffer.st_size));
+    EXPECT_EQ(owner->mapping_size, owner->ctrl->mapping_size);
+    EXPECT_EQ(owner->shm_size, owner->ctrl->data_size);
+    EXPECT_EQ(static_cast<void *>(reinterpret_cast<char *>(owner->ctrl) + owner->ctrl->data_offset), owner->shm_mem);
 
     EXPECT_EQ(0, ufifo_destroy(owner));
 }
@@ -76,6 +128,13 @@ TEST(UfifoLifetimeTest, ActiveAttachPreventsDestroy)
     const int ret = ufifo_destroy(owner);
     EXPECT_EQ(-EBUSY, ret);
     owner = ret == 0 ? nullptr : owner;
+    if (owner != nullptr) {
+        int value = 41;
+        int output = 0;
+        EXPECT_EQ(sizeof(value), ufifo_put(owner, &value, sizeof(value)));
+        EXPECT_EQ(sizeof(output), ufifo_get(owner, &output, sizeof(output)));
+        EXPECT_EQ(value, output);
+    }
 
     ASSERT_EQ(1, write(exit_pipe[1], "x", 1));
     int child_status = 0;
@@ -106,6 +165,37 @@ TEST(UfifoLifetimeTest, ActiveGenerationPreventsForce)
         EXPECT_EQ(0, ufifo_close(owner));
         EXPECT_EQ(0, ufifo_destroy(replacement));
     } else {
+        int value = 73;
+        int output = 0;
+        EXPECT_EQ(sizeof(value), ufifo_put(owner, &value, sizeof(value)));
+        EXPECT_EQ(sizeof(output), ufifo_get(owner, &output, sizeof(output)));
+        EXPECT_EQ(value, output);
         EXPECT_EQ(0, ufifo_destroy(owner));
     }
+}
+
+TEST(UfifoLifetimeTest, ForceRejectsNonCurrentLayout)
+{
+    const std::string name = GenerateName("force_layout");
+    const size_t mapping_size = 4096;
+    int fd = shm_open(name.c_str(), O_RDWR | O_CREAT | O_EXCL, 0600);
+    ASSERT_GE(fd, 0);
+    ASSERT_EQ(0, ftruncate(fd, mapping_size));
+    void *mapping = mmap(nullptr, mapping_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    ASSERT_NE(MAP_FAILED, mapping);
+    static_cast<ufifo_ctrl_t *>(mapping)->layout_abi = UFIFO_LAYOUT_ABI - 1;
+    ASSERT_EQ(0, munmap(mapping, mapping_size));
+    close(fd);
+
+    ufifo_init_t force = MakeAllocOptions();
+    ufifo_t *replacement = nullptr;
+    EXPECT_EQ(-EPROTO, ufifo_open(name.c_str(), &force, &replacement));
+    EXPECT_EQ(nullptr, replacement);
+    EXPECT_EQ(0, shm_unlink(name.c_str()));
+}
+
+TEST(UfifoLifetimeTest, AttachAndForceNeverMixGenerations)
+{
+    for (int iteration = 0; iteration < 50; iteration++)
+        RunAttachForceRace();
 }
