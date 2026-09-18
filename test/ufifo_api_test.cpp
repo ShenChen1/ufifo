@@ -99,6 +99,9 @@ TEST_F(UfifoApiTest, OpenWithMaxLengthName)
     ASSERT_EQ(UFIFO_NAME_MAX, name.size());
     ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &fifo));
     EXPECT_EQ(0, ufifo_destroy(fifo));
+    errno = 0;
+    EXPECT_EQ(-1, shm_open(name.c_str(), O_RDWR, 0));
+    EXPECT_EQ(ENOENT, errno);
 }
 
 TEST_F(UfifoApiTest, OpenWithTooLongName)
@@ -176,34 +179,10 @@ TEST_F(UfifoApiTest, VersionMismatchMajor)
     ufifo_t *fifo = nullptr;
     ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &fifo));
 
-    /*
-     * Tamper with version_major in shared memory ctrl via fork.
-     * The child directly corrupts the ctrl region and attempts attach,
-     * which should report -EPROTO (version mismatch).
-     */
+    /* The inherited mapping is shared, so the child can corrupt the fixed header directly. */
     pid_t pid = fork();
     if (pid == 0) {
-        /* Child: open ctrl shm directly and corrupt version_major */
-        std::string ctrl_name = name + "_ctrl";
-        int fd = shm_open(ctrl_name.c_str(), O_RDWR, 0600);
-        if (fd < 0)
-            _exit(1);
-
-        struct stat st;
-        if (fstat(fd, &st) < 0) {
-            close(fd);
-            _exit(1);
-        }
-
-        void *mem = mmap(NULL, st.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-        close(fd);
-        if (mem == MAP_FAILED)
-            _exit(1);
-
-        /* version_major is the first unsigned int in ctrl */
-        unsigned int *ver_major = (unsigned int *)mem;
-        *ver_major = 0xDEAD; /* bogus major version */
-        munmap(mem, st.st_size);
+        fifo->ctrl->ver.major = 0xDEAD;
 
         /* Now try to attach — should fail */
         ufifo_init_t att = {};
@@ -222,29 +201,17 @@ TEST_F(UfifoApiTest, VersionMismatchMajor)
     ufifo_destroy(fifo);
 }
 
-// Construct raw shm ctrl with mismatched version — no fork needed
+// Construct a raw single shm object with a mismatched version.
 TEST_F(UfifoApiTest, VersionMismatchViaRawShm)
 {
     std::string name = GenerateName("ver_raw");
-    std::string ctrl_name = name + "_ctrl";
-
-    // 1. Create data shm
-    int data_fd = shm_open(name.c_str(), O_RDWR | O_CREAT, 0600);
-    ASSERT_GE(data_fd, 0);
-    ASSERT_EQ(0, ftruncate(data_fd, 4096));
-    close(data_fd);
-
-    // 2. Create ctrl shm with fake version header
-    //    ufifo_ctrl_t layout starts with ufifo_version_t ver (first field).
-    //    We allocate a generous buffer to hold a plausible ctrl.
-    const size_t ctrl_size = 4096;
-    int ctrl_fd = shm_open(ctrl_name.c_str(), O_RDWR | O_CREAT, 0600);
-    ASSERT_GE(ctrl_fd, 0);
-    ASSERT_EQ(0, ftruncate(ctrl_fd, ctrl_size));
-
-    void *ctrl_mem = mmap(NULL, ctrl_size, PROT_READ | PROT_WRITE, MAP_SHARED, ctrl_fd, 0);
-    close(ctrl_fd);
-    ASSERT_NE(MAP_FAILED, ctrl_mem);
+    const size_t mapping_size = 4096;
+    int fd = shm_open(name.c_str(), O_RDWR | O_CREAT | O_EXCL, 0600);
+    ASSERT_GE(fd, 0);
+    ASSERT_EQ(0, ftruncate(fd, mapping_size));
+    void *mapping = mmap(NULL, mapping_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    close(fd);
+    ASSERT_NE(MAP_FAILED, mapping);
 
     // Write a fake ufifo_version_t at offset 0 (matches ctrl layout)
     ufifo_version_t fake_ver = {};
@@ -252,12 +219,12 @@ TEST_F(UfifoApiTest, VersionMismatchViaRawShm)
     fake_ver.minor = 88;
     fake_ver.patch = 77;
     snprintf(fake_ver.version, sizeof(fake_ver.version), "v99.88.77-fake");
-    auto *fake_ctrl = static_cast<ufifo_ctrl_t *>(ctrl_mem);
+    auto *fake_ctrl = static_cast<ufifo_ctrl_t *>(mapping);
     memcpy(&fake_ctrl->ver, &fake_ver, sizeof(fake_ver));
     fake_ctrl->layout_abi = UFIFO_LAYOUT_ABI;
     fake_ctrl->init_done = true;
 
-    munmap(ctrl_mem, ctrl_size);
+    munmap(mapping, mapping_size);
 
     // 3. Try ATTACH — version check should reject with -EPROTO
     ufifo_init_t init = {};
@@ -266,9 +233,7 @@ TEST_F(UfifoApiTest, VersionMismatchViaRawShm)
     EXPECT_EQ(-EPROTO, ufifo_open(name.c_str(), &init, &fifo));
     EXPECT_EQ(nullptr, fifo);
 
-    // 4. Cleanup shm
     shm_unlink(name.c_str());
-    shm_unlink(ctrl_name.c_str());
 }
 
 // ufifo_get_version_info: NULL ver should return -EINVAL

@@ -8,9 +8,9 @@
 #include "ufifo_layout.h"
 
 #define UFIFO_MAGIC (0xf1f0f1f0)
-#define UFIFO_NAME_BUF_SIZE (UFIFO_NAME_MAX)
-#define UFIFO_CTRL_NAME_SUFFIX "_ctrl"
-#define UFIFO_CTRL_NAME_BUF_SIZE (UFIFO_NAME_MAX + sizeof(UFIFO_CTRL_NAME_SUFFIX))
+#define UFIFO_NAME_BUF_SIZE (UFIFO_NAME_MAX + 1)
+#define UFIFO_LIFETIME_LOCK_OFFSET 0
+#define UFIFO_USER_LOCK_OFFSET(user_id) (1 + (user_id))
 
 typedef enum {
     UFIFO_WAIT_NONE = 0,
@@ -38,11 +38,10 @@ struct ufifo {
     kfifo_t kfifo;
 
     int shm_fd;
+    size_t mapping_size;
     size_t shm_size;
     void *shm_mem;
 
-    int ctrl_fd;
-    size_t ctrl_size;
     ufifo_ctrl_t *ctrl;
 };
 
@@ -54,12 +53,16 @@ int __ufifo_data_unlock(ufifo_t *handle);
 int __ufifo_ofd_lock(int fd, size_t user_id);
 int __ufifo_ofd_unlock(int fd, size_t user_id);
 int __ufifo_is_user_dead(int fd, size_t user_id);
-int __ufifo_init_lock(int fd);
-int __ufifo_init_wait(int fd);
-int __ufifo_init_unlock(int fd);
+int __ufifo_lifetime_lock_exclusive(int fd, bool wait);
+int __ufifo_lifetime_lock_shared(int fd, bool wait);
 int __ufifo_lock_init(ufifo_t *handle, ufifo_lock_e type);
 int __ufifo_lock_deinit(ufifo_t *handle);
 void __ufifo_recover_state(ufifo_t *handle);
+
+/* ufifo_lifetime.c */
+int __ufifo_open_attached_fd(const char *name);
+int __ufifo_force_unlink(const char *name);
+int __ufifo_name_matches_fd(const char *name, int fd);
 
 /* ufifo_wait.c */
 uint32_t __ufifo_wait_arm(uint32_t *wait_word);
@@ -90,11 +93,7 @@ void __ufifo_log(const char *fmt, ...);
 void __ufifo_update_cached_min_out(ufifo_t *handle);
 size_t __ufifo_unused_len(ufifo_t *handle);
 size_t __ufifo_peek_data_len(ufifo_t *handle, size_t offset, size_t in_val);
-int __ufifo_wait_for_space(ufifo_t *handle,
-                           size_t size,
-                           ufifo_wait_type_e wait_type,
-                           long millisec,
-                           size_t *out_len);
+int __ufifo_wait_for_space(ufifo_t *handle, size_t size, ufifo_wait_type_e wait_type, long millisec, size_t *out_len);
 int __ufifo_wait_for_data(ufifo_t *handle, ufifo_wait_type_e wait_type, long millisec, size_t *out_len);
 
 /*

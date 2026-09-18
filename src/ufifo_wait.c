@@ -51,10 +51,8 @@ void __ufifo_wait_notify(uint32_t *wait_word)
     }
 }
 
-static int __ufifo_wait_on_word(ufifo_t *handle,
-                                uint32_t *wait_word,
-                                uint32_t expected,
-                                const struct timespec *deadline)
+static int
+__ufifo_wait_on_word(ufifo_t *handle, uint32_t *wait_word, uint32_t expected, const struct timespec *deadline)
 {
     __ufifo_data_unlock(handle);
     const int ret = __ufifo_futex_wait(wait_word, expected, deadline);
@@ -69,7 +67,7 @@ static int __ufifo_try_reap_dead_readers(ufifo_t *handle)
     for (size_t i = 0; i < handle->ctrl->max_users; i++) {
         if (i == handle->user_id || !smp_load_acquire(&handle->ctrl->users[i].active))
             continue;
-        if (!__ufifo_is_user_dead(handle->ctrl_fd, i))
+        if (!__ufifo_is_user_dead(handle->shm_fd, i))
             continue;
 
         __ufifo_ctrl_lock(handle);
@@ -98,11 +96,7 @@ static size_t __ufifo_recheck_space(ufifo_t *handle, size_t size)
     return __ufifo_unused_len(handle);
 }
 
-int __ufifo_wait_for_space(ufifo_t *handle,
-                           size_t size,
-                           ufifo_wait_type_e wait_type,
-                           long millisec,
-                           size_t *out_len)
+int __ufifo_wait_for_space(ufifo_t *handle, size_t size, ufifo_wait_type_e wait_type, long millisec, size_t *out_len)
 {
     int ret = 0;
     size_t len = 0;
@@ -149,8 +143,8 @@ int __ufifo_wait_for_data(ufifo_t *handle, ufifo_wait_type_e wait_type, long mil
         timeout = &deadline;
     }
 
-    while ((len = __ufifo_peek_data_len(
-                handle, READ_ONCE(handle->kfifo.out), smp_load_acquire(handle->kfifo.in))) == 0) {
+    while ((len = __ufifo_peek_data_len(handle, READ_ONCE(handle->kfifo.out), smp_load_acquire(handle->kfifo.in)))
+           == 0) {
         if (wait_type == UFIFO_WAIT_NONE) {
             ret = -EAGAIN;
             break;

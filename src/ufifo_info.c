@@ -47,11 +47,9 @@ void ufifo_dump(ufifo_t *handle)
     size_t out = READ_ONCE(handle->kfifo.out);
 
     __ufifo_log("=== ufifo_dump: %s ===\n", handle->name);
-    __ufifo_log("Shm fd: %d, Size: %zu (Mask: 0x%zx)\n", handle->shm_fd, size, mask);
-    __ufifo_log("Ctrl fd: %d, Max Users: %zu, Num Users: %zu\n",
-                handle->ctrl_fd,
-                handle->ctrl->max_users,
-                handle->ctrl->num_users);
+    __ufifo_log(
+        "Shm fd: %d, Mapping: %zu, Data: %zu (Mask: 0x%zx)\n", handle->shm_fd, handle->mapping_size, size, mask);
+    __ufifo_log("Max Users: %zu, Num Users: %zu\n", handle->ctrl->max_users, handle->ctrl->num_users);
 
     __ufifo_log("Data Mode: %s\n", __ufifo_is_shared(handle) ? "SHARED" : "SOLE");
 
