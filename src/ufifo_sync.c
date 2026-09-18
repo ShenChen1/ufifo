@@ -14,6 +14,11 @@ void __ufifo_recover_state(ufifo_t *handle)
     size_t i;
 
     for (i = 0; i < ctrl->max_users; i++) {
+        if (handle->registered && i == handle->user_id) {
+            if (smp_load_acquire(&ctrl->users[i].active))
+                count++;
+            continue;
+        }
         if (smp_load_acquire(&ctrl->users[i].active)) {
             if (__ufifo_is_user_dead(handle->shm_fd, i)) {
                 smp_store_release(&ctrl->users[i].active, false);
@@ -36,18 +41,15 @@ int __ufifo_ctrl_lock(ufifo_t *handle)
     if (ret == EOWNERDEAD) {
         __ufifo_log("WARN: ctrl_mutex owner died, recovering state\n");
         __ufifo_recover_state(handle);
-        pthread_mutex_consistent(&handle->ctrl->ctrl_mutex);
-        ret = 0;
-    } else if (ret != 0) {
-        __ufifo_log("FATAL: ufifo ctrl_mutex lock failed (err=%d)\n", ret);
-        abort();
+        ret = pthread_mutex_consistent(&handle->ctrl->ctrl_mutex);
     }
-    return ret;
+    return ret == 0 ? 0 : -ret;
 }
 
 int __ufifo_ctrl_unlock(ufifo_t *handle)
 {
-    return pthread_mutex_unlock(&handle->ctrl->ctrl_mutex);
+    int ret = pthread_mutex_unlock(&handle->ctrl->ctrl_mutex);
+    return ret == 0 ? 0 : -ret;
 }
 
 int __ufifo_data_lock(ufifo_t *handle)
@@ -57,13 +59,20 @@ int __ufifo_data_lock(ufifo_t *handle)
 
     int ret = pthread_mutex_lock(&handle->ctrl->data_mutex);
     if (ret == EOWNERDEAD) {
-        pthread_mutex_consistent(&handle->ctrl->data_mutex);
-        ret = 0;
-    } else if (ret != 0) {
-        __ufifo_log("FATAL: ufifo data_mutex lock failed (err=%d)\n", ret);
-        abort();
+        __ufifo_reset_data_locked(handle);
+        int consistent_ret = pthread_mutex_consistent(&handle->ctrl->data_mutex);
+        if (consistent_ret == 0) {
+            __ufifo_notify_readers(handle);
+            __ufifo_notify_writers(handle);
+        }
+        int unlock_ret = pthread_mutex_unlock(&handle->ctrl->data_mutex);
+        if (consistent_ret != 0)
+            return -consistent_ret;
+        if (unlock_ret != 0)
+            return -unlock_ret;
+        return -EOWNERDEAD;
     }
-    return ret;
+    return ret == 0 ? 0 : -ret;
 }
 
 int __ufifo_data_unlock(ufifo_t *handle)
@@ -71,7 +80,8 @@ int __ufifo_data_unlock(ufifo_t *handle)
     if (handle->lock_type == UFIFO_LOCK_NONE)
         return 0;
 
-    return pthread_mutex_unlock(&handle->ctrl->data_mutex);
+    int ret = pthread_mutex_unlock(&handle->ctrl->data_mutex);
+    return ret == 0 ? 0 : -ret;
 }
 
 static int __ufifo_set_ofd_lock(int fd, short type, off_t start, off_t len, int command)

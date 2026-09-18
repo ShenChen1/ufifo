@@ -46,8 +46,9 @@ unlink 也使“对象仍被谁持有”无法由一个内核对象表达。
 - 不改变 FIFO 数据分发、record hook 或 futex wait-word 语义。
 - 不让 `ufifo_destroy()` 等待其他 handle 退出；忙时立即返回 `-EBUSY`。
 - 不提供跨主机、持久化或崩溃后保留数据的保证。
-- 不兼容、探测或清理旧双-shm 布局，也不处理遗留 broker；非 ABI 3 对象返回 `-EPROTO`。
-- fork 继承的同一 open file description 不计作独立 lifetime lease；child 若需独立保证必须重新 attach。
+- 不兼容、探测或清理旧双-shm 布局，也不处理遗留 broker；attach 对非 ABI 3 对象返回 `-EPROTO`。
+- fork 继承的同一 open file description 不计作独立 lifetime lease；继承 handle 的 API 返回
+  `-ECHILD` 并设置 `errno=ECHILD`，child 必须重新 attach。
 
 ### Constraints
 
@@ -80,9 +81,10 @@ offset 0
 +------------------------------+ <- mapping_size / file size
 ```
 
-固定头新增：
+控制头包含单映射边界：
 
 ```c
+uint32_t layout_abi;
 size_t mapping_size;
 size_t data_offset;
 size_t data_size;
@@ -99,8 +101,8 @@ size_t data_size;
 - `mask + 1 == data_size`；
 - `handle->ctrl` 指向映射起点，`handle->shm_mem` 指向 `base + data_offset`。
 
-共享布局 ABI 从 2 增加到 3。公开 C ABI 和 SONAME 仍为 2，因为公开结构和函数签名
-不变；旧共享对象由 `layout_abi` 明确拒绝。
+共享布局 ABI 当前为 3；attach 通过 `layout_abi` 明确拒绝不兼容对象。初始化完成性
+由 lifetime OFD lock 仲裁，不在共享布局中维护额外状态机。
 
 ## 4. OFD Lock 分配
 
@@ -114,7 +116,7 @@ byte 1 + user_id: user liveness lock
 ### 4.1 Lifetime lock
 
 - 新 ALLOC：以 exclusive lock 初始化；完成后原地降级为 shared lock并保留。
-- ATTACH：阻塞获取 shared lock；它同时等待初始化完成，并在 handle close 前保留。
+- ATTACH：非阻塞获取 shared lock；与初始化冲突时返回 `-EAGAIN`，成功后在 handle close 前保留。
 - DESTROY：把本 handle 的 shared lock非阻塞升级为 exclusive；失败返回 `-EBUSY`。
 - FORCE：临时打开当前名字并非阻塞获取 exclusive；失败返回 `-EBUSY`。
 - 进程崩溃或最后一个 fd close 时，内核自动释放对应 OFD lock。
@@ -129,7 +131,7 @@ byte 1 + user_id: user liveness lock
 attach 的顺序固定为：
 
 1. `shm_open(name)` 得到 candidate fd；
-2. 在 candidate byte 0 获取 shared lifetime lock；
+2. 在 candidate byte 0 非阻塞获取 shared lifetime lock；冲突时返回 `-EAGAIN`；
 3. 再次 `shm_open(name)` 得到 current fd；
 4. 分别 `fstat()`，比较 `st_dev` 与 `st_ino`；
 5. 相同则关闭 current fd并继续；不同或名字暂时不存在则关闭 candidate 并返回
@@ -156,7 +158,7 @@ destroy，直到 handle close。
 3. 成功后 unregister 当前用户、销毁 mutex、unlink 单一名字；
 4. unmap、close、释放 handle。
 
-exclusive lock 证明不存在其他遵守 v3 协议的活跃 handle，因此不会在其他进程仍使用
+exclusive lock 证明不存在其他遵守当前协议的活跃 handle，因此不会在其他进程仍使用
 共享 mutex/futex 时销毁它们。
 
 ### 6.2 Force
@@ -164,10 +166,10 @@ exclusive lock 证明不存在其他遵守 v3 协议的活跃 handle，因此不
 `ALLOC + force=1`：
 
 1. 若名字不存在，直接创建；
-2. 若是 v3 对象，只有取得 exclusive lifetime lock 才能 unlink；否则 `-EBUSY`；
-3. 非 layout ABI 3 对象返回 `-EPROTO`，不自动迁移或清理；
-4. unlink 当前名字，再创建 v3 单对象；
-5. 全程不在当前布局仍有活跃 handle 时创建同名新代对象。
+2. 只有取得 exclusive lifetime lock 才能 unlink；否则 `-EBUSY`；
+3. force 表示调用方拥有该名字，因此不探测对象布局，直接 unlink 当前对象；
+4. 创建 ABI 3 单对象；
+5. 全程不在遵守 lifetime lock 的活跃 handle 存在时创建同名新代对象。
 
 ## 7. 状态与错误
 
@@ -187,6 +189,9 @@ FORCE:      open old -> try EXCLUSIVE -> unlink -> create/init new
 - 初次 attach 时名字不存在：`-ENOENT`；
 - 对象尚未初始化或同名对象在 attach 期间换代：`-EAGAIN`；
 - 初始化失败：在 exclusive lock 下 unlink 未完成对象，close 自动释放锁。
+- fork 子进程使用继承 handle：`-ECHILD`；
+- robust data mutex owner death：下一个 locker 清空不确定数据、恢复 mutex 并返回
+  `-EOWNERDEAD`；后续操作正常继续。
 
 ## 8. 验证矩阵
 
@@ -199,13 +204,16 @@ FORCE:      open old -> try EXCLUSIVE -> unlink -> create/init new
 - owner/attacher SIGKILL 后 lifetime lock 自动释放，可 force/reap。
 - 伪造/截断的 mapping size、data offset、data size、max_users，以及由 `max_users + 1`
   导致的布局溢出全部返回 `-EPROTO`。
-- 非 ABI 3 对象的 attach/force 都返回 `-EPROTO`，没有 legacy 或 broker 路径。
+- 非 ABI 3 对象的 attach 返回 `-EPROTO`；force 不探测 layout，直接替换无活跃 lease 的对象。
+- creator 在任意初始化阶段死亡后，force 可以在取得 exclusive lock 后回收残留名字。
+- fork child 的继承 handle 返回 `-ECHILD`，不会注销 parent slot 或解除 parent OFD lock。
+- data mutex owner death 由下一个 locker 检测；该调用返回 `-EOWNERDEAD`，后续读写正常。
 - futex、SOLE/SHARED、record/tag 通过全量 CTest；单 SHM lifetime/layout 通过
   ASan+UBSan 与 TSan 聚焦回归。
 
 ## 9. 影响说明
 
-- `inc/ufifo_layout.h`：布局 ABI 3，增加单映射边界字段。
+- `inc/ufifo_layout.h`：布局 ABI 3，保存单映射边界，不增加初始化或数据健康状态机。
 - `inc/ufifo_internal.h`：删除 `ctrl_fd/ctrl_size`，增加 `mapping_size`。
 - `src/ufifo_sync.c`：lifetime lock 与平移后的 user liveness lock。
 - `src/ufifo_init.c`：按 create/attach/map/validate/destroy 职责拆分。
@@ -215,6 +223,11 @@ FORCE:      open old -> try EXCLUSIVE -> unlink -> create/init new
 
 ## 10. 本阶段验证证据
 
+- 返回约定统一后，常规构建与全量 CTest：421/421 通过，48 个既有参数组合跳过；
+  ASan+UBSan 聚焦接口与 fork guard 用例：9/9 通过（`detect_leaks=0`）。
+- 简化后的 P0 常规构建与全量 CTest：420/420 通过，48 个既有参数组合跳过。
+- fork guard、ctrl recovery、owner-death reset、force 和 attach/force race 共 7 个聚焦用例
+  通过 ASan+UBSan（`detect_leaks=0`；当前 ptrace 环境不支持 LeakSanitizer）。
 - 常规构建与全量 CTest：416/416 通过，48 个既有参数组合跳过。
 - ASan（关闭 ptrace 环境下不可用的 LeakSanitizer）：416/416 通过，48 个既有参数组合跳过。
 - ASan、ASan+UBSan、TSan 聚焦 lifetime/layout 与 attach 错误契约：各 13/13 通过；

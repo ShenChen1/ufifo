@@ -59,7 +59,7 @@ int main(void)
     ufifo_put(test, rec, sizeof(record_t) + rec->size);
 
     /* show the size of the next record in the fifo */
-    printf("fifo peek len: %zu\n", ufifo_peek_len(test));
+    printf("fifo peek len: %zd\n", ufifo_peek_len(test));
 
     /* put in variable length data */
     for (i = 0; i < 10; i++) {
@@ -72,7 +72,7 @@ int main(void)
     printf("skip 1st element\n");
     ufifo_skip(test);
 
-    printf("fifo len: %zu\n", ufifo_len(test));
+    printf("fifo len: %zd\n", ufifo_len(test));
 
     /* show the first record without removing from the fifo */
     ret = ufifo_peek(test, rec, sizeof(buf));
@@ -86,7 +86,7 @@ int main(void)
 
     /* check the correctness of all values in the fifo */
     i = 0;
-    while (ufifo_len(test)) {
+    while (ufifo_len(test) > 0) {
         ret = ufifo_get(test, rec, sizeof(buf));
         if (ret < 0) {
             fprintf(stderr, "ufifo_get failed: %s\n", strerror((int)-ret));

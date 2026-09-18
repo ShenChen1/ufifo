@@ -30,13 +30,13 @@ Here is how `ufifo` compares to other common alternatives:
   - `SHARED` — Broadcast: every attached reader receives the full stream independently, each at its own pace.
 - **Lock-Free SPMC Broadcast**: Pair `LOCK_NONE` with `SHARED` mode for true zero-contention fan-out. One producer, N consumers, no mutex in the data path — ideal for real-time video/sensor/market-data distribution.
 - **Futex-Based Backpressure**: Blocking readers and writers sleep directly on shared 32-bit wait words. The uncontended data path performs no notification syscall, and a publish wakes all waiters for the affected direction.
-- **Self-Healing**: Crashed consumers never stall the system. Dead processes are detected automatically, their slots reclaimed, and buffer space recovered — no watchdog, no manual cleanup required.
+- **Explicit Crash Recovery**: Dead consumers are reaped automatically. If a process dies while holding the robust data mutex, the next locker discards the uncertain ring contents, returns `-EOWNERDEAD`, and restores service for later operations.
 - **Record Mode with Tag Seeking**: Beyond raw byte streams, push structured records with user-defined boundaries. Tag records and jump directly to the `oldest` or `newest` matching entry, skipping stale data in O(n) scan — perfect for frame-accurate video playback or sensor replay.
 - **Custom Serialization Hooks**: Plug in your own `recput`/`recget` callbacks to serialize and deserialize directly inside the ring buffer. The library hands you the raw split-buffer pointers — you control the format, no intermediate copies.
 - **Customizable Diagnostics**: Inject your own logging callback via `ufifo_set_log_handler` to integrate `ufifo` warnings and debug outputs seamlessly into your application's logging infrastructure.
 - **Safe Across Versions**: A version stamp is embedded into shared memory at creation time. If a client links against an incompatible library version, `ufifo_open` rejects it immediately — no silent corruption.
 - **Three Blocking Flavors**: Every read/write operation comes in non-blocking, blocking (futex-based), and timed variants (`_block`, `_timeout`), so you choose the back-pressure strategy that fits your architecture.
-- **Unambiguous Data Results**: `ufifo_put*()`, `ufifo_get*()`, and `ufifo_peek*()` return the actual byte count when `ret >= 0`, or the corresponding negative `errno` when `ret < 0`.
+- **Unambiguous Results**: Data and length APIs return the actual byte count when `ret >= 0`; handle control APIs return `0` on success. These handle APIs return the corresponding negative `errno` on failure and also set `errno`.
 - **Lightweight, No External Dependencies**: Pure C99 + POSIX. No Boost, no Protobuf, no ZeroMQ runtime — just link against `librt` and `libpthread`.
 
 ## Common Topologies & Use Cases
@@ -56,7 +56,7 @@ Here is how `ufifo` compares to other common alternatives:
 
 - **Scenario**: Work-stealing schedulers, API request load balancers, or distributed job processors.
 - **The Magic**: Multiple processes safely compete for the exact same payload stream. `SOLE` mode guarantees that any given message is consumed by *exactly one* worker dynamically based on who grabs the lock first.
-- **The Advantage**: Highly decoupled scaling with crash tolerance. Thanks to `PTHREAD_MUTEX_ROBUST` under the hood, if a worker process OOMs or segfaults while grabbing a payload from the FIFO, the lock instantly recovers, preventing the entire worker fleet from halting. Dead workers' registration slots are automatically recycled when new workers join.
+- **The Advantage**: Highly decoupled scaling with explicit crash detection. `PTHREAD_MUTEX_ROBUST` prevents permanent mutex deadlock; the recovering operation reports `-EOWNERDEAD` instead of consuming uncertain payloads. Dead workers' registration slots are automatically recycled.
 
 ### 3. Bounded Blocking Pipeline
 `UFIFO_LOCK_PROCESS` + `ufifo_put_block()` / `ufifo_get_block()`
@@ -82,8 +82,8 @@ Based on its architectural design, `ufifo` has several distinctive advantages an
 ### Pros
 
 - **Lock-Free Performance (`UFIFO_LOCK_NONE`)**: Achieves extreme high performance leveraging C11 memory barriers (`smp_load_acquire` / `smp_store_release`) for Single-Producer scenarios, completely bypassing kernel space.
-- **Multi-Layer Crash Recovery**: Combines `PTHREAD_MUTEX_ROBUST` (auto-recovers deadlocked mutexes), OFD lock-based liveness detection (kernel-mediated, zero-overhead dead process detection), and automatic dead-reader reaping (transparently reclaims buffer space and registration slots).
-- **Race-Free Lifecycle**: OFD file locking + `init_done` atomic fence eliminates initialization race conditions between `ALLOC` and `ATTACH` without resorting to sleep/retry polling.
+- **Multi-Layer Crash Detection**: Combines robust mutex owner-death recovery, OFD lock-based liveness detection, and automatic dead-reader reaping.
+- **Race-Free Lifecycle**: OFD file locking serializes initialization, attach, destroy, and force without sleep/retry polling inside the core.
 - **Versatile Distribution Modes**: Natively supports both `SOLE` (competing consumers, perfect for worker pools) and `SHARED` (broadcast/pub-sub topologies).
 - **Process-Shared Futex Waits**: Blocking and timed operations wait directly on shared RX/TX words, with no broker process or descriptor distribution protocol.
 - **Zero-Allocation Record Hooks**: Custom callbacks (`recsize`, `recput`, `recget`) enable direct serialization/deserialization within the shared ring buffer, avoiding intermediate memory copies.

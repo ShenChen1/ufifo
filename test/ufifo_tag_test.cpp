@@ -85,7 +85,7 @@ TEST_F(TagSpecificTest, MultiTagMixed)
     }
 
     int count = 0;
-    while (ufifo_len(fifo_)) {
+    while (ufifo_len(fifo_) > 0) {
         ufifo_oldest(fifo_, 0);
         char out_buf[128] = {};
         TaggedRecord *out = reinterpret_cast<TaggedRecord *>(out_buf);

@@ -240,7 +240,6 @@ TEST_F(UfifoApiTest, VersionMismatchViaRawShm)
     auto *fake_ctrl = static_cast<ufifo_ctrl_t *>(mapping);
     memcpy(&fake_ctrl->ver, &fake_ver, sizeof(fake_ver));
     fake_ctrl->layout_abi = UFIFO_LAYOUT_ABI;
-    fake_ctrl->init_done = true;
 
     munmap(mapping, mapping_size);
 
@@ -385,7 +384,7 @@ TEST_F(UfifoApiTest, PutOversized)
     ufifo_t *fifo = nullptr;
     ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &fifo));
 
-    unsigned int capacity = ufifo_size(fifo);
+    ssize_t capacity = ufifo_size(fifo);
     std::vector<char> large_buf(capacity + 1, 'x');
 
     errno = 0;

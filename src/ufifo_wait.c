@@ -51,12 +51,21 @@ void __ufifo_wait_notify(uint32_t *wait_word)
     }
 }
 
-static int
-__ufifo_wait_on_word(ufifo_t *handle, uint32_t *wait_word, uint32_t expected, const struct timespec *deadline)
+static int __ufifo_wait_on_word(ufifo_t *handle,
+                                uint32_t *wait_word,
+                                uint32_t expected,
+                                const struct timespec *deadline,
+                                ufifo_wait_result_t *result)
 {
-    __ufifo_data_unlock(handle);
+    int unlock_ret = __ufifo_data_unlock(handle);
+    result->data_lock_held = false;
+    if (unlock_ret < 0)
+        return unlock_ret;
     const int ret = __ufifo_futex_wait(wait_word, expected, deadline);
-    __ufifo_data_lock(handle);
+    const int lock_ret = __ufifo_data_lock(handle);
+    if (lock_ret < 0)
+        return lock_ret;
+    result->data_lock_held = true;
     return ret;
 }
 
@@ -70,12 +79,15 @@ static int __ufifo_try_reap_dead_readers(ufifo_t *handle)
         if (!__ufifo_is_user_dead(handle->shm_fd, i))
             continue;
 
-        __ufifo_ctrl_lock(handle);
+        int ret = __ufifo_ctrl_lock(handle);
+        if (ret < 0)
+            continue;
         if (READ_ONCE(&handle->ctrl->users[i].active)) {
             __ufifo_reap_dead_user(handle, i);
             cleaned = 1;
         }
-        __ufifo_ctrl_unlock(handle);
+        if (__ufifo_ctrl_unlock(handle) < 0)
+            return cleaned;
     }
 
     if (cleaned) {
@@ -96,7 +108,8 @@ static size_t __ufifo_recheck_space(ufifo_t *handle, size_t size)
     return __ufifo_unused_len(handle);
 }
 
-int __ufifo_wait_for_space(ufifo_t *handle, size_t size, ufifo_wait_type_e wait_type, long millisec, size_t *out_len)
+int __ufifo_wait_for_space(
+    ufifo_t *handle, size_t size, ufifo_wait_type_e wait_type, long millisec, ufifo_wait_result_t *result)
 {
     int ret = 0;
     size_t len = 0;
@@ -117,7 +130,7 @@ int __ufifo_wait_for_space(ufifo_t *handle, size_t size, ufifo_wait_type_e wait_
         const uint32_t expected = __ufifo_wait_arm(&handle->ctrl->tx_wait_word);
         if (__ufifo_unused_len(handle) >= size)
             continue;
-        ret = __ufifo_wait_on_word(handle, &handle->ctrl->tx_wait_word, expected, timeout);
+        ret = __ufifo_wait_on_word(handle, &handle->ctrl->tx_wait_word, expected, timeout, result);
         if (ret)
             break;
     }
@@ -126,11 +139,12 @@ int __ufifo_wait_for_space(ufifo_t *handle, size_t size, ufifo_wait_type_e wait_
         errno = ret > 0 ? ret : -ret;
         len = 0;
     }
-    *out_len = len;
+    result->length = len;
     return ret;
 }
 
-int __ufifo_wait_for_data(ufifo_t *handle, ufifo_wait_type_e wait_type, long millisec, size_t *out_len)
+int __ufifo_wait_for_data(
+    ufifo_t *handle, ufifo_wait_type_e wait_type, long millisec, ufifo_wait_result_t *result)
 {
     int ret = 0;
     size_t len = 0;
@@ -143,7 +157,8 @@ int __ufifo_wait_for_data(ufifo_t *handle, ufifo_wait_type_e wait_type, long mil
         timeout = &deadline;
     }
 
-    while ((len = __ufifo_peek_data_len(handle, READ_ONCE(handle->kfifo.out), smp_load_acquire(handle->kfifo.in)))
+    while ((len = __ufifo_peek_data_len(
+                handle, READ_ONCE(handle->kfifo.out), smp_load_acquire(handle->kfifo.in)))
            == 0) {
         if (wait_type == UFIFO_WAIT_NONE) {
             ret = -EAGAIN;
@@ -154,7 +169,7 @@ int __ufifo_wait_for_data(ufifo_t *handle, ufifo_wait_type_e wait_type, long mil
         len = __ufifo_peek_data_len(handle, READ_ONCE(handle->kfifo.out), smp_load_acquire(handle->kfifo.in));
         if (len > 0)
             continue;
-        ret = __ufifo_wait_on_word(handle, &rx_ctrl->rx_wait_word, expected, timeout);
+        ret = __ufifo_wait_on_word(handle, &rx_ctrl->rx_wait_word, expected, timeout, result);
         if (ret)
             break;
     }
@@ -163,6 +178,6 @@ int __ufifo_wait_for_data(ufifo_t *handle, ufifo_wait_type_e wait_type, long mil
         errno = ret > 0 ? ret : -ret;
         len = 0;
     }
-    *out_len = len;
+    result->length = len;
     return ret;
 }

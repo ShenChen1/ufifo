@@ -19,7 +19,7 @@ TEST_F(EdgeCaseTest, AllocForceOverwrite)
 
     init.alloc.size = 128; // Force overwrite with different parameters
     ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &fifo));
-    EXPECT_EQ(0u, ufifo_len(fifo));
+    EXPECT_EQ(0, ufifo_len(fifo));
     ufifo_destroy(fifo);
 }
 
@@ -56,7 +56,7 @@ TEST_F(EdgeCaseTest, SoleModeSlotReusePreservesUnreadData)
     char output[sizeof(input)] = {};
     ASSERT_EQ(sizeof(output), ufifo_get(reader, output, sizeof(output)));
     EXPECT_EQ(0, memcmp(input, output, sizeof(input)));
-    EXPECT_EQ(0u, ufifo_len(reader));
+    EXPECT_EQ(0, ufifo_len(reader));
 
     ufifo_close(replacement);
     ufifo_destroy(reader);

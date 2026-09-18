@@ -33,7 +33,9 @@
 - active attach 时 destroy/force 返回 `-EBUSY`，原 handle 保持可用；
 - 最后一个其他 handle close 或崩溃后 destroy/force 成功；
 - attach 与 force 并发只得到单一完整代，不混合 inode；
-- 非 ABI 3 对象明确返回 `-EPROTO`，不提供 legacy/broker 路径。
+- attach 对非法 ABI 3 布局返回 `-EPROTO`；force 在取得 exclusive lifetime lock 后直接替换对象。
+- fork child 使用继承 core handle 返回 `-ECHILD`，不影响 parent lifetime/user slot。
+- robust data mutex owner death 后，下一个 locker 清空不确定数据并返回 `-EOWNERDEAD`，后续操作恢复正常。
 
 ### 2.3 Adapter happy path
 
@@ -96,4 +98,4 @@
 | SOLE 多消费者惊群 | 先保证正确；以 benchmark 决定是否增加 wake chaining，不能牺牲语义 |
 | 32 位 epoch ABA | 明确运行边界；arm-to-wait 窗口不可能完成 `2^31` 次有效 notify |
 | io_uring 被系统策略禁用 | create 明确失败；不 fallback、不影响纯 core API |
-| 旧共享布局混用 | layout ABI 3 校验，attach/force 返回 `-EPROTO` |
+| 旧共享布局混用 | attach 通过 layout ABI 3 拒绝；force 明确替换名字对应对象 |

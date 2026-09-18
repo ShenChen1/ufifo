@@ -256,18 +256,22 @@ class UfifoTestAdapter {
         return ret;
     }
 
-    int PeekLen(ufifo_t *handle)
+    ssize_t PeekLen(ufifo_t *handle)
     {
         return ufifo_peek_len(handle);
     }
 
-    int Skip(ufifo_t *handle)
+    ssize_t Skip(ufifo_t *handle)
     {
         size_t size = format_ == DataFormat::BYTESTREAM ? sizeof(int) : 1;
+        ssize_t skipped = 0;
         for (size_t i = 0; i < size; i++) {
-            ufifo_skip(handle);
+            ssize_t ret = ufifo_skip(handle);
+            if (ret < 0)
+                return ret;
+            skipped += ret;
         }
-        return 0;
+        return skipped;
     }
 
     ufifo_t *GetMainHandle() const

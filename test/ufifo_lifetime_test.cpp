@@ -56,9 +56,9 @@ void RunAttachForceRace()
     ASSERT_TRUE(attach_ret == 0 || attach_ret == -EAGAIN || attach_ret == -ENOENT);
     ASSERT_TRUE(force_ret == 0 || force_ret == -EBUSY);
     if (force_ret == 0) {
-        EXPECT_EQ(128U, ufifo_size(replacement));
+        EXPECT_EQ(128, ufifo_size(replacement));
         if (attach_ret == 0) {
-            EXPECT_EQ(128U, ufifo_size(attached));
+            EXPECT_EQ(128, ufifo_size(attached));
             EXPECT_EQ(0, ufifo_close(attached));
         } else {
             EXPECT_EQ(nullptr, attached);
@@ -67,7 +67,7 @@ void RunAttachForceRace()
     } else {
         ASSERT_EQ(0, attach_ret);
         EXPECT_EQ(nullptr, replacement);
-        EXPECT_EQ(64U, ufifo_size(attached));
+        EXPECT_EQ(64, ufifo_size(attached));
         EXPECT_EQ(0, ufifo_destroy(attached));
     }
 }
@@ -112,6 +112,61 @@ TEST(UfifoLifetimeTest, AttachToUninitializedObjectReturnsAgain)
 
     close(fd);
     EXPECT_EQ(0, shm_unlink(name.c_str()));
+}
+
+TEST(UfifoLifetimeTest, ForceReplacesAbandonedObject)
+{
+    const std::string name = GenerateName("force_pre_header");
+    const int fd = shm_open(name.c_str(), O_RDWR | O_CREAT | O_EXCL, 0600);
+    ASSERT_GE(fd, 0);
+    ASSERT_EQ(0, close(fd));
+
+    ufifo_init_t force = MakeAllocOptions();
+    ufifo_t *replacement = nullptr;
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &force, &replacement));
+    ASSERT_NE(nullptr, replacement);
+    EXPECT_EQ(0, ufifo_destroy(replacement));
+}
+
+TEST(UfifoLifetimeTest, ForkInheritedHandleIsRejected)
+{
+    const std::string name = GenerateName("fork_inherited");
+    ufifo_init_t init = MakeAllocOptions();
+    init.alloc.max_users = 1;
+    ufifo_t *owner = nullptr;
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &owner));
+
+    const pid_t pid = fork();
+    ASSERT_GE(pid, 0);
+    if (pid == 0) {
+        char value = 'x';
+        errno = 0;
+        const bool rejected = ufifo_reset(owner) == -ECHILD && errno == ECHILD
+                              && ufifo_size(owner) == -ECHILD && errno == ECHILD
+                              && ufifo_len(owner) == -ECHILD && errno == ECHILD
+                              && ufifo_skip(owner) == -ECHILD && errno == ECHILD
+                              && ufifo_put(owner, &value, sizeof(value)) == -ECHILD
+                              && ufifo_destroy(owner) == -ECHILD && ufifo_close(owner) == -ECHILD;
+        _exit(rejected ? 0 : 1);
+    }
+
+    int status = 0;
+    ASSERT_EQ(pid, waitpid(pid, &status, 0));
+    ASSERT_TRUE(WIFEXITED(status));
+    ASSERT_EQ(0, WEXITSTATUS(status));
+
+    ufifo_init_t attach = {};
+    attach.opt = UFIFO_OPT_ATTACH;
+    ufifo_t *client = nullptr;
+    EXPECT_EQ(-ENOSPC, ufifo_open(name.c_str(), &attach, &client));
+    EXPECT_EQ(nullptr, client);
+
+    char input = 'p';
+    char output = 0;
+    EXPECT_EQ(1, ufifo_put(owner, &input, sizeof(input)));
+    EXPECT_EQ(1, ufifo_get(owner, &output, sizeof(output)));
+    EXPECT_EQ(input, output);
+    EXPECT_EQ(0, ufifo_destroy(owner));
 }
 
 TEST(UfifoLifetimeTest, ActiveAttachPreventsDestroy)
@@ -195,7 +250,7 @@ TEST(UfifoLifetimeTest, ActiveGenerationPreventsForce)
     }
 }
 
-TEST(UfifoLifetimeTest, ForceRejectsNonCurrentLayout)
+TEST(UfifoLifetimeTest, ForceReplacesObjectRegardlessOfLayout)
 {
     const std::string name = GenerateName("force_layout");
     const size_t mapping_size = 4096;
@@ -210,9 +265,9 @@ TEST(UfifoLifetimeTest, ForceRejectsNonCurrentLayout)
 
     ufifo_init_t force = MakeAllocOptions();
     ufifo_t *replacement = nullptr;
-    EXPECT_EQ(-EPROTO, ufifo_open(name.c_str(), &force, &replacement));
-    EXPECT_EQ(nullptr, replacement);
-    EXPECT_EQ(0, shm_unlink(name.c_str()));
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &force, &replacement));
+    ASSERT_NE(nullptr, replacement);
+    EXPECT_EQ(0, ufifo_destroy(replacement));
 }
 
 TEST(UfifoLifetimeTest, AttachAndForceNeverMixGenerations)
