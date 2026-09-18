@@ -36,8 +36,8 @@ unlink 也使“对象仍被谁持有”无法由一个内核对象表达。
 3. 每个成功 open 的 handle 在整个生命周期持有 shared OFD lifetime lock。
 4. destroy/force 必须先取得 exclusive lifetime lock；有其他活跃 handle 时返回
    `-EBUSY`，不修改名字或现有对象。
-5. attach 取得 shared lock 后复核名字仍指向同一个 inode；若已换代则重试，绝不
-   attach 到已被替换的匿名旧对象。
+5. attach 取得 shared lock 后复核名字仍指向同一个 inode；若已换代则返回
+   `-EAGAIN`，绝不 attach 到已被替换的匿名旧对象。
 
 ### Non-Goals
 
@@ -130,12 +130,14 @@ attach 的顺序固定为：
 2. 在 candidate byte 0 获取 shared lifetime lock；
 3. 再次 `shm_open(name)` 得到 current fd；
 4. 分别 `fstat()`，比较 `st_dev` 与 `st_ino`；
-5. 相同则关闭 current fd并继续；不同或名字暂时不存在则关闭 candidate 并重试。
+5. 相同则关闭 current fd并继续；不同或名字暂时不存在则关闭 candidate 并返回
+   `-EAGAIN`。
 
 新对象在 `shm_open(O_EXCL)` 与取得 exclusive lock 之间存在极短的名字发布窗口。
-attach 若发现名字短暂不存在，或看到小于固定头的文件，会释放 shared lock并最多重试
-100 次，每次间隔 1 ms，让 force/create 完成发布或初始化；超过重试边界仍不完整则返回
-`-EPROTO`。
+creator 在 `shm_open(O_EXCL)` 返回后立即请求 exclusive lock，把窗口压缩到最小。
+attach 若初次打开时名字不存在则立即返回 `-ENOENT`；若已打开的对象尚小于固定头，
+或 identity revalidation 发现换代，则释放 shared lock并返回 `-EAGAIN`。core 不内置
+重试次数和延迟，调用方自行决定重试策略。
 
 因此 force/destroy 可以在步骤 1 与步骤 2 之间替换名字，但 attach 不会把旧 inode
 作为成功 handle 返回。一旦步骤 4 通过，shared lock 会阻止该 inode 被合法 force 或
@@ -180,7 +182,8 @@ FORCE:      open old -> try EXCLUSIVE -> unlink -> create/init new
 
 - 活跃 handle 阻止 destroy/force：`-EBUSY`；
 - 固定头、layout ABI、offset/size 或文件长度不合法：`-EPROTO`；
-- 同名对象在 attach 期间换代：内部重试，不向用户暴露混合 handle；
+- 初次 attach 时名字不存在：`-ENOENT`；
+- 对象尚未初始化或同名对象在 attach 期间换代：`-EAGAIN`；
 - 初始化失败：在 exclusive lock 下 unlink 未完成对象，close 自动释放锁。
 
 ## 8. 验证矩阵
@@ -190,7 +193,7 @@ FORCE:      open old -> try EXCLUSIVE -> unlink -> create/init new
 - active attach 存在时 destroy 返回 `-EBUSY`，原 handle 继续可读写。
 - active handle 存在时 force 返回 `-EBUSY`，名字和数据不变。
 - 最后一个其他 handle close 后 destroy/force 成功。
-- attach 与 force 并发时只得到旧代或新代完整对象，不出现 mixed generation。
+- attach 与 force 并发时只得到旧代、新代完整对象或显式瞬态错误，不出现 mixed generation。
 - owner/attacher SIGKILL 后 lifetime lock 自动释放，可 force/reap。
 - 伪造/截断的 mapping size、data offset、data size、max_users 全部返回 `-EPROTO`。
 - 非 ABI 3 对象的 attach/force 都返回 `-EPROTO`，没有 legacy 或 broker 路径。
@@ -208,9 +211,9 @@ FORCE:      open old -> try EXCLUSIVE -> unlink -> create/init new
 
 ## 10. 本阶段验证证据
 
-- 常规构建与全量 CTest：413/413 通过，48 个既有参数组合跳过。
-- ASan（关闭 ptrace 环境下不可用的 LeakSanitizer）：413/413 通过，48 个既有参数组合跳过。
-- TSan 聚焦 lifetime/layout：8/8 通过；attach/force 竞态额外重复 500 次通过。
-- ASan+UBSan 新增 lifetime/layout 用例全部通过；全量为 407/413，其余 6 个失败均来自
-  既有可变长记录回调对非对齐结构体的解引用，与单 SHM lifetime 路径无关，本提交不
-  顺带修改。
+- 常规构建与全量 CTest：414/414 通过，48 个既有参数组合跳过。
+- ASan（关闭 ptrace 环境下不可用的 LeakSanitizer）：414/414 通过，48 个既有参数组合跳过。
+- ASan、ASan+UBSan、TSan 聚焦 lifetime/layout 与 attach 错误契约：各 10/10 通过；
+  attach/force 竞态额外重复 1000 次通过。
+- 此前 ASan+UBSan 全量为 407/413，其余 6 个失败均来自既有可变长记录回调对非对齐
+  结构体的解引用，与单 SHM lifetime 路径无关，本提交不顺带修改。

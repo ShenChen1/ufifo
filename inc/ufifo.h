@@ -117,6 +117,8 @@ typedef struct ufifo ufifo_t;
  * @param init   Initialization parameters (mode, hooks, alloc config).
  * @param handle [out] Receives the created FIFO handle on success.
  * @return 0 on success, negative errno on failure.
+ * @retval -ENOENT ATTACH found no object at the requested name.
+ * @retval -EAGAIN ATTACH observed an object being initialized or replaced; the caller may retry.
  */
 UFIFO_API int ufifo_open(const char *name, const ufifo_init_t *init, ufifo_t **handle);
 
