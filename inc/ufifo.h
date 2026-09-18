@@ -23,9 +23,6 @@ extern "C" {
 #endif
 #endif
 
-/** @brief Max number of users for a FIFO. */
-#define UFIFO_MAX_NUM_USERS (128U)
-
 /** @brief Maximum FIFO name length in bytes, excluding the null terminator. */
 #define UFIFO_NAME_MAX (64U)
 
@@ -81,7 +78,7 @@ typedef struct {
     int32_t force;               /**< 1 = recreate if no active handles; 0 = reuse. */
     ufifo_lock_e lock;           /**< Locking strategy. */
     ufifo_data_mode_e data_mode; /**< Data distribution mode. */
-    size_t max_users;            /**< Max concurrent consumers (1 <= max_users <= UFIFO_MAX_NUM_USERS). */
+    size_t max_users;            /**< Max concurrent consumers; determines shared user-slot capacity. */
     uint32_t reserved[11];       /**< Reserved for ABI compatibility. */
 } ufifo_alloc_t;
 
@@ -174,10 +171,10 @@ UFIFO_API size_t ufifo_peek_len(ufifo_t *handle);
  * @param handle FIFO handle.
  * @param buf    Data to write.
  * @param size   Number of bytes to write.
- * @return Bytes written, 0 on failure with errno set (EAGAIN if full, EMSGSIZE if oversized, EIO on hook error, EINVAL
+ * @return Bytes written, -1 on failure with errno set (EAGAIN if full, EMSGSIZE if oversized, EIO on hook error, EINVAL
  * on bad handle).
  */
-UFIFO_API size_t ufifo_put(ufifo_t *handle, void *buf, size_t size);
+UFIFO_API ssize_t ufifo_put(ufifo_t *handle, void *buf, size_t size);
 
 /**
  * @brief Blocking write — waits indefinitely for space.

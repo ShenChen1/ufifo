@@ -38,23 +38,30 @@ static int __ufifo_register_slot(ufifo_t *handle, size_t user_id, pid_t pid)
     ctrl->users[user_id].pid = pid;
     smp_store_release(&ctrl->users[user_id].active, true);
     ctrl->num_users++;
-    return (int)user_id;
+    return 0;
 }
 
-static int __ufifo_register(ufifo_t *handle)
+static int __ufifo_register(ufifo_t *handle, size_t *user_id)
 {
     ufifo_ctrl_t *ctrl = handle->ctrl;
     pid_t pid = getpid();
 
     for (size_t i = 0; i < ctrl->max_users; i++) {
-        if (!READ_ONCE(&ctrl->users[i].active))
-            return __ufifo_register_slot(handle, i, pid);
+        if (!READ_ONCE(&ctrl->users[i].active)) {
+            int ret = __ufifo_register_slot(handle, i, pid);
+            if (ret == 0)
+                *user_id = i;
+            return ret;
+        }
     }
 
     for (size_t i = 0; i < ctrl->max_users; i++) {
         if (READ_ONCE(&ctrl->users[i].active) && __ufifo_is_user_dead(handle->shm_fd, i)) {
             __ufifo_reap_dead_user(handle, i);
-            return __ufifo_register_slot(handle, i, pid);
+            int ret = __ufifo_register_slot(handle, i, pid);
+            if (ret == 0)
+                *user_id = i;
+            return ret;
         }
     }
     return -ENOSPC;
@@ -133,6 +140,8 @@ __ufifo_calculate_layout(const ufifo_alloc_t *alloc, size_t *data_offset, size_t
 {
     size_t users_size;
     size_t control_size;
+    if (alloc->max_users == SIZE_MAX)
+        return -EOVERFLOW;
     size_t slot_count = alloc->max_users + 1;
     int ret = __ufifo_checked_mul(slot_count, sizeof(ufifo_sub_ctrl_t), &users_size);
 
@@ -156,6 +165,8 @@ static int __ufifo_expected_data_offset(size_t max_users, size_t *data_offset)
 {
     size_t users_size;
     size_t control_size;
+    if (max_users == SIZE_MAX)
+        return -EOVERFLOW;
     int ret = __ufifo_checked_mul(max_users + 1, sizeof(ufifo_sub_ctrl_t), &users_size);
 
     if (ret < 0)
@@ -173,8 +184,7 @@ static int __ufifo_validate_layout(ufifo_t *handle, size_t file_size)
 
     if (ret < 0 || !smp_load_acquire(&ctrl->init_done))
         return ret < 0 ? ret : -EPROTO;
-    if (ctrl->max_users < 1 || ctrl->max_users > UFIFO_MAX_NUM_USERS || ctrl->lock >= UFIFO_LOCK_MAX
-        || ctrl->data_mode >= UFIFO_DATA_MAX)
+    if (ctrl->max_users < 1 || ctrl->lock >= UFIFO_LOCK_MAX || ctrl->data_mode >= UFIFO_DATA_MAX)
         return -EPROTO;
     ret = __ufifo_expected_data_offset(ctrl->max_users, &expected_offset);
     if (ret < 0 || ctrl->data_offset != expected_offset)
@@ -203,14 +213,15 @@ static int __ufifo_configure_data(ufifo_t *handle, bool initialize)
 
 static int __ufifo_register_handle(ufifo_t *handle, bool initialize)
 {
+    size_t user_id;
     int ret;
 
     __ufifo_ctrl_lock(handle);
-    ret = __ufifo_register(handle);
+    ret = __ufifo_register(handle, &user_id);
     __ufifo_ctrl_unlock(handle);
     if (ret < 0)
         return ret;
-    handle->user_id = (size_t)ret;
+    handle->user_id = user_id;
     ret = __ufifo_configure_data(handle, initialize);
     if (ret < 0) {
         __ufifo_ctrl_lock(handle);
@@ -268,6 +279,8 @@ error:
 static int __ufifo_init_from_user(ufifo_t *handle, const ufifo_alloc_t *alloc)
 {
     size_t data_offset;
+    if (alloc->max_users == SIZE_MAX)
+        return -EOVERFLOW;
     size_t slot_count = alloc->max_users + 1;
     int ret = __ufifo_calculate_layout(alloc, &data_offset, &handle->shm_size, &handle->mapping_size);
 
@@ -324,7 +337,7 @@ static int __ufifo_init_validate(const ufifo_init_t *init)
         return -EINVAL;
     if (init->opt != UFIFO_OPT_ALLOC)
         return 0;
-    if (init->alloc.size == 0 || init->alloc.max_users < 1 || init->alloc.max_users > UFIFO_MAX_NUM_USERS)
+    if (init->alloc.size == 0 || init->alloc.max_users < 1 || init->alloc.max_users == SIZE_MAX)
         return -EINVAL;
     if (init->alloc.lock >= UFIFO_LOCK_MAX || init->alloc.data_mode >= UFIFO_DATA_MAX)
         return -EINVAL;
