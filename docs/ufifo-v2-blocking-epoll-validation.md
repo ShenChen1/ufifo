@@ -8,11 +8,12 @@
 
 1. **测试契约**：拆分测试文件，加入 wait word、blocking 和新 adapter 的失败测试。
 2. **共享 ABI/Core**：加入 wait word 与 futex primitive，blocking API 一次性切换并删除 blocking eventfd。
-3. **Raw ring engine**：实现 setup/probe/mmap/SQ/CQ/sync-cancel 的私有边界测试。
-4. **Adapter**：实现 public API、watch 状态机、ready queue、fork 与生命周期规则。
-5. **删除旧架构**：删除 broker、eventfd API/字段/target 及旧测试。
-6. **文档与示例**：更新 README、pkg-config/install 和 epoll example。
-7. **完整验证**：clean build 后执行功能、并发、sanitizer、跨进程和性能验证。
+3. **单 SHM/Lifetime**：合并 control/data 映射，以 OFD lock 仲裁 attach、destroy 和 force。
+4. **Raw ring engine**：实现 setup/probe/mmap/SQ/CQ/sync-cancel 的私有边界测试。
+5. **Adapter**：实现 public API、watch 状态机、ready queue、fork 与生命周期规则。
+6. **删除旧架构**：删除 broker、eventfd API/字段/target 及旧测试。
+7. **文档与示例**：更新 README、pkg-config/install 和 epoll example。
+8. **完整验证**：clean build 后执行功能、并发、sanitizer、跨进程和性能验证。
 
 ## 2. 测试矩阵
 
@@ -26,7 +27,15 @@
 - reset、reader close/reap、attach 释放容量；
 - EINTR、ETIMEDOUT、EAGAIN。
 
-### 2.2 Adapter happy path
+### 2.2 单 SHM/Lifetime
+
+- 单名字、单 fd、单 mmap，control/data 偏移与文件边界一致；
+- active attach 时 destroy/force 返回 `-EBUSY`，原 handle 保持可用；
+- 最后一个其他 handle close 或崩溃后 destroy/force 成功；
+- attach 与 force 并发只得到单一完整代，不混合 inode；
+- 旧双-shm 无活跃用户时可 force 清理，有活跃用户时不迁移。
+
+### 2.3 Adapter happy path
 
 - 空 FIFO 无事件；put 产生 IN；get 产生满足 threshold 的 OUT；
 - ADD 时已经 ready；
@@ -35,7 +44,7 @@
 - drain 后立即 rearm，持续压力下无丢事件；
 - ready queue 超过 `maxevents` 时 ring fd 仍保持可唤醒。
 
-### 2.3 Adapter failure/lifecycle
+### 2.4 Adapter failure/lifecycle
 
 - ADD/MOD/DEL 参数、重复项、capacity 满；
 - DEL 与已完成但未消费 CQE 竞态；
@@ -47,7 +56,7 @@
 - fork child 返回 `-ECHILD`，child close 不影响 parent；
 - 多线程 ctl + 单 drain，无重复释放、死锁或 UAF。
 
-### 2.4 验证层级
+### 2.5 验证层级
 
 1. clean `cmake` configure/build；
 2. 全量 CTest；
@@ -70,6 +79,7 @@
 
 - 源码、公开头文件、构建系统、README、示例和测试中不再存在 broker/eventfd 通知路径。
 - blocking API 的超时、崩溃和无丢唤醒回归测试通过。
+- control/data 位于一个 shm inode，destroy/force 不会越过活跃 handle。
 - adapter API 不暴露任何 io_uring 类型。
 - ADD/MOD/DEL、初始 readiness、backlog、cancel、fork 和 close 契约均有测试。
 - 所有被修改的源码文件满足 500/80/5/10 限制。
