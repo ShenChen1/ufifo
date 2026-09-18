@@ -48,7 +48,7 @@ ufifo 当前以共享内存 ring buffer 传输数据，同时用同一组 `event
 - 不提供严格 level-triggered adapter 语义。
 - 不保证 fork 后继续使用继承的 adapter。
 - 本次不改变 SOLE/SHARED、byte-stream/record/tag 的数据分发语义。
-- 本次不重新定义跨进程 `ufifo_destroy()` 的所有权协议；调用方仍须确保 destroy 与其他进程的数据操作不并发。
+- 不提供旧双-shm 布局的运行时 attach fallback；其 force 迁移规则见单共享内存设计。
 
 ### Constraints
 
@@ -411,7 +411,7 @@ FREE --ADD--> ACTIVE --wait CQE--> ACTIVE
 - ring fd、三个 mmap 区域和全部内存只由 adapter close 释放。
 
 ## 11. Handle 生命周期
-
+- core 映射与跨进程 destroy/force 契约见 [ufifo v2 单共享内存与 Lifetime 设计](ufifo-v2-single-shm-lifetime.md)。
 - ADD 持有本地强引用，并增加 `logical_watch_count`。
 - 未 DEL 的 handle 调用 `ufifo_close()` 或 `ufifo_destroy()` 返回 `-EBUSY`，不会隐式留下不可操作的 orphan watch。
 - DEL 的同步取消完成后释放引用；之后用户可以 close handle。
