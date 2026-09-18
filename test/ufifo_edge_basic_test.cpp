@@ -87,7 +87,7 @@ TEST_F(EdgeCaseTest, ProcessLockCrashRecovery)
         waitpid(pid, &status, 0);
 
         int out = 0;
-        unsigned int ret = ufifo_get(fifo, &out, sizeof(out));
+        ssize_t ret = ufifo_get(fifo, &out, sizeof(out));
         if (ret > 0) {
             EXPECT_EQ(999, out);
         }
@@ -159,8 +159,8 @@ TEST_F(EdgeCaseTest, SharedModePutRespectsMinOut)
     // min_out unused  = 256 - (120-0)   = 136 → CORRECT (200 > 136, fails)
     char buf_b[200];
     memset(buf_b, 0xBB, sizeof(buf_b));
-    unsigned int ret = ufifo_put(h1, buf_b, sizeof(buf_b));
-    EXPECT_EQ(0u, ret) << "Put 200B should fail: only 136B available (min_out=0)";
+    ssize_t ret = ufifo_put(h1, buf_b, sizeof(buf_b));
+    EXPECT_EQ(-EAGAIN, ret) << "Put 200B should fail: only 136B available (min_out=0)";
 
     // Step 4: A smaller put (within 136B limit) should succeed
     char buf_c[100];
@@ -204,12 +204,12 @@ TEST_F(EdgeCaseTest, SharedModeNoUnsignedOverflow)
     memset(data, 0xAB, sizeof(data));
     char tmp[128];
 
-    unsigned int total_put = 0;
+    size_t total_put = 0;
     for (int i = 0; i < 10; i++) {
-        unsigned int ret = ufifo_put(h1, data, sizeof(data));
-        if (ret == 0)
+        ssize_t ret = ufifo_put(h1, data, sizeof(data));
+        if (ret <= 0)
             break;
-        total_put += ret;
+        total_put += static_cast<size_t>(ret);
         ufifo_get(h1, tmp, sizeof(tmp));
     }
 
@@ -218,12 +218,12 @@ TEST_F(EdgeCaseTest, SharedModeNoUnsignedOverflow)
     EXPECT_LE(total_put, 256u) << "Total put should not exceed buffer size relative to slowest consumer";
 
     // H2 should be able to read all data that was put
-    unsigned int total_got = 0;
+    size_t total_got = 0;
     while (total_got < total_put) {
-        unsigned int ret = ufifo_get(h2, tmp, sizeof(tmp));
-        if (ret == 0)
+        ssize_t ret = ufifo_get(h2, tmp, sizeof(tmp));
+        if (ret <= 0)
             break;
-        total_got += ret;
+        total_got += static_cast<size_t>(ret);
     }
     EXPECT_EQ(total_put, total_got) << "H2 should read exactly the amount of data that was put";
 

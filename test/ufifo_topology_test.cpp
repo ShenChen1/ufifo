@@ -76,7 +76,7 @@ class ParameterizedTestBase : public ::testing::TestWithParam<TestParam> {
                 ufifo_t *h = adapter_->GetHandle(p);
                 while (count < msgs_per_producer) {
                     const int val = p * 100000 + count;
-                    int ret = adapter_->PutValue(h, val, p);
+                    ssize_t ret = adapter_->PutValue(h, val, p);
                     if (ret == 0) {
                         if (is_shared) {
                             std::this_thread::yield();

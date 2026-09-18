@@ -152,11 +152,15 @@ class UfifoErrnoTest : public ::testing::Test {
 TEST_F(UfifoErrnoTest, InvalidHandle)
 {
     errno = 0;
-    EXPECT_EQ(0u, ufifo_put(nullptr, nullptr, 1));
+    EXPECT_EQ(-EINVAL, ufifo_put(nullptr, nullptr, 1));
     EXPECT_EQ(EINVAL, errno);
 
     errno = 0;
-    EXPECT_EQ(0u, ufifo_get(nullptr, nullptr, 1));
+    EXPECT_EQ(-EINVAL, ufifo_get(nullptr, nullptr, 1));
+    EXPECT_EQ(EINVAL, errno);
+
+    errno = 0;
+    EXPECT_EQ(-EINVAL, ufifo_peek(nullptr, nullptr, 1));
     EXPECT_EQ(EINVAL, errno);
 }
 
@@ -164,7 +168,11 @@ TEST_F(UfifoErrnoTest, EmptyAndFull)
 {
     char data = 'A';
     errno = 0;
-    EXPECT_EQ(0u, ufifo_get(fifo, &data, 1));
+    EXPECT_EQ(-EAGAIN, ufifo_get(fifo, &data, 1));
+    EXPECT_EQ(EAGAIN, errno);
+
+    errno = 0;
+    EXPECT_EQ(-EAGAIN, ufifo_peek(fifo, &data, 1));
     EXPECT_EQ(EAGAIN, errno);
 
     for (int i = 0; i < 64; i++) {
@@ -172,7 +180,7 @@ TEST_F(UfifoErrnoTest, EmptyAndFull)
     }
 
     errno = 0;
-    EXPECT_EQ(0u, ufifo_put(fifo, &data, 1));
+    EXPECT_EQ(-EAGAIN, ufifo_put(fifo, &data, 1));
     EXPECT_EQ(EAGAIN, errno);
 }
 
@@ -180,7 +188,11 @@ TEST_F(UfifoErrnoTest, Timeout)
 {
     char data = 'A';
     errno = 0;
-    EXPECT_EQ(0u, ufifo_get_timeout(fifo, &data, 1, 10));
+    EXPECT_EQ(-ETIMEDOUT, ufifo_get_timeout(fifo, &data, 1, 10));
+    EXPECT_EQ(ETIMEDOUT, errno);
+
+    errno = 0;
+    EXPECT_EQ(-ETIMEDOUT, ufifo_peek_timeout(fifo, &data, 1, 10));
     EXPECT_EQ(ETIMEDOUT, errno);
 
     for (int i = 0; i < 64; i++) {
@@ -188,7 +200,7 @@ TEST_F(UfifoErrnoTest, Timeout)
     }
 
     errno = 0;
-    EXPECT_EQ(0u, ufifo_put_timeout(fifo, &data, 1, 10));
+    EXPECT_EQ(-ETIMEDOUT, ufifo_put_timeout(fifo, &data, 1, 10));
     EXPECT_EQ(ETIMEDOUT, errno);
 }
 
@@ -270,7 +282,7 @@ TEST_F(UfifoErrnoTest, CustomCallbackFailure)
 
     char data[10] = {};
     errno = 0;
-    EXPECT_EQ(0u, ufifo_put(fifo, data, 10));
+    EXPECT_EQ(-EIO, ufifo_put(fifo, data, 10));
     EXPECT_EQ(EIO, errno);
 
     ufifo_destroy(fifo);
@@ -280,7 +292,11 @@ TEST_F(UfifoErrnoTest, CustomCallbackFailure)
     EXPECT_EQ(10u, ufifo_put(fifo, data, 10));
 
     errno = 0;
-    EXPECT_EQ(0u, ufifo_get(fifo, data, 10));
+    EXPECT_EQ(-EIO, ufifo_peek(fifo, data, 10));
+    EXPECT_EQ(EIO, errno);
+
+    errno = 0;
+    EXPECT_EQ(-EIO, ufifo_get(fifo, data, 10));
     EXPECT_EQ(EIO, errno);
 }
 
@@ -300,7 +316,11 @@ TEST_F(UfifoErrnoTest, BufferTooSmall)
 
     char small_buf[5];
     errno = 0;
-    EXPECT_EQ(0u, ufifo_get(fifo, small_buf, 5));
+    EXPECT_EQ(-ENOBUFS, ufifo_peek(fifo, small_buf, 5));
+    EXPECT_EQ(ENOBUFS, errno);
+
+    errno = 0;
+    EXPECT_EQ(-ENOBUFS, ufifo_get(fifo, small_buf, 5));
     EXPECT_EQ(ENOBUFS, errno);
 }
 

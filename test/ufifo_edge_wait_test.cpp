@@ -31,7 +31,7 @@ TEST_F(EdgeCaseTest, ReaderCloseWakesBlockedWriter)
     std::atomic<bool> writer_woke{ false };
     std::thread writer_thread([&]() {
         char buf[1] = { 0x42 };
-        unsigned int ret = ufifo_put_timeout(writer, buf, 1, 3000);
+        ssize_t ret = ufifo_put_timeout(writer, buf, 1, 3000);
         if (ret > 0)
             writer_woke.store(true, std::memory_order_relaxed);
     });
@@ -79,7 +79,7 @@ TEST_F(EdgeCaseTest, ResetWakesBlockedWriter)
     std::atomic<bool> writer_woke{ false };
     std::thread writer_thread([&]() {
         char buf[1] = { 0x43 };
-        unsigned int ret = ufifo_put_timeout(writer, buf, 1, 3000);
+        ssize_t ret = ufifo_put_timeout(writer, buf, 1, 3000);
         if (ret > 0)
             writer_woke.store(true, std::memory_order_relaxed);
     });
@@ -140,8 +140,8 @@ TEST_F(EdgeCaseTest, DeadReaderReapWakesBlockedWriter)
      * because after reaping, min_out advances and frees capacity.
      */
     char buf[1] = { 0x44 };
-    unsigned int ret = ufifo_put_timeout(writer, buf, 1, 3000);
-    EXPECT_GT(ret, 0u) << "Writer should succeed after dead reader is reaped";
+    ssize_t ret = ufifo_put_timeout(writer, buf, 1, 3000);
+    EXPECT_GT(ret, 0) << "Writer should succeed after dead reader is reaped";
 
     ufifo_destroy(writer);
 }

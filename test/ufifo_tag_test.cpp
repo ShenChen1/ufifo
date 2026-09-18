@@ -72,7 +72,7 @@ TEST_F(TagSpecificTest, TagNotFound)
     PutRec(1, "data");
     ufifo_oldest(fifo_, 999); // non-existent tag
     char out_buf[128] = {};
-    unsigned int ret = ufifo_get(fifo_, out_buf, sizeof(out_buf));
+    ssize_t ret = ufifo_get(fifo_, out_buf, sizeof(out_buf));
     (void)ret; // shouldn't crash
 }
 
