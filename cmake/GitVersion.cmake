@@ -1,21 +1,31 @@
-# Get git version
+# The project version is the public API version. Git metadata only identifies
+# the exact source revision used for an untagged build.
+set(UFIFO_VERSION_MAJOR ${PROJECT_VERSION_MAJOR})
+set(UFIFO_VERSION_MINOR ${PROJECT_VERSION_MINOR})
+set(UFIFO_VERSION_PATCH ${PROJECT_VERSION_PATCH})
+set(UFIFO_GIT_VERSION "v${PROJECT_VERSION}")
+
 execute_process(
-    COMMAND git describe --tags --always --dirty
+    COMMAND git rev-parse --short=12 HEAD
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    OUTPUT_VARIABLE UFIFO_GIT_VERSION
+    OUTPUT_VARIABLE UFIFO_GIT_REVISION
     OUTPUT_STRIP_TRAILING_WHITESPACE
     ERROR_QUIET
+    RESULT_VARIABLE UFIFO_GIT_REVISION_RESULT
 )
-if(UFIFO_GIT_VERSION MATCHES "^v?([0-9]+)\\.([0-9]+)\\.([0-9]+)")
-    set(UFIFO_VERSION_MAJOR ${CMAKE_MATCH_1})
-    set(UFIFO_VERSION_MINOR ${CMAKE_MATCH_2})
-    set(UFIFO_VERSION_PATCH ${CMAKE_MATCH_3})
-else()
-    set(UFIFO_GIT_VERSION "v0.0.0")
-    set(UFIFO_VERSION_MAJOR 0)
-    set(UFIFO_VERSION_MINOR 0)
-    set(UFIFO_VERSION_PATCH 0)
+if(UFIFO_GIT_REVISION_RESULT EQUAL 0 AND NOT UFIFO_GIT_REVISION STREQUAL "")
+    set(UFIFO_GIT_VERSION "${UFIFO_GIT_VERSION}+g${UFIFO_GIT_REVISION}")
+    execute_process(
+        COMMAND git diff --quiet HEAD --
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        RESULT_VARIABLE UFIFO_GIT_DIRTY_RESULT
+        ERROR_QUIET
+    )
+    if(UFIFO_GIT_DIRTY_RESULT EQUAL 1)
+        set(UFIFO_GIT_VERSION "${UFIFO_GIT_VERSION}.dirty")
+    endif()
 endif()
+
 add_compile_definitions(UFIFO_VERSION="${UFIFO_GIT_VERSION}")
 add_compile_definitions(UFIFO_VERSION_MAJOR=${UFIFO_VERSION_MAJOR})
 add_compile_definitions(UFIFO_VERSION_MINOR=${UFIFO_VERSION_MINOR})

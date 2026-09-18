@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <ctime>
+#include <dirent.h>
 #include <string>
 #include <sys/mman.h>
 #include <sys/wait.h>
@@ -47,6 +48,27 @@ void WaitUntilArmed(const uint32_t *wait_word)
            std::chrono::steady_clock::now() < deadline)
         std::this_thread::yield();
     ASSERT_EQ(1U, __atomic_load_n(wait_word, __ATOMIC_ACQUIRE) & 1U);
+}
+
+size_t CountOpenEventFds()
+{
+    DIR *directory = opendir("/proc/self/fd");
+    EXPECT_NE(nullptr, directory);
+    if (!directory)
+        return 0;
+
+    size_t count = 0;
+    while (const dirent *entry = readdir(directory)) {
+        if (entry->d_name[0] == '.')
+            continue;
+        const std::string path = std::string("/proc/self/fd/") + entry->d_name;
+        char target[128] = {};
+        const ssize_t length = readlink(path.c_str(), target, sizeof(target) - 1);
+        if (length > 0 && std::string(target, static_cast<size_t>(length)) == "anon_inode:[eventfd]")
+            count++;
+    }
+    closedir(directory);
+    return count;
 }
 
 timespec DeadlineAfterMilliseconds(long milliseconds)
@@ -175,6 +197,17 @@ TEST(UfifoWaitIntegrationTest, TimedOutArmIsClearedByNextPublish)
     char sent = 'x';
     EXPECT_EQ(1u, ufifo_put(fifo, &sent, 1));
     EXPECT_EQ(0U, __ufifo_rx_ctrl(fifo)->rx_wait_word & 1U);
+
+    EXPECT_EQ(0, ufifo_destroy(fifo));
+}
+
+TEST(UfifoWaitIntegrationTest, CoreOpenDoesNotCreateEventFds)
+{
+    const size_t before = CountOpenEventFds();
+    ufifo_t *fifo = OpenWaitTestFifo("wait_no_eventfd", 64);
+    ASSERT_NE(nullptr, fifo);
+
+    EXPECT_EQ(before, CountOpenEventFds());
 
     EXPECT_EQ(0, ufifo_destroy(fifo));
 }

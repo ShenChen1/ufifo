@@ -7,6 +7,8 @@
 
 #include "ufifo.h"
 
+#define UFIFO_LAYOUT_ABI 2U
+
 /*
  * Receive-slot control data (stored in shared memory).
  * users[0..max_users-1] are registered user slots.
@@ -17,13 +19,12 @@ typedef struct {
     bool active;
     size_t out;
     uint32_t rx_wait_word; /* even = idle epoch, odd = armed epoch */
-    int32_t rx_waiters;  /* count of threads blocked in poll() waiting for data */
-    int32_t epoll_armed; /* 1 = epoll listener waiting; 0 = already notified or idle */
 } ufifo_sub_ctrl_t;
 
 /* Global FIFO control data (stored in shared memory) */
 typedef struct {
     ufifo_version_t ver;
+    uint32_t layout_abi;
     bool init_done; /* false = initializing, true = ready (atomic) */
 
     size_t in;
@@ -35,10 +36,6 @@ typedef struct {
     pthread_mutex_t data_mutex; /* governed by ufifo_lock_e: protects index movement */
 
     uint32_t tx_wait_word; /* even = idle epoch, odd = armed epoch */
-    int32_t tx_waiters;     /* count of threads blocked in poll() waiting for space */
-    int32_t epoll_tx_armed; /* 1 = epoll listener waiting; 0 = already notified or idle */
-
-    uint32_t broker_gen;
 
     ufifo_data_mode_e data_mode;
     size_t max_users;

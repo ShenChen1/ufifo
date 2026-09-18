@@ -252,10 +252,10 @@ TEST_F(UfifoApiTest, VersionMismatchViaRawShm)
     fake_ver.minor = 88;
     fake_ver.patch = 77;
     snprintf(fake_ver.version, sizeof(fake_ver.version), "v99.88.77-fake");
-    memcpy(ctrl_mem, &fake_ver, sizeof(fake_ver));
-
-    unsigned int *init_done = (unsigned int *)((char *)ctrl_mem + sizeof(fake_ver));
-    *init_done = 1;
+    auto *fake_ctrl = static_cast<ufifo_ctrl_t *>(ctrl_mem);
+    memcpy(&fake_ctrl->ver, &fake_ver, sizeof(fake_ver));
+    fake_ctrl->layout_abi = UFIFO_LAYOUT_ABI;
+    fake_ctrl->init_done = true;
 
     munmap(ctrl_mem, ctrl_size);
 
@@ -295,6 +295,7 @@ TEST_F(UfifoApiTest, VersionInfoLibQuery)
     ufifo_version_t ver = {};
     ASSERT_EQ(0, ufifo_get_version_info(nullptr, &ver));
 
+    EXPECT_EQ(2U, ver.major);
     // version string must match ufifo_get_version()
     EXPECT_STREQ(ufifo_get_version(), ver.version);
     // version string must be non-empty

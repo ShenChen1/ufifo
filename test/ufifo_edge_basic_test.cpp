@@ -62,57 +62,6 @@ TEST_F(EdgeCaseTest, SoleModeSlotReusePreservesUnreadData)
     ufifo_destroy(reader);
 }
 
-TEST_F(EdgeCaseTest, SoleModeSlotReusePreservesRxNotification)
-{
-    std::string name = GenerateName("ec_sole_slot_notify");
-    ufifo_init_t init = {};
-    init.opt = UFIFO_OPT_ALLOC;
-    init.alloc.size = 256;
-    init.alloc.force = 1;
-    init.alloc.lock = UFIFO_LOCK_PROCESS;
-    init.alloc.data_mode = UFIFO_DATA_SOLE;
-    init.alloc.max_users = 3;
-
-    ufifo_t *owner = nullptr;
-    ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &owner));
-
-    ufifo_init_t attach = {};
-    attach.opt = UFIFO_OPT_ATTACH;
-
-    ufifo_t *reader = nullptr;
-    ASSERT_EQ(0, ufifo_open(name.c_str(), &attach, &reader));
-
-    int epfd = epoll_create1(0);
-    ASSERT_GE(epfd, 0);
-    int rx_fd = ufifo_get_rx_fd(reader);
-    ASSERT_GE(rx_fd, 0);
-
-    struct epoll_event ev = {};
-    ev.events = EPOLLIN;
-    ev.data.fd = rx_fd;
-    ASSERT_EQ(0, epoll_ctl(epfd, EPOLL_CTL_ADD, rx_fd, &ev));
-
-    // Reusing user slot 0 must not disturb SOLE's reserved RX state.
-    ASSERT_EQ(0, ufifo_close(owner));
-    ufifo_t *replacement = nullptr;
-    ASSERT_EQ(0, ufifo_open(name.c_str(), &attach, &replacement));
-
-    const char input[] = "notify";
-    ASSERT_EQ(sizeof(input), ufifo_put(replacement, (void *)input, sizeof(input)));
-
-    struct epoll_event events[1];
-    ASSERT_EQ(1, epoll_wait(epfd, events, 1, 1000));
-    ASSERT_EQ(0, ufifo_drain_rx_fd(reader));
-
-    char output[sizeof(input)] = {};
-    ASSERT_EQ(sizeof(output), ufifo_get(reader, output, sizeof(output)));
-    EXPECT_EQ(0, memcmp(input, output, sizeof(input)));
-
-    close(epfd);
-    ufifo_close(replacement);
-    ufifo_destroy(reader);
-}
-
 TEST_F(EdgeCaseTest, ProcessLockCrashRecovery)
 {
     std::string name = GenerateName("ec_crash");

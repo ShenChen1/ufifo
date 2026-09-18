@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.14)
-project(ufifo LANGUAGES C CXX)
+project(ufifo VERSION 2.0.0 LANGUAGES C CXX)
+
+set(UFIFO_ABI_VERSION ${PROJECT_VERSION_MAJOR})
 
 # Options
 set(SANITIZER "" CACHE STRING "Sanitizer to enable: asan, tsan, ubsan (comma-separated, e.g. asan,ubsan)")
@@ -38,8 +40,6 @@ set(LIB_SOURCES
     src/ufifo_opts.c
     src/ufifo_sync.c
     src/ufifo_wait.c
-    src/ufifo_epoll.c
-    src/ufifo_broker.c
     src/ufifo_init.c
     src/ufifo_info.c
 )
@@ -61,7 +61,7 @@ add_library(ufifo_shared SHARED ${LIB_SOURCES})
 set_target_properties(ufifo_shared PROPERTIES
     OUTPUT_NAME ufifo
     VERSION ${UFIFO_VERSION_MAJOR}.${UFIFO_VERSION_MINOR}.${UFIFO_VERSION_PATCH}
-    SOVERSION ${UFIFO_VERSION_MAJOR}
+    SOVERSION ${UFIFO_ABI_VERSION}
     POSITION_INDEPENDENT_CODE ON
 )
 target_include_directories(ufifo_shared PUBLIC inc)
@@ -69,16 +69,6 @@ target_compile_options(ufifo_shared PRIVATE -g -O3 -flto -Wall -Werror -fvisibil
 if(COVERAGE)
     ufifo_enable_coverage(ufifo_shared)
 endif()
-
-# Broker daemon executable
-add_executable(ufifo-broker src/ufifo_broker_main.c)
-target_compile_options(ufifo-broker PRIVATE -g -O3 -Wall -Werror)
-target_link_libraries(ufifo-broker PRIVATE ${RT_LIBRARY})
-
-install(TARGETS ufifo-broker
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT release
-)
-ufifo_target_separate_dbginfo(ufifo-broker ${CMAKE_INSTALL_BINDIR} release dbgsym)
 
 # Example executables
 set(EXAMPLES
@@ -88,7 +78,6 @@ set(EXAMPLES
     record
     record-tag
     record-tag-cb
-    epoll
 )
 
 foreach(example ${EXAMPLES})

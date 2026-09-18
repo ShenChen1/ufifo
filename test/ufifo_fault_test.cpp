@@ -167,7 +167,7 @@ TEST_F(FaultInjectionTest, AllReadersCrash)
     ufifo_destroy(fifo);
 }
 
-TEST_F(FaultInjectionTest, BrokerElectionRace)
+TEST_F(FaultInjectionTest, ConcurrentAttachRace)
 {
     std::string name = UniqueName("brk03");
     ufifo_t *fifo = nullptr;
@@ -203,59 +203,6 @@ TEST_F(FaultInjectionTest, BrokerElectionRace)
     char data[10] = "test";
     EXPECT_EQ(10u, ufifo_put(fifo, data, 10));
 
-    ufifo_destroy(fifo);
-}
-
-TEST_F(FaultInjectionTest, EpollDrainConcurrency)
-{
-    std::string name = UniqueName("not03");
-    ufifo_t *fifo = nullptr;
-    ASSERT_EQ(0, CreateFifo(name, &fifo, 4096, 4));
-
-    std::atomic<bool> running{ true };
-    std::thread writer_thread([&]() {
-        char data = 'A';
-        while (running) {
-            if (ufifo_put(fifo, &data, 1) > 0) {
-                ufifo_skip(fifo); // advance writer's own out to prevent writer from blocking itself
-            } else {
-                std::this_thread::yield();
-            }
-        }
-    });
-
-    ufifo_t *reader = nullptr;
-    ASSERT_EQ(0, AttachFifo(name, &reader));
-
-    int rx_fd = ufifo_get_rx_fd(reader);
-    ASSERT_GE(rx_fd, 0);
-
-    int epfd = epoll_create1(0);
-    ASSERT_GE(epfd, 0);
-
-    struct epoll_event ev = {};
-    ev.events = EPOLLIN;
-    ev.data.fd = rx_fd;
-    ASSERT_EQ(0, epoll_ctl(epfd, EPOLL_CTL_ADD, rx_fd, &ev));
-
-    int consumed = 0;
-    while (consumed < 1000) {
-        struct epoll_event events[1];
-        int n = epoll_wait(epfd, events, 1, 1000);
-        if (n > 0) {
-            ufifo_drain_rx_fd(reader);
-            char b;
-            while (ufifo_get(reader, &b, 1) > 0) {
-                consumed++;
-            }
-        }
-    }
-
-    running = false;
-    writer_thread.join();
-
-    close(epfd);
-    ufifo_close(reader);
     ufifo_destroy(fifo);
 }
 
@@ -352,7 +299,3 @@ TEST_F(FaultInjectionTest, LockNoneWaiterRace)
     EXPECT_EQ(total_written.load(), total_read.load());
     ufifo_destroy(fifo);
 }
-
-// =============================================================================
-// Broker Exec Isolation Tests
-// =============================================================================

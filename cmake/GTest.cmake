@@ -6,17 +6,18 @@ FetchContent_Declare(
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
+set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
 # ufifo test executable
 add_executable(ufifo_test
     test/ufifo_api_test.cpp
-    test/ufifo_broker_test.cpp
     test/ufifo_edge_basic_test.cpp
     test/ufifo_edge_wait_test.cpp
     test/ufifo_errno_reap_test.cpp
     test/ufifo_fault_test.cpp
-    test/ufifo_legacy_epoll_test.cpp
+    test/ufifo_layout_test.cpp
     test/ufifo_tag_test.cpp
     test/ufifo_test_support.cpp
     test/ufifo_topology_test.cpp
