@@ -53,14 +53,19 @@ void RunAttachForceRace()
     attach_thread.join();
     force_thread.join();
 
-    ASSERT_EQ(0, attach_ret);
+    ASSERT_TRUE(attach_ret == 0 || attach_ret == -EAGAIN || attach_ret == -ENOENT);
     ASSERT_TRUE(force_ret == 0 || force_ret == -EBUSY);
     if (force_ret == 0) {
-        EXPECT_EQ(128U, ufifo_size(attached));
         EXPECT_EQ(128U, ufifo_size(replacement));
-        EXPECT_EQ(0, ufifo_close(attached));
+        if (attach_ret == 0) {
+            EXPECT_EQ(128U, ufifo_size(attached));
+            EXPECT_EQ(0, ufifo_close(attached));
+        } else {
+            EXPECT_EQ(nullptr, attached);
+        }
         EXPECT_EQ(0, ufifo_destroy(replacement));
     } else {
+        ASSERT_EQ(0, attach_ret);
         EXPECT_EQ(nullptr, replacement);
         EXPECT_EQ(64U, ufifo_size(attached));
         EXPECT_EQ(0, ufifo_destroy(attached));
@@ -91,6 +96,22 @@ TEST(UfifoLifetimeTest, UsesOneNamedSharedMemoryObject)
     EXPECT_EQ(static_cast<void *>(reinterpret_cast<char *>(owner->ctrl) + owner->ctrl->data_offset), owner->shm_mem);
 
     EXPECT_EQ(0, ufifo_destroy(owner));
+}
+
+TEST(UfifoLifetimeTest, AttachToUninitializedObjectReturnsAgain)
+{
+    const std::string name = GenerateName("attach_uninitialized");
+    const int fd = shm_open(name.c_str(), O_RDWR | O_CREAT | O_EXCL, 0600);
+    ASSERT_GE(fd, 0);
+
+    ufifo_init_t attach = {};
+    attach.opt = UFIFO_OPT_ATTACH;
+    ufifo_t *fifo = nullptr;
+    EXPECT_EQ(-EAGAIN, ufifo_open(name.c_str(), &attach, &fifo));
+    EXPECT_EQ(nullptr, fifo);
+
+    close(fd);
+    EXPECT_EQ(0, shm_unlink(name.c_str()));
 }
 
 TEST(UfifoLifetimeTest, ActiveAttachPreventsDestroy)

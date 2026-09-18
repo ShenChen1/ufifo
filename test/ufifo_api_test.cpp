@@ -161,7 +161,8 @@ TEST_F(UfifoApiTest, AttachNonExistent)
     ufifo_init_t init = {};
     init.opt = UFIFO_OPT_ATTACH;
     ufifo_t *fifo = nullptr;
-    EXPECT_NE(0, ufifo_open("nonexistent_fifo_xyz", &init, &fifo));
+    EXPECT_EQ(-ENOENT, ufifo_open("nonexistent_fifo_xyz", &init, &fifo));
+    EXPECT_EQ(nullptr, fifo);
 }
 
 // Version compatibility: mismatched major version should fail with -EPROTO
