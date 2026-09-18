@@ -91,6 +91,8 @@ size_t data_size;
 规则：
 
 - `slot_count = max_users + 1`；额外槽继续供 SOLE 全局 RX 状态使用；
+- `max_users >= 1`；不再有 broker 派生的固定用户数上限，实际边界由 `size_t`、布局
+  溢出检查、`off_t` 文件大小和系统资源共同决定；
 - `data_offset = align_up(sizeof(ufifo_ctrl_t) + slot_count * sizeof(ufifo_sub_ctrl_t), 64)`；
 - `data_size` 是不小于请求值的 2 次幂，最小为 2；
 - `mapping_size = data_offset + data_size`，并且等于 shm 文件大小；
@@ -195,7 +197,8 @@ FORCE:      open old -> try EXCLUSIVE -> unlink -> create/init new
 - 最后一个其他 handle close 后 destroy/force 成功。
 - attach 与 force 并发时只得到旧代、新代完整对象或显式瞬态错误，不出现 mixed generation。
 - owner/attacher SIGKILL 后 lifetime lock 自动释放，可 force/reap。
-- 伪造/截断的 mapping size、data offset、data size、max_users 全部返回 `-EPROTO`。
+- 伪造/截断的 mapping size、data offset、data size、max_users，以及由 `max_users + 1`
+  导致的布局溢出全部返回 `-EPROTO`。
 - 非 ABI 3 对象的 attach/force 都返回 `-EPROTO`，没有 legacy 或 broker 路径。
 - futex、SOLE/SHARED、record/tag 通过全量 CTest；单 SHM lifetime/layout 通过
   ASan+UBSan 与 TSan 聚焦回归。
@@ -207,13 +210,14 @@ FORCE:      open old -> try EXCLUSIVE -> unlink -> create/init new
 - `src/ufifo_sync.c`：lifetime lock 与平移后的 user liveness lock。
 - `src/ufifo_init.c`：按 create/attach/map/validate/destroy 职责拆分。
 - `src/ufifo_info.c`：只报告一个 shm fd/mapping。
+- `inc/ufifo.h`：删除历史 broker 用户数上限；`max_users` 仍是每个 FIFO 的实际容量。
 - 测试不再创建或清理 `_ctrl`。
 
 ## 10. 本阶段验证证据
 
-- 常规构建与全量 CTest：414/414 通过，48 个既有参数组合跳过。
-- ASan（关闭 ptrace 环境下不可用的 LeakSanitizer）：414/414 通过，48 个既有参数组合跳过。
-- ASan、ASan+UBSan、TSan 聚焦 lifetime/layout 与 attach 错误契约：各 10/10 通过；
+- 常规构建与全量 CTest：416/416 通过，48 个既有参数组合跳过。
+- ASan（关闭 ptrace 环境下不可用的 LeakSanitizer）：416/416 通过，48 个既有参数组合跳过。
+- ASan、ASan+UBSan、TSan 聚焦 lifetime/layout 与 attach 错误契约：各 13/13 通过；
   attach/force 竞态额外重复 1000 次通过。
 - 此前 ASan+UBSan 全量为 407/413，其余 6 个失败均来自既有可变长记录回调对非对齐
   结构体的解引用，与单 SHM lifetime 路径无关，本提交不顺带修改。

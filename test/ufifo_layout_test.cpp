@@ -51,6 +51,31 @@ TEST(UfifoLayoutTest, RejectsInvalidDataOffset)
     EXPECT_EQ(0, ufifo_destroy(owner));
 }
 
+TEST(UfifoLayoutTest, RejectsMaxUsersLayoutOverflow)
+{
+    ufifo_init_t init = {};
+    init.opt = UFIFO_OPT_ALLOC;
+    init.alloc.size = 64;
+    init.alloc.force = 1;
+    init.alloc.lock = UFIFO_LOCK_PROCESS;
+    init.alloc.data_mode = UFIFO_DATA_SOLE;
+    init.alloc.max_users = 2;
+
+    const std::string name = GenerateName("layout_users_overflow");
+    ufifo_t *owner = nullptr;
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &owner));
+
+    owner->ctrl->max_users = SIZE_MAX;
+    ufifo_init_t attach = {};
+    attach.opt = UFIFO_OPT_ATTACH;
+    ufifo_t *client = nullptr;
+    EXPECT_EQ(-EPROTO, ufifo_open(name.c_str(), &attach, &client));
+    EXPECT_EQ(nullptr, client);
+
+    owner->ctrl->max_users = init.alloc.max_users;
+    EXPECT_EQ(0, ufifo_destroy(owner));
+}
+
 TEST(UfifoLayoutTest, RejectsBackingSizeOutsideOffT)
 {
     ufifo_init_t init = {};

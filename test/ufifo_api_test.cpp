@@ -159,6 +159,20 @@ TEST_F(UfifoApiTest, OpenWithMoreThanHistoricalUserLimit)
     EXPECT_EQ(0, ufifo_destroy(fifo));
 }
 
+TEST_F(UfifoApiTest, RejectsMaxUsersSizeMax)
+{
+    ufifo_init_t init = {};
+    init.opt = UFIFO_OPT_ALLOC;
+    init.alloc.size = 64;
+    init.alloc.force = 1;
+    init.alloc.data_mode = UFIFO_DATA_SOLE;
+    init.alloc.max_users = SIZE_MAX;
+    std::string name = GenerateName("users_size_max");
+    ufifo_t *fifo = nullptr;
+    EXPECT_EQ(-EINVAL, ufifo_open(name.c_str(), &init, &fifo));
+    EXPECT_EQ(nullptr, fifo);
+}
+
 TEST_F(UfifoApiTest, AttachNonExistent)
 {
     ufifo_init_t init = {};
