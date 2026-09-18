@@ -18,6 +18,7 @@ add_executable(ufifo_test
     test/ufifo_errno_reap_test.cpp
     test/ufifo_fault_test.cpp
     test/ufifo_layout_test.cpp
+    test/ufifo_lifetime_test.cpp
     test/ufifo_tag_test.cpp
     test/ufifo_test_support.cpp
     test/ufifo_topology_test.cpp
