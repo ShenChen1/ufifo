@@ -239,7 +239,7 @@ TEST_F(UfifoErrnoTest, StrictTimeoutWithSpuriousWakeup)
 
     errno = 0;
     // Timeout is 200 ms.
-    EXPECT_EQ(0u, ufifo_get_timeout(fifo, &data, 1, 200));
+    EXPECT_EQ(-ETIMEDOUT, ufifo_get_timeout(fifo, &data, 1, 200));
     EXPECT_EQ(ETIMEDOUT, errno);
 
     auto end = std::chrono::steady_clock::now();

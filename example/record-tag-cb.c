@@ -130,7 +130,7 @@ int main(void)
     char buf[100];
     record_t *rec = (void *)recbuf;
     size_t i;
-    size_t ret;
+    ssize_t ret;
     char hello[] = { "hello" };
 
     printf("record fifo test start\n");
@@ -176,8 +176,12 @@ int main(void)
 
     /* show the first record without removing from the fifo */
     ret = ufifo_peek(test, rec, sizeof(buf));
-    rec->buf[ret - sizeof(record_t)] = '\0';
-    if (ret)
+    if (ret < 0) {
+        fprintf(stderr, "ufifo_peek failed: %s\n", strerror((int)-ret));
+        return 1;
+    }
+    rec->buf[(size_t)ret - sizeof(record_t)] = '\0';
+    if (ret > 0)
         printf("%.*s\n", (int)ret, rec->buf);
 
     /* check the correctness of all values in the fifo */
@@ -185,7 +189,11 @@ int main(void)
     while (ufifo_len(test)) {
         ufifo_oldest(test, 0xdeadbeef);
         ret = ufifo_get(test, rec, sizeof(buf));
-        rec->buf[ret - sizeof(record_t)] = '\0';
+        if (ret < 0) {
+            fprintf(stderr, "ufifo_get failed: %s\n", strerror((int)-ret));
+            return 1;
+        }
+        rec->buf[(size_t)ret - sizeof(record_t)] = '\0';
         printf("item = %.*s\n", (int)ret, rec->buf);
         if (strcmp(rec->buf, expected_result[i++])) {
             printf("value mismatch: test failed\n");
@@ -211,7 +219,11 @@ int main(void)
     ufifo_newest(test, 0xdeadbeef);
     ufifo_oldest(test, 0xdeadbeef);
     ret = ufifo_get(test, rec, sizeof(buf));
-    rec->buf[ret - sizeof(record_t)] = '\0';
+    if (ret < 0) {
+        fprintf(stderr, "ufifo_get failed: %s\n", strerror((int)-ret));
+        return 1;
+    }
+    rec->buf[(size_t)ret - sizeof(record_t)] = '\0';
     printf("item = %.*s\n", (int)ret, rec->buf);
     if (strcmp(rec->buf, expected_result[ARRAY_SIZE(expected_result) - 1])) {
         printf("value mismatch: test failed\n");

@@ -10,6 +10,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/types.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -171,8 +172,8 @@ UFIFO_API size_t ufifo_peek_len(ufifo_t *handle);
  * @param handle FIFO handle.
  * @param buf    Data to write.
  * @param size   Number of bytes to write.
- * @return Bytes written, -1 on failure with errno set (EAGAIN if full, EMSGSIZE if oversized, EIO on hook error, EINVAL
- * on bad handle).
+ * @return Non-negative bytes written (0 is valid for a zero-length write), or a negative errno on failure.  On
+ * failure, errno is also set to the corresponding positive error number.
  */
 UFIFO_API ssize_t ufifo_put(ufifo_t *handle, void *buf, size_t size);
 
@@ -181,9 +182,10 @@ UFIFO_API ssize_t ufifo_put(ufifo_t *handle, void *buf, size_t size);
  * @param handle FIFO handle.
  * @param buf    Data to write.
  * @param size   Number of bytes to write.
- * @return Bytes written, 0 on failure with errno set (EMSGSIZE if oversized, EIO on hook error, EINVAL on bad handle).
+ * @return Non-negative bytes written (0 is valid for a zero-length write), or a negative errno on failure.  On
+ * failure, errno is also set to the corresponding positive error number.
  */
-UFIFO_API size_t ufifo_put_block(ufifo_t *handle, void *buf, size_t size);
+UFIFO_API ssize_t ufifo_put_block(ufifo_t *handle, void *buf, size_t size);
 
 /**
  * @brief Timed write.
@@ -191,30 +193,30 @@ UFIFO_API size_t ufifo_put_block(ufifo_t *handle, void *buf, size_t size);
  * @param buf      Data to write.
  * @param size     Number of bytes to write.
  * @param millisec Timeout in milliseconds.
- * @return Bytes written, 0 on failure/timeout with errno set (ETIMEDOUT on timeout, EMSGSIZE if oversized, EIO on hook
- * error, EINVAL on bad handle).
+ * @return Non-negative bytes written (0 is valid for a zero-length write), or a negative errno on failure/timeout.  On
+ * failure, errno is also set to the corresponding positive error number.
  */
-UFIFO_API size_t ufifo_put_timeout(ufifo_t *handle, void *buf, size_t size, long millisec);
+UFIFO_API ssize_t ufifo_put_timeout(ufifo_t *handle, void *buf, size_t size, long millisec);
 
 /**
  * @brief Non-blocking read.
  * @param handle FIFO handle.
  * @param buf    Buffer to receive data.
  * @param size   Buffer capacity in bytes.
- * @return Bytes read, 0 on failure with errno set (EAGAIN if empty, ENOBUFS if buffer too small, EIO on hook error,
- * EINVAL on bad handle).
+ * @return Non-negative bytes read (0 is valid when no bytes are transferred), or a negative errno on failure.  On
+ * failure, errno is also set to the corresponding positive error number.
  */
-UFIFO_API size_t ufifo_get(ufifo_t *handle, void *buf, size_t size);
+UFIFO_API ssize_t ufifo_get(ufifo_t *handle, void *buf, size_t size);
 
 /**
  * @brief Blocking read — waits indefinitely for data.
  * @param handle FIFO handle.
  * @param buf    Buffer to receive data.
  * @param size   Buffer capacity in bytes.
- * @return Bytes read, 0 on failure with errno set (ENOBUFS if buffer too small, EIO on hook error, EINVAL on bad
- * handle).
+ * @return Non-negative bytes read (0 is valid when no bytes are transferred), or a negative errno on failure.  On
+ * failure, errno is also set to the corresponding positive error number.
  */
-UFIFO_API size_t ufifo_get_block(ufifo_t *handle, void *buf, size_t size);
+UFIFO_API ssize_t ufifo_get_block(ufifo_t *handle, void *buf, size_t size);
 
 /**
  * @brief Timed read.
@@ -222,30 +224,30 @@ UFIFO_API size_t ufifo_get_block(ufifo_t *handle, void *buf, size_t size);
  * @param buf      Buffer to receive data.
  * @param size     Buffer capacity in bytes.
  * @param millisec Timeout in milliseconds.
- * @return Bytes read, 0 on failure/timeout with errno set (ETIMEDOUT on timeout, ENOBUFS if buffer too small, EIO on
- * hook error, EINVAL on bad handle).
+ * @return Non-negative bytes read (0 is valid when no bytes are transferred), or a negative errno on failure/timeout.
+ * On failure, errno is also set to the corresponding positive error number.
  */
-UFIFO_API size_t ufifo_get_timeout(ufifo_t *handle, void *buf, size_t size, long millisec);
+UFIFO_API ssize_t ufifo_get_timeout(ufifo_t *handle, void *buf, size_t size, long millisec);
 
 /**
  * @brief Non-blocking peek (read without consuming).
  * @param handle FIFO handle.
  * @param buf    Buffer to receive data.
  * @param size   Buffer capacity in bytes.
- * @return Bytes read, 0 on failure with errno set (EAGAIN if empty, ENOBUFS if buffer too small, EIO on hook error,
- * EINVAL on bad handle).
+ * @return Non-negative bytes peeked (0 is valid when no bytes are transferred), or a negative errno on failure.  On
+ * failure, errno is also set to the corresponding positive error number.
  */
-UFIFO_API size_t ufifo_peek(ufifo_t *handle, void *buf, size_t size);
+UFIFO_API ssize_t ufifo_peek(ufifo_t *handle, void *buf, size_t size);
 
 /**
  * @brief Blocking peek — waits indefinitely for data.
  * @param handle FIFO handle.
  * @param buf    Buffer to receive data.
  * @param size   Buffer capacity in bytes.
- * @return Bytes read, 0 on failure with errno set (ENOBUFS if buffer too small, EIO on hook error, EINVAL on bad
- * handle).
+ * @return Non-negative bytes peeked (0 is valid when no bytes are transferred), or a negative errno on failure.  On
+ * failure, errno is also set to the corresponding positive error number.
  */
-UFIFO_API size_t ufifo_peek_block(ufifo_t *handle, void *buf, size_t size);
+UFIFO_API ssize_t ufifo_peek_block(ufifo_t *handle, void *buf, size_t size);
 
 /**
  * @brief Timed peek (read without consuming).
@@ -253,10 +255,10 @@ UFIFO_API size_t ufifo_peek_block(ufifo_t *handle, void *buf, size_t size);
  * @param buf      Buffer to receive data.
  * @param size     Buffer capacity in bytes.
  * @param millisec Timeout in milliseconds.
- * @return Bytes read, 0 on failure/timeout with errno set (ETIMEDOUT on timeout, ENOBUFS if buffer too small, EIO on
- * hook error, EINVAL on bad handle).
+ * @return Non-negative bytes peeked (0 is valid when no bytes are transferred), or a negative errno on failure/timeout.
+ * On failure, errno is also set to the corresponding positive error number.
  */
-UFIFO_API size_t ufifo_peek_timeout(ufifo_t *handle, void *buf, size_t size, long millisec);
+UFIFO_API ssize_t ufifo_peek_timeout(ufifo_t *handle, void *buf, size_t size, long millisec);
 
 /**
  * @brief Seek to oldest record matching @p tag.

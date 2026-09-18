@@ -36,6 +36,7 @@ Here is how `ufifo` compares to other common alternatives:
 - **Customizable Diagnostics**: Inject your own logging callback via `ufifo_set_log_handler` to integrate `ufifo` warnings and debug outputs seamlessly into your application's logging infrastructure.
 - **Safe Across Versions**: A version stamp is embedded into shared memory at creation time. If a client links against an incompatible library version, `ufifo_open` rejects it immediately — no silent corruption.
 - **Three Blocking Flavors**: Every read/write operation comes in non-blocking, blocking (futex-based), and timed variants (`_block`, `_timeout`), so you choose the back-pressure strategy that fits your architecture.
+- **Unambiguous Data Results**: `ufifo_put*()`, `ufifo_get*()`, and `ufifo_peek*()` return the actual byte count when `ret >= 0`, or the corresponding negative `errno` when `ret < 0`.
 - **Lightweight, No External Dependencies**: Pure C99 + POSIX. No Boost, no Protobuf, no ZeroMQ runtime — just link against `librt` and `libpthread`.
 
 ## Common Topologies & Use Cases

@@ -183,7 +183,7 @@ TEST_F(EdgeCaseTest, LockFreeLostWakeupStress)
 
     for (int i = 0; i < iterations; i++) {
         char data[1] = { 0x42 };
-        while (ufifo_put(writer, data, 1) == 0) {
+        while (ufifo_put(writer, data, 1) <= 0) {
             std::this_thread::yield();
         }
     }

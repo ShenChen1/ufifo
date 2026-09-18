@@ -56,7 +56,8 @@ ufifo 当前以共享内存 ring buffer 传输数据，同时用同一组 `event
 - 构建环境必须提供含 `IORING_OP_FUTEX_WAIT` 和 `FUTEX2_SIZE_U32` 的 Linux UAPI headers。
 - 不新增运行时第三方依赖。
 - 公共函数参数不超过 5 个；单函数不超过 80 行；单源码文件不超过 500 行。
-- 控制接口沿用“成功返回非负值、失败返回负 errno”；数据接口继续用 `0 + errno`。
+- 控制接口和数据长度接口统一使用“成功返回非负值、失败返回负 errno”；数据长度接口失败时同时设置
+  `errno`，便于旧调用方诊断，但调用方必须以返回值的符号判断成功或失败。
 - 所有共享 futex 必须使用 shared futex 语义，禁止 `FUTEX_PRIVATE`/`FUTEX2_PRIVATE`。
 
 ## 2. 已确认的假设
@@ -221,7 +222,19 @@ int ufifo_epoll_close(ufifo_epoll_t *ep);
 - `drain`：成功为返回事件数量，失败为负 errno。
 - 控制 API 不使用“`-1` 并设置 errno”的混合约定。
 
-### 6.2 参数规则
+### 6.2 Core 数据长度接口
+
+`ufifo_put*()`、`ufifo_get*()` 和 `ufifo_peek*()`（包括 blocking 与 timed 变体）统一返回
+`ssize_t`：
+
+- `ret >= 0`：实际写入、读出或 peek 的字节数；操作成功但没有传输字节时可为 `0`；
+- `ret < 0`：异常，值为对应的 `-errno`，例如 `-EAGAIN`、`-ETIMEDOUT`、`-EMSGSIZE`、
+  `-ENOBUFS` 或 `-EIO`；
+- 失败路径同时设置 `errno = -ret`，但不能只检查 `errno` 或把负返回值转换为无符号长度。
+
+因此，非阻塞数据循环应使用 `ret > 0` 判断成功；`ret <= 0` 都不能视为写入或读出成功。
+
+### 6.3 参数规则
 
 - `capacity == 0`：`-EINVAL`。
 - `events` 含未知位、`reserved != 0`：`-EINVAL`。

@@ -143,7 +143,7 @@ size_t ufifo_peek_len(ufifo_t *handle)
     return len;
 }
 
-static inline __attribute__((always_inline)) size_t
+static inline __attribute__((always_inline)) ssize_t
 __ufifo_put(ufifo_t *handle, void *buf, size_t size, ufifo_wait_type_e wait_type, long millisec)
 {
     int ret;
@@ -151,12 +151,12 @@ __ufifo_put(ufifo_t *handle, void *buf, size_t size, ufifo_wait_type_e wait_type
 
     if (unlikely(size > handle->kfifo.mask + 1)) {
         errno = EMSGSIZE;
-        return 0;
+        return -EMSGSIZE;
     }
 
     __ufifo_data_lock(handle);
     ret = __ufifo_wait_for_space(handle, size, wait_type, millisec, &len);
-    if (ret) {
+    if (ret < 0) {
         goto end;
     }
 
@@ -166,6 +166,7 @@ __ufifo_put(ufifo_t *handle, void *buf, size_t size, ufifo_wait_type_e wait_type
         len = handle->hook.recput(handle->shm_mem + len, handle->kfifo.mask - len + 1, handle->shm_mem, buf);
         if (size != len) {
             errno = EIO;
+            ret = -EIO;
             len = 0;
             goto end;
         }
@@ -179,40 +180,41 @@ __ufifo_put(ufifo_t *handle, void *buf, size_t size, ufifo_wait_type_e wait_type
 end:
     __ufifo_data_unlock(handle);
 
-    return len;
+    return ret < 0 ? ret : (ssize_t)len;
 }
 
-size_t ufifo_put(ufifo_t *handle, void *buf, size_t size)
+ssize_t ufifo_put(ufifo_t *handle, void *buf, size_t size)
 {
-    UFIFO_CHECK_HANDLE(handle, 0);
+    UFIFO_CHECK_HANDLE(handle, -EINVAL);
     return __ufifo_put(handle, buf, size, UFIFO_WAIT_NONE, 0);
 }
 
-size_t ufifo_put_block(ufifo_t *handle, void *buf, size_t size)
+ssize_t ufifo_put_block(ufifo_t *handle, void *buf, size_t size)
 {
-    UFIFO_CHECK_HANDLE(handle, 0);
+    UFIFO_CHECK_HANDLE(handle, -EINVAL);
     return __ufifo_put(handle, buf, size, UFIFO_WAIT_BLOCK, 0);
 }
 
-size_t ufifo_put_timeout(ufifo_t *handle, void *buf, size_t size, long millisec)
+ssize_t ufifo_put_timeout(ufifo_t *handle, void *buf, size_t size, long millisec)
 {
-    UFIFO_CHECK_HANDLE(handle, 0);
+    UFIFO_CHECK_HANDLE(handle, -EINVAL);
     return __ufifo_put(handle, buf, size, UFIFO_WAIT_TIMED, millisec);
 }
 
-static inline __attribute__((always_inline)) size_t
+static inline __attribute__((always_inline)) ssize_t
 __ufifo_get(ufifo_t *handle, void *buf, size_t size, ufifo_wait_type_e wait_type, long millisec)
 {
     int ret;
     size_t len;
     __ufifo_data_lock(handle);
     ret = __ufifo_wait_for_data(handle, wait_type, millisec, &len);
-    if (ret) {
+    if (ret < 0) {
         goto end;
     }
 
     if (unlikely(handle->hook.recsize && size < len)) {
         errno = ENOBUFS;
+        ret = -ENOBUFS;
         len = 0;
         goto end;
     }
@@ -224,6 +226,7 @@ __ufifo_get(ufifo_t *handle, void *buf, size_t size, ufifo_wait_type_e wait_type
         len = handle->hook.recget(handle->shm_mem + len, handle->kfifo.mask - len + 1, handle->shm_mem, buf);
         if (len == 0) {
             errno = EIO;
+            ret = -EIO;
             goto end;
         }
         smp_store_release(handle->kfifo.out, out + len);
@@ -243,40 +246,41 @@ __ufifo_get(ufifo_t *handle, void *buf, size_t size, ufifo_wait_type_e wait_type
 end:
     __ufifo_data_unlock(handle);
 
-    return len;
+    return ret < 0 ? ret : (ssize_t)len;
 }
 
-size_t ufifo_get(ufifo_t *handle, void *buf, size_t size)
+ssize_t ufifo_get(ufifo_t *handle, void *buf, size_t size)
 {
-    UFIFO_CHECK_HANDLE(handle, 0);
+    UFIFO_CHECK_HANDLE(handle, -EINVAL);
     return __ufifo_get(handle, buf, size, UFIFO_WAIT_NONE, 0);
 }
 
-size_t ufifo_get_block(ufifo_t *handle, void *buf, size_t size)
+ssize_t ufifo_get_block(ufifo_t *handle, void *buf, size_t size)
 {
-    UFIFO_CHECK_HANDLE(handle, 0);
+    UFIFO_CHECK_HANDLE(handle, -EINVAL);
     return __ufifo_get(handle, buf, size, UFIFO_WAIT_BLOCK, 0);
 }
 
-size_t ufifo_get_timeout(ufifo_t *handle, void *buf, size_t size, long millisec)
+ssize_t ufifo_get_timeout(ufifo_t *handle, void *buf, size_t size, long millisec)
 {
-    UFIFO_CHECK_HANDLE(handle, 0);
+    UFIFO_CHECK_HANDLE(handle, -EINVAL);
     return __ufifo_get(handle, buf, size, UFIFO_WAIT_TIMED, millisec);
 }
 
-static inline __attribute__((always_inline)) size_t
+static inline __attribute__((always_inline)) ssize_t
 __ufifo_peek(ufifo_t *handle, void *buf, size_t size, ufifo_wait_type_e wait_type, long millisec)
 {
     int ret = 0;
     size_t len;
     __ufifo_data_lock(handle);
     ret = __ufifo_wait_for_data(handle, wait_type, millisec, &len);
-    if (ret) {
+    if (ret < 0) {
         goto end;
     }
 
     if (unlikely(handle->hook.recsize && size < len)) {
         errno = ENOBUFS;
+        ret = -ENOBUFS;
         len = 0;
         goto end;
     }
@@ -287,6 +291,7 @@ __ufifo_peek(ufifo_t *handle, void *buf, size_t size, ufifo_wait_type_e wait_typ
         len = handle->hook.recget(handle->shm_mem + len, handle->kfifo.mask - len + 1, handle->shm_mem, buf);
         if (len == 0) {
             errno = EIO;
+            ret = -EIO;
             goto end;
         }
     } else {
@@ -295,24 +300,24 @@ __ufifo_peek(ufifo_t *handle, void *buf, size_t size, ufifo_wait_type_e wait_typ
     }
 end:
     __ufifo_data_unlock(handle);
-    return len;
+    return ret < 0 ? ret : (ssize_t)len;
 }
 
-size_t ufifo_peek(ufifo_t *handle, void *buf, size_t size)
+ssize_t ufifo_peek(ufifo_t *handle, void *buf, size_t size)
 {
-    UFIFO_CHECK_HANDLE(handle, 0);
+    UFIFO_CHECK_HANDLE(handle, -EINVAL);
     return __ufifo_peek(handle, buf, size, UFIFO_WAIT_NONE, 0);
 }
 
-size_t ufifo_peek_block(ufifo_t *handle, void *buf, size_t size)
+ssize_t ufifo_peek_block(ufifo_t *handle, void *buf, size_t size)
 {
-    UFIFO_CHECK_HANDLE(handle, 0);
+    UFIFO_CHECK_HANDLE(handle, -EINVAL);
     return __ufifo_peek(handle, buf, size, UFIFO_WAIT_BLOCK, 0);
 }
 
-size_t ufifo_peek_timeout(ufifo_t *handle, void *buf, size_t size, long millisec)
+ssize_t ufifo_peek_timeout(ufifo_t *handle, void *buf, size_t size, long millisec)
 {
-    UFIFO_CHECK_HANDLE(handle, 0);
+    UFIFO_CHECK_HANDLE(handle, -EINVAL);
     return __ufifo_peek(handle, buf, size, UFIFO_WAIT_TIMED, millisec);
 }
 
