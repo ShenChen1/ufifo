@@ -194,10 +194,3 @@ TEST_F(EdgeCaseTest, LockFreeLostWakeupStress)
     ufifo_close(reader);
     ufifo_destroy(writer);
 }
-
-// =============================================================================
-// 10. Epoll Tests (parameterized by DataFormat, SHARED mode)
-// =============================================================================
-
-// Epoll is designed for SHARED mode multi-consumer scenarios.
-// Parameterize by DataFormat to cover BYTESTREAM / RECORD / TAG.

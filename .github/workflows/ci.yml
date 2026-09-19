@@ -94,6 +94,8 @@ jobs:
           ls -R install_test/
           test -f install_test/lib/libufifo.a
           test -f install_test/lib/libufifo.so
-          test -L install_test/lib/libufifo.so.0
           test -f install_test/include/ufifo/ufifo.h
           test -f install_test/lib/pkgconfig/ufifo.pc
+          SOVERSION=$(sed -n 's/^Version: \([0-9]\+\)\..*/\1/p' install_test/lib/pkgconfig/ufifo.pc)
+          test -n "${SOVERSION}"
+          test -L "install_test/lib/libufifo.so.${SOVERSION}"

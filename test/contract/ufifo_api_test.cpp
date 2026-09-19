@@ -404,7 +404,3 @@ TEST_F(UfifoApiTest, PutOversized)
 
     ufifo_destroy(fifo);
 }
-
-// =============================================================================
-// 2. Base test suite class handling Parametrization
-// =============================================================================

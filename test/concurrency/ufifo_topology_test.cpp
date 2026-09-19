@@ -1,5 +1,59 @@
 #include "ufifo_test_support.hpp"
 
+namespace {
+
+class StartGate {
+  public:
+    explicit StartGate(int participant_count) : participant_count_(participant_count) {}
+
+    void ArriveAndWait()
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        ready_count_++;
+        ready_.notify_one();
+        start_.wait(lock, [&] { return started_; });
+    }
+
+    void Release()
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        ready_.wait(lock, [&] { return ready_count_ == participant_count_; });
+        started_ = true;
+        lock.unlock();
+        start_.notify_all();
+    }
+
+  private:
+    const int participant_count_;
+    int ready_count_ = 0;
+    bool started_ = false;
+    std::mutex mutex_;
+    std::condition_variable ready_;
+    std::condition_variable start_;
+};
+
+struct TopologyRun {
+    TopologyRun(int producer_count, int consumer_count, int messages_per_producer, bool shared)
+        : producer_count(producer_count),
+          consumer_count(consumer_count),
+          messages_per_producer(messages_per_producer),
+          total_messages(producer_count * messages_per_producer),
+          shared(shared),
+          gate(producer_count + consumer_count)
+    {}
+
+    int producer_count;
+    int consumer_count;
+    int messages_per_producer;
+    int total_messages;
+    bool shared;
+    StartGate gate;
+    std::atomic<int> sole_consumed{ 0 };
+    std::vector<std::thread> threads;
+};
+
+} // namespace
+
 class ParameterizedTestBase : public ::testing::TestWithParam<TestParam> {
   protected:
     std::unique_ptr<UfifoTestAdapter> adapter_;
@@ -12,135 +66,73 @@ class ParameterizedTestBase : public ::testing::TestWithParam<TestParam> {
         adapter_ = std::make_unique<UfifoTestAdapter>(param.format, param.mode, param.lock, name_);
     }
 
-    // Unified multi-thread topology runner for SPSC / SPMC / MPSC / MPMC
-    void RunTopology(int num_producers, int num_consumers, int msgs_per_producer, int fifo_size)
+    void AddProducer(TopologyRun &run, int producer_index)
     {
-        const auto param = GetParam();
-        const bool is_shared = (adapter_->GetMode() == DataMode::SHARED);
-
-        if (param.lock == UFIFO_LOCK_NONE) {
-            if (num_producers > 1) {
-                GTEST_SKIP() << "UFIFO_LOCK_NONE does not support multiple producers";
-            }
-            if (num_consumers > 1 && !is_shared) {
-                GTEST_SKIP() << "UFIFO_LOCK_NONE does not support multiple consumers in SOLE mode";
-            }
-        }
-
-        /*
-         * In SHARED mode, every registered handle is an independent consumer
-         * whose `out` pointer must advance, otherwise __ufifo_min_out will
-         * block all puts.
-         *
-         * Handle allocation:
-         *   handles_[0]                     = Create  (producer 0)
-         *   handles_[1 .. num_producers-1]  = Attach  (producer 1..N-1)
-         *   handles_[num_producers .. N-1]  = Attach  (consumer 0..M-1)
-         *
-         * Total users = num_producers + num_consumers.
-         * In SHARED mode, producers call get after put to advance their out.
-         */
-        const int total_handles = num_producers + num_consumers;
-
-        ASSERT_EQ(0, adapter_->Create(fifo_size, adapter_->GetLock(), total_handles));
-
-        for (int i = 1; i < total_handles; ++i) {
-            ufifo_t *h = nullptr;
-            ASSERT_EQ(0, adapter_->Attach(&h));
-        }
-
-        const int total_msgs = msgs_per_producer * num_producers;
-
-        // Barrier for synchronized start
-        std::mutex start_mtx;
-        std::condition_variable start_cv;
-        int ready_count = 0;
-        bool start_flag = false;
-        const int total_threads = num_producers + num_consumers;
-
-        std::atomic<int> sole_consumed{ 0 };
-        std::vector<std::thread> threads;
-
-        // Launch producers — each uses handles_[p]
-        for (int p = 0; p < num_producers; ++p) {
-            threads.emplace_back([&, p]() {
-                {
-                    std::unique_lock<std::mutex> lck(start_mtx);
-                    ready_count++;
-                    if (ready_count == total_threads)
-                        start_cv.notify_all();
-                    start_cv.wait(lck, [&] { return start_flag; });
-                }
-
-                int count = 0;
-                ufifo_t *h = adapter_->GetHandle(p);
-                while (count < msgs_per_producer) {
-                    const int val = p * 100000 + count;
-                    ssize_t ret = adapter_->PutValue(h, val, p);
-                    if (ret <= 0) {
-                        if (is_shared) {
-                            std::this_thread::yield();
-                            int out = 0;
-                            adapter_->GetValue(h, out);
-                        }
-                        continue;
-                    }
+        run.threads.emplace_back([&, producer_index]() {
+            run.gate.ArriveAndWait();
+            ufifo_t *handle = adapter_->GetHandle(producer_index);
+            for (int count = 0; count < run.messages_per_producer;) {
+                const int value = producer_index * 100000 + count;
+                if (adapter_->PutValue(handle, value, producer_index) > 0) {
                     count++;
+                } else if (run.shared) {
+                    int discarded = 0;
+                    adapter_->GetValue(handle, discarded);
+                } else {
+                    std::this_thread::yield();
                 }
+            }
+            if (run.shared)
+                adapter_->Detach(handle);
+        });
+    }
 
-                if (is_shared) {
-                    adapter_->Detach(h);
+    void AddConsumer(TopologyRun &run, int handle_index)
+    {
+        run.threads.emplace_back([&, handle_index]() {
+            run.gate.ArriveAndWait();
+            int count = 0;
+            ufifo_t *handle = adapter_->GetHandle(handle_index);
+            while ((run.shared && count < run.total_messages)
+                   || (!run.shared && run.sole_consumed.load(std::memory_order_relaxed) < run.total_messages)) {
+                int value = 0;
+                if (adapter_->GetValue(handle, value, 10) > 0) {
+                    count++;
+                    if (!run.shared)
+                        run.sole_consumed.fetch_add(1, std::memory_order_relaxed);
                 }
-            });
+            }
+            if (run.shared) {
+                EXPECT_EQ(run.total_messages, count);
+            }
+        });
+    }
+
+    void RunTopology(int producer_count, int consumer_count, int messages_per_producer, int fifo_size)
+    {
+        const bool shared = adapter_->GetMode() == DataMode::SHARED;
+        if (GetParam().lock == UFIFO_LOCK_NONE && producer_count > 1)
+            GTEST_SKIP() << "UFIFO_LOCK_NONE does not support multiple producers";
+        if (GetParam().lock == UFIFO_LOCK_NONE && consumer_count > 1 && !shared)
+            GTEST_SKIP() << "UFIFO_LOCK_NONE does not support multiple consumers in SOLE mode";
+
+        const int handle_count = producer_count + consumer_count;
+        ASSERT_EQ(0, adapter_->Create(fifo_size, handle_count));
+        for (int index = 1; index < handle_count; index++) {
+            ufifo_t *handle = nullptr;
+            ASSERT_EQ(0, adapter_->Attach(&handle));
         }
 
-        // Launch consumers — each uses handles_[num_producers + c]
-        for (int c = 0; c < num_consumers; ++c) {
-            const int handle_idx = num_producers + c;
-            threads.emplace_back([&, handle_idx]() {
-                {
-                    std::unique_lock<std::mutex> lck(start_mtx);
-                    ready_count++;
-                    if (ready_count == total_threads)
-                        start_cv.notify_all();
-                    start_cv.wait(lck, [&] { return start_flag; });
-                }
-
-                int count = 0;
-                ufifo_t *h = adapter_->GetHandle(handle_idx);
-                while (true) {
-                    if (is_shared && count >= total_msgs)
-                        break;
-                    if (!is_shared && sole_consumed.load(std::memory_order_relaxed) >= total_msgs)
-                        break;
-
-                    int out = 0;
-                    if (adapter_->GetValue(h, out, 10) > 0) {
-                        ++count;
-                        if (!is_shared)
-                            sole_consumed.fetch_add(1, std::memory_order_relaxed);
-                    }
-                }
-
-                if (is_shared) {
-                    EXPECT_EQ(total_msgs, count);
-                }
-            });
-        }
-
-        // Wait for all threads ready, then fire
-        {
-            std::unique_lock<std::mutex> lck(start_mtx);
-            start_cv.wait(lck, [&] { return ready_count == total_threads; });
-            start_flag = true;
-        }
-        start_cv.notify_all();
-
-        for (auto &t : threads)
-            t.join();
-
-        if (!is_shared) {
-            EXPECT_EQ(total_msgs, sole_consumed.load(std::memory_order_relaxed));
+        TopologyRun run(producer_count, consumer_count, messages_per_producer, shared);
+        for (int producer = 0; producer < producer_count; producer++)
+            AddProducer(run, producer);
+        for (int consumer = 0; consumer < consumer_count; consumer++)
+            AddConsumer(run, producer_count + consumer);
+        run.gate.Release();
+        for (auto &thread : run.threads)
+            thread.join();
+        if (!shared) {
+            EXPECT_EQ(run.total_messages, run.sole_consumed.load(std::memory_order_relaxed));
         }
     }
 };
@@ -158,6 +150,13 @@ TEST_P(SingletonTest, OpenClose)
 {
     ASSERT_EQ(0, adapter_->Create(512));
     EXPECT_NE(nullptr, adapter_->GetMainHandle());
+}
+
+TEST_P(SingletonTest, UsesConfiguredLock)
+{
+    ASSERT_EQ(0, adapter_->Create(512));
+    ASSERT_NE(nullptr, adapter_->GetMainHandle());
+    EXPECT_EQ(GetParam().lock, adapter_->GetMainHandle()->lock_type);
 }
 
 TEST_P(SingletonTest, BasicPutGet)
