@@ -124,7 +124,13 @@ byte 1 + user_id: user liveness lock
 ### 4.2 User liveness lock
 
 用户槽锁从旧的 `user_id` 平移到 `1 + user_id`，避免 user 0 与 lifetime byte 冲突。
-它继续用于 dead-reader 检测和槽回收。
+它继续用于 dead-reader 检测和槽回收。回收路径必须在持有 `ctrl_mutex` 后重新检查
+slot 的 active 状态和 OFD lock，只有当下仍为 dead 才能清理，防止将已被新 attach
+复用的 live slot 判为旧用户回收。
+
+`ctrl_mutex` 承担跨进程的用户注册和回收，因此无论 data lock 选择 `NONE`、`THREAD`
+还是 `PROCESS`，它都始终初始化为 process-shared robust mutex。data mutex 的 robust
+策略仍只由 data lock 模式决定。
 
 ## 5. Attach Identity Revalidation
 
@@ -192,6 +198,8 @@ FORCE:      open old -> try EXCLUSIVE -> unlink -> create/init new
 - fork 子进程使用继承 handle：`-ECHILD`；
 - robust data mutex owner death：下一个 locker 清空不确定数据、恢复 mutex 并返回
   `-EOWNERDEAD`；后续操作正常继续。
+- robust ctrl mutex owner death：下一个 locker 在持锁状态下重建用户计数并回收
+  dead slot；该恢复与 data lock 模式无关。
 
 ## 8. 验证矩阵
 
@@ -202,6 +210,9 @@ FORCE:      open old -> try EXCLUSIVE -> unlink -> create/init new
 - 最后一个其他 handle close 后 destroy/force 成功。
 - attach 与 force 并发时只得到旧代、新代完整对象或显式瞬态错误，不出现 mixed generation。
 - owner/attacher SIGKILL 后 lifetime lock 自动释放，可 force/reap。
+- dead-reader 检测与持有 `ctrl_mutex` 后的槽修改之间发生 slot 复用时，新 live slot
+  不会被回收。
+- `UFIFO_LOCK_NONE` 的 ctrl mutex owner 死亡后，下一个管理操作可恢复，不会永久阻塞。
 - 伪造/截断的 mapping size、data offset、data size、max_users，以及由 `max_users + 1`
   导致的布局溢出全部返回 `-EPROTO`。
 - 非 ABI 3 对象的 attach 返回 `-EPROTO`；force 不探测 layout，直接替换无活跃 lease 的对象。
@@ -223,6 +234,9 @@ FORCE:      open old -> try EXCLUSIVE -> unlink -> create/init new
 
 ## 10. 本阶段验证证据
 
+- dead-slot 锁内重检、全模式 robust ctrl mutex 和统一超时 deadline 实现后，全量
+  CTest 425/425 通过，48 个既有参数组合跳过；ASan+UBSan 下新增回归与故障注入
+  用例 11/11 通过（`detect_leaks=0`）。
 - 返回约定统一后，常规构建与全量 CTest：421/421 通过，48 个既有参数组合跳过；
   ASan+UBSan 聚焦接口与 fork guard 用例：9/9 通过（`detect_leaks=0`）。
 - 简化后的 P0 常规构建与全量 CTest：420/420 通过，48 个既有参数组合跳过。

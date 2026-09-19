@@ -5,6 +5,42 @@
 
 #include "utils.h"
 
+static int __ufifo_prepare_deadline(ufifo_wait_type_e wait_type,
+                                    long millisec,
+                                    struct timespec *storage,
+                                    const struct timespec **deadline)
+{
+    *deadline = NULL;
+    if (wait_type != UFIFO_WAIT_TIMED)
+        return 0;
+    if (millisec < 0)
+        millisec = 0;
+    if (clock_gettime(CLOCK_MONOTONIC, storage) < 0)
+        return -errno;
+    storage->tv_sec += millisec / 1000;
+    storage->tv_nsec += (millisec % 1000) * 1000000L;
+    if (storage->tv_nsec >= 1000000000L) {
+        storage->tv_sec++;
+        storage->tv_nsec -= 1000000000L;
+    }
+    *deadline = storage;
+    return 0;
+}
+
+static int __ufifo_begin_data_operation(ufifo_t *handle,
+                                        ufifo_wait_type_e wait_type,
+                                        long millisec,
+                                        struct timespec *storage,
+                                        const struct timespec **deadline)
+{
+    int ret = __ufifo_prepare_deadline(wait_type, millisec, storage, deadline);
+    if (ret == 0)
+        ret = __ufifo_data_lock_until(handle, *deadline);
+    if (ret < 0)
+        errno = -ret;
+    return ret;
+}
+
 static size_t __ufifo_min_out(ufifo_t *handle)
 {
     size_t in_val = smp_load_acquire(handle->kfifo.in);
@@ -80,6 +116,8 @@ __ufifo_put(ufifo_t *handle, void *buf, size_t size, ufifo_wait_type_e wait_type
 {
     int ret;
     size_t len = 0;
+    struct timespec deadline_storage;
+    const struct timespec *deadline;
     ufifo_wait_result_t wait_result = { .data_lock_held = true };
 
     if (unlikely(size > handle->kfifo.mask + 1)) {
@@ -87,12 +125,10 @@ __ufifo_put(ufifo_t *handle, void *buf, size_t size, ufifo_wait_type_e wait_type
         return -EMSGSIZE;
     }
 
-    ret = __ufifo_data_lock(handle);
-    if (ret < 0) {
-        errno = -ret;
+    ret = __ufifo_begin_data_operation(handle, wait_type, millisec, &deadline_storage, &deadline);
+    if (ret < 0)
         return ret;
-    }
-    ret = __ufifo_wait_for_space(handle, size, wait_type, millisec, &wait_result);
+    ret = __ufifo_wait_for_space(handle, size, wait_type, deadline, &wait_result);
     len = wait_result.length;
     if (ret < 0) {
         goto end;
@@ -156,13 +192,13 @@ __ufifo_get(ufifo_t *handle, void *buf, size_t size, ufifo_wait_type_e wait_type
 {
     int ret;
     size_t len = 0;
+    struct timespec deadline_storage;
+    const struct timespec *deadline;
     ufifo_wait_result_t wait_result = { .data_lock_held = true };
-    ret = __ufifo_data_lock(handle);
-    if (ret < 0) {
-        errno = -ret;
+    ret = __ufifo_begin_data_operation(handle, wait_type, millisec, &deadline_storage, &deadline);
+    if (ret < 0)
         return ret;
-    }
-    ret = __ufifo_wait_for_data(handle, wait_type, millisec, &wait_result);
+    ret = __ufifo_wait_for_data(handle, wait_type, deadline, &wait_result);
     len = wait_result.length;
     if (ret < 0) {
         goto end;
@@ -240,13 +276,13 @@ __ufifo_peek(ufifo_t *handle, void *buf, size_t size, ufifo_wait_type_e wait_typ
 {
     int ret = 0;
     size_t len = 0;
+    struct timespec deadline_storage;
+    const struct timespec *deadline;
     ufifo_wait_result_t wait_result = { .data_lock_held = true };
-    ret = __ufifo_data_lock(handle);
-    if (ret < 0) {
-        errno = -ret;
+    ret = __ufifo_begin_data_operation(handle, wait_type, millisec, &deadline_storage, &deadline);
+    if (ret < 0)
         return ret;
-    }
-    ret = __ufifo_wait_for_data(handle, wait_type, millisec, &wait_result);
+    ret = __ufifo_wait_for_data(handle, wait_type, deadline, &wait_result);
     len = wait_result.length;
     if (ret < 0) {
         goto end;

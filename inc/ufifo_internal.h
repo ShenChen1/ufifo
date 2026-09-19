@@ -62,6 +62,7 @@ static inline int __ufifo_validate_handle(const ufifo_t *handle)
 int __ufifo_ctrl_lock(ufifo_t *handle);
 int __ufifo_ctrl_unlock(ufifo_t *handle);
 int __ufifo_data_lock(ufifo_t *handle);
+int __ufifo_data_lock_until(ufifo_t *handle, const struct timespec *deadline);
 int __ufifo_data_unlock(ufifo_t *handle);
 int __ufifo_ofd_lock(int fd, size_t user_id);
 int __ufifo_ofd_unlock(int fd, size_t user_id);
@@ -83,12 +84,20 @@ uint32_t __ufifo_wait_arm(uint32_t *wait_word);
 int __ufifo_futex_wait(uint32_t *wait_word, uint32_t expected, const struct timespec *deadline);
 void __ufifo_wait_notify(uint32_t *wait_word);
 int __ufifo_wait_for_space(
-    ufifo_t *handle, size_t size, ufifo_wait_type_e wait_type, long millisec, ufifo_wait_result_t *result);
+    ufifo_t *handle,
+    size_t size,
+    ufifo_wait_type_e wait_type,
+    const struct timespec *deadline,
+    ufifo_wait_result_t *result);
 int __ufifo_wait_for_data(
-    ufifo_t *handle, ufifo_wait_type_e wait_type, long millisec, ufifo_wait_result_t *result);
+    ufifo_t *handle,
+    ufifo_wait_type_e wait_type,
+    const struct timespec *deadline,
+    ufifo_wait_result_t *result);
 
 /* ufifo_init.c */
-void __ufifo_reap_dead_user(ufifo_t *handle, size_t user_id);
+/* Caller must hold ctrl_mutex. Revalidates liveness immediately before mutation. */
+bool __ufifo_reap_dead_user(ufifo_t *handle, size_t user_id);
 static inline bool __ufifo_is_shared(ufifo_t *handle)
 {
     return handle->is_shared;
