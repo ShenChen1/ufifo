@@ -42,6 +42,8 @@ int __ufifo_ctrl_lock(ufifo_t *handle)
         __ufifo_log("WARN: ctrl_mutex owner died, recovering state\n");
         __ufifo_recover_state(handle);
         ret = pthread_mutex_consistent(&handle->ctrl->ctrl_mutex);
+        if (ret != 0)
+            pthread_mutex_unlock(&handle->ctrl->ctrl_mutex);
     }
     return ret == 0 ? 0 : -ret;
 }
@@ -52,12 +54,8 @@ int __ufifo_ctrl_unlock(ufifo_t *handle)
     return ret == 0 ? 0 : -ret;
 }
 
-int __ufifo_data_lock(ufifo_t *handle)
+static int __ufifo_recover_data_lock(ufifo_t *handle, int ret)
 {
-    if (handle->lock_type == UFIFO_LOCK_NONE)
-        return 0;
-
-    int ret = pthread_mutex_lock(&handle->ctrl->data_mutex);
     if (ret == EOWNERDEAD) {
         __ufifo_reset_data_locked(handle);
         int consistent_ret = pthread_mutex_consistent(&handle->ctrl->data_mutex);
@@ -73,6 +71,21 @@ int __ufifo_data_lock(ufifo_t *handle)
         return -EOWNERDEAD;
     }
     return ret == 0 ? 0 : -ret;
+}
+
+int __ufifo_data_lock_until(ufifo_t *handle, const struct timespec *deadline)
+{
+    if (handle->lock_type == UFIFO_LOCK_NONE)
+        return 0;
+
+    int ret = deadline == NULL ? pthread_mutex_lock(&handle->ctrl->data_mutex)
+                               : pthread_mutex_clocklock(&handle->ctrl->data_mutex, CLOCK_MONOTONIC, deadline);
+    return __ufifo_recover_data_lock(handle, ret);
+}
+
+int __ufifo_data_lock(ufifo_t *handle)
+{
+    return __ufifo_data_lock_until(handle, NULL);
 }
 
 int __ufifo_data_unlock(ufifo_t *handle)
@@ -129,25 +142,36 @@ int __ufifo_lock_init(ufifo_t *handle, ufifo_lock_e type)
 {
     pthread_mutexattr_t attr;
     int ret = 0;
+    bool attr_initialized = false;
+    bool ctrl_initialized = false;
+    bool data_initialized = false;
 
     handle->ctrl->lock = type;
-
-    pthread_mutexattr_init(&attr);
-    pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
-    if (type == UFIFO_LOCK_PROCESS) {
-        pthread_mutexattr_setrobust(&attr, PTHREAD_MUTEX_ROBUST);
+    if ((ret = pthread_mutexattr_init(&attr)) == 0)
+        attr_initialized = true;
+    if (ret == 0)
+        ret = pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
+    if (ret == 0)
+        ret = pthread_mutexattr_setrobust(&attr, PTHREAD_MUTEX_ROBUST);
+    if (ret == 0 && (ret = pthread_mutex_init(&handle->ctrl->ctrl_mutex, &attr)) == 0)
+        ctrl_initialized = true;
+    if (ret == 0 && type == UFIFO_LOCK_THREAD)
+        ret = pthread_mutexattr_setrobust(&attr, PTHREAD_MUTEX_STALLED);
+    if (ret == 0 && type != UFIFO_LOCK_NONE
+        && (ret = pthread_mutex_init(&handle->ctrl->data_mutex, &attr)) == 0)
+        data_initialized = true;
+    if (attr_initialized) {
+        int destroy_ret = pthread_mutexattr_destroy(&attr);
+        if (ret == 0)
+            ret = destroy_ret;
     }
-
-    /* ctrl_mutex: always initialized */
-    ret = pthread_mutex_init(&handle->ctrl->ctrl_mutex, &attr);
-
-    /* data_mutex: only when locking is requested */
-    if (ret == 0 && type != UFIFO_LOCK_NONE) {
-        ret = pthread_mutex_init(&handle->ctrl->data_mutex, &attr);
-    }
-
-    pthread_mutexattr_destroy(&attr);
-    return ret == 0 ? 0 : -ret;
+    if (ret == 0)
+        return 0;
+    if (data_initialized)
+        pthread_mutex_destroy(&handle->ctrl->data_mutex);
+    if (ctrl_initialized)
+        pthread_mutex_destroy(&handle->ctrl->ctrl_mutex);
+    return -ret;
 }
 
 int __ufifo_lock_deinit(ufifo_t *handle)

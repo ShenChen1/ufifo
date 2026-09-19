@@ -11,19 +11,6 @@
 
 #define UFIFO_WAIT_ARMED 1U
 
-static void __ufifo_calc_deadline(long millisec, struct timespec *deadline)
-{
-    if (millisec < 0)
-        millisec = 0;
-    clock_gettime(CLOCK_MONOTONIC, deadline);
-    deadline->tv_sec += millisec / 1000;
-    deadline->tv_nsec += (millisec % 1000) * 1000000L;
-    if (deadline->tv_nsec >= 1000000000L) {
-        deadline->tv_sec++;
-        deadline->tv_nsec -= 1000000000L;
-    }
-}
-
 uint32_t __ufifo_wait_arm(uint32_t *wait_word)
 {
     return atomic_fetch_or(wait_word, UFIFO_WAIT_ARMED) | UFIFO_WAIT_ARMED;
@@ -62,7 +49,7 @@ static int __ufifo_wait_on_word(ufifo_t *handle,
     if (unlock_ret < 0)
         return unlock_ret;
     const int ret = __ufifo_futex_wait(wait_word, expected, deadline);
-    const int lock_ret = __ufifo_data_lock(handle);
+    const int lock_ret = __ufifo_data_lock_until(handle, deadline);
     if (lock_ret < 0)
         return lock_ret;
     result->data_lock_held = true;
@@ -82,8 +69,7 @@ static int __ufifo_try_reap_dead_readers(ufifo_t *handle)
         int ret = __ufifo_ctrl_lock(handle);
         if (ret < 0)
             continue;
-        if (READ_ONCE(&handle->ctrl->users[i].active)) {
-            __ufifo_reap_dead_user(handle, i);
+        if (__ufifo_reap_dead_user(handle, i)) {
             cleaned = 1;
         }
         if (__ufifo_ctrl_unlock(handle) < 0)
@@ -109,17 +95,14 @@ static size_t __ufifo_recheck_space(ufifo_t *handle, size_t size)
 }
 
 int __ufifo_wait_for_space(
-    ufifo_t *handle, size_t size, ufifo_wait_type_e wait_type, long millisec, ufifo_wait_result_t *result)
+    ufifo_t *handle,
+    size_t size,
+    ufifo_wait_type_e wait_type,
+    const struct timespec *deadline,
+    ufifo_wait_result_t *result)
 {
     int ret = 0;
     size_t len = 0;
-    struct timespec deadline;
-    const struct timespec *timeout = NULL;
-
-    if (wait_type == UFIFO_WAIT_TIMED) {
-        __ufifo_calc_deadline(millisec, &deadline);
-        timeout = &deadline;
-    }
 
     while ((len = __ufifo_recheck_space(handle, size)) < size) {
         if (wait_type == UFIFO_WAIT_NONE) {
@@ -130,7 +113,7 @@ int __ufifo_wait_for_space(
         const uint32_t expected = __ufifo_wait_arm(&handle->ctrl->tx_wait_word);
         if (__ufifo_unused_len(handle) >= size)
             continue;
-        ret = __ufifo_wait_on_word(handle, &handle->ctrl->tx_wait_word, expected, timeout, result);
+        ret = __ufifo_wait_on_word(handle, &handle->ctrl->tx_wait_word, expected, deadline, result);
         if (ret)
             break;
     }
@@ -144,18 +127,14 @@ int __ufifo_wait_for_space(
 }
 
 int __ufifo_wait_for_data(
-    ufifo_t *handle, ufifo_wait_type_e wait_type, long millisec, ufifo_wait_result_t *result)
+    ufifo_t *handle,
+    ufifo_wait_type_e wait_type,
+    const struct timespec *deadline,
+    ufifo_wait_result_t *result)
 {
     int ret = 0;
     size_t len = 0;
     ufifo_sub_ctrl_t *rx_ctrl = __ufifo_rx_ctrl(handle);
-    struct timespec deadline;
-    const struct timespec *timeout = NULL;
-
-    if (wait_type == UFIFO_WAIT_TIMED) {
-        __ufifo_calc_deadline(millisec, &deadline);
-        timeout = &deadline;
-    }
 
     while ((len = __ufifo_peek_data_len(
                 handle, READ_ONCE(handle->kfifo.out), smp_load_acquire(handle->kfifo.in)))
@@ -169,7 +148,7 @@ int __ufifo_wait_for_data(
         len = __ufifo_peek_data_len(handle, READ_ONCE(handle->kfifo.out), smp_load_acquire(handle->kfifo.in));
         if (len > 0)
             continue;
-        ret = __ufifo_wait_on_word(handle, &rx_ctrl->rx_wait_word, expected, timeout, result);
+        ret = __ufifo_wait_on_word(handle, &rx_ctrl->rx_wait_word, expected, deadline, result);
         if (ret)
             break;
     }

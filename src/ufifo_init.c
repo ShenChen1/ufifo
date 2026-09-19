@@ -17,14 +17,15 @@
 
 #define UFIFO_DATA_ALIGNMENT 64U
 
-void __ufifo_reap_dead_user(ufifo_t *handle, size_t user_id)
+bool __ufifo_reap_dead_user(ufifo_t *handle, size_t user_id)
 {
     ufifo_ctrl_t *ctrl = handle->ctrl;
 
-    if (READ_ONCE(&ctrl->users[user_id].active)) {
-        smp_store_release(&ctrl->users[user_id].active, false);
-        ctrl->num_users--;
-    }
+    if (!READ_ONCE(&ctrl->users[user_id].active) || !__ufifo_is_user_dead(handle->shm_fd, user_id))
+        return false;
+    smp_store_release(&ctrl->users[user_id].active, false);
+    ctrl->num_users--;
+    return true;
 }
 
 static int __ufifo_register_slot(ufifo_t *handle, size_t user_id, pid_t pid)
@@ -57,13 +58,12 @@ static int __ufifo_register(ufifo_t *handle, size_t *user_id)
     }
 
     for (size_t i = 0; i < ctrl->max_users; i++) {
-        if (READ_ONCE(&ctrl->users[i].active) && __ufifo_is_user_dead(handle->shm_fd, i)) {
-            __ufifo_reap_dead_user(handle, i);
-            int ret = __ufifo_register_slot(handle, i, pid);
-            if (ret == 0)
-                *user_id = i;
-            return ret;
-        }
+        if (!__ufifo_reap_dead_user(handle, i))
+            continue;
+        int ret = __ufifo_register_slot(handle, i, pid);
+        if (ret == 0)
+            *user_id = i;
+        return ret;
     }
     return -ENOSPC;
 }

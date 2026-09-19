@@ -13,6 +13,7 @@ FetchContent_MakeAvailable(googletest)
 # ufifo test executable
 add_executable(ufifo_test
     test/ufifo_api_test.cpp
+    test/ufifo_core_regression_test.cpp
     test/ufifo_edge_basic_test.cpp
     test/ufifo_edge_wait_test.cpp
     test/ufifo_errno_reap_test.cpp

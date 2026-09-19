@@ -323,7 +323,8 @@ while old has ARMED:
 
 ### 8.3 Blocking loop
 
-blocking read/write 统一执行：
+blocking read/write 统一执行；定时调用在首次获取 data lock 前建立唯一的
+monotonic absolute deadline：
 
 1. 在当前 data-lock 语义下检查 predicate；成立则直接操作。
 2. arm 对应 wait word。
@@ -331,7 +332,9 @@ blocking read/write 统一执行：
 4. 释放 data lock，执行 shared futex wait。
 5. 重新获取 data lock并回到步骤 1。
 
-无限等待使用 `FUTEX_WAIT`；超时使用 monotonic absolute deadline，spurious wake 不得重置 deadline。`EAGAIN` 视为状态变化并重试；`EINTR` 和 `ETIMEDOUT` 按现有 API 错误约定返回。
+无限等待使用 `FUTEX_WAIT`；超时使用上述 deadline，它同时约束首次 data-lock
+获取、futex wait 和 wake 后的 data-lock 重获取，spurious wake 不得重置。`EAGAIN`
+视为状态变化并重试；`EINTR` 和 `ETIMEDOUT` 按现有 API 错误约定返回。
 
 ### 8.4 状态变化映射
 
