@@ -1,7 +1,7 @@
 #pragma once
 
 #include <cstddef>
-#include <gtest/gtest.h>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -110,13 +110,13 @@ class UfifoTestAdapter {
         handles_.clear();
     }
 
-    int Create(size_t size, ufifo_lock_e lock = UFIFO_LOCK_NONE, size_t max_users = 10)
+    int Create(size_t size, size_t max_users = 10)
     {
         ufifo_init_t init = {};
         init.opt = UFIFO_OPT_ALLOC;
         init.alloc.size = size;
         init.alloc.force = 1;
-        init.alloc.lock = lock;
+        init.alloc.lock = lock_;
         init.alloc.data_mode = (mode_ == DataMode::SHARED) ? UFIFO_DATA_SHARED : UFIFO_DATA_SOLE;
         init.alloc.max_users = max_users;
 

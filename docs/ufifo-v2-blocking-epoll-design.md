@@ -81,9 +81,11 @@ ufifo 当前以共享内存 ring buffer 传输数据，同时用同一组 `event
 | `src/ufifo_broker*.c` | eventfd 创建、分发与 daemon 生命周期 | 删除 |
 | `src/ufifo_init.c` | open 时获取 eventfd，close 时关闭 broker 资源 | core open/close 不再创建通知 fd |
 | `README.md`、`example/epoll.c` | 说明和演示旧 eventfd API | 改为 adapter API |
-| `test/ufifo_test.cpp` | eventfd、broker、blocking 与 epoll 测试混合 | 按领域拆分并替换旧测试 |
+| `test/` | contract、data、concurrency、lifecycle 测试及 benchmark | 维持领域边界并替换旧 eventfd/broker 测试 |
 
-现有 `src/ufifo_opts.c`、`test/ufifo_test.cpp` 和 `test/ufifo_bench.cpp` 已超过新规则的 500 行限制。实现阶段在触碰这些文件前必须先按职责拆分，不能继续扩张。
+审计时 `src/ufifo_opts.c`、`test/ufifo_test.cpp` 和 `test/ufifo_bench.cpp` 曾超过新规则的 500 行限制。
+当前测试已按职责拆入 `test/contract/`、`test/data/`、`test/concurrency/`、`test/lifecycle/`、
+`test/support/` 和 `test/benchmark/`；后续实现不得重新合并成大文件。
 
 ## 4. 方案比较
 
@@ -492,10 +494,12 @@ src/ufifo_sync.c            mutex/OFD primitives
 src/ufifo_epoll.c           public adapter + watch state machine
 src/ufifo_uring.c           raw ring setup/submit/CQ/cancel boundary
 src/ufifo_uring.h           private raw ring declarations
-test/ufifo_core_test.cpp
-test/ufifo_wait_test.cpp
-test/ufifo_epoll_test.cpp
-test/ufifo_lifecycle_test.cpp
+test/contract/                public API、errno 与 shared layout contract
+test/data/                    record/tag 与 data-path regression
+test/concurrency/             wait primitive、wake race 与并发 topology
+test/lifecycle/               attach/destroy/reap、crash 与 generation recovery
+test/support/                 shared fixtures、parameter matrix 与 adapter
+test/benchmark/               standalone performance benchmark
 ```
 
 删除：
