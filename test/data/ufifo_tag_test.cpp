@@ -18,7 +18,8 @@ class TagSpecificTest : public ::testing::Test {
         init.hook.recsize = tagged_recsize;
         init.hook.rectag = tagged_rectag;
 
-        ufifo_open(name_.c_str(), &init, &fifo_);
+        ASSERT_EQ(0, ufifo_open(name_.c_str(), &init, &fifo_));
+        ASSERT_NE(nullptr, fifo_);
     }
 
     void TearDown() override
@@ -29,12 +30,14 @@ class TagSpecificTest : public ::testing::Test {
 
     void PutRec(int tag, const std::string &data)
     {
-        char buf[256];
+        alignas(TaggedRecord) char buf[256];
+        ASSERT_LE(data.size() + 1, sizeof(buf) - sizeof(TaggedRecord));
         TaggedRecord *rec = reinterpret_cast<TaggedRecord *>(buf);
         rec->size = data.size() + 1;
         rec->tag = tag;
         memcpy(rec->data, data.c_str(), rec->size);
-        ufifo_put(fifo_, rec, sizeof(TaggedRecord) + rec->size);
+        const size_t record_size = sizeof(TaggedRecord) + rec->size;
+        ASSERT_EQ(static_cast<ssize_t>(record_size), ufifo_put(fifo_, rec, record_size));
     }
 };
 
@@ -45,12 +48,13 @@ TEST_F(TagSpecificTest, OldestByTag)
     PutRec(1, "second_1");
     PutRec(2, "second_2");
 
-    ufifo_oldest(fifo_, 2); // seek to oldest with tag=2
-    char out_buf[128] = {};
+    ASSERT_EQ(0, ufifo_oldest(fifo_, 2));
+    alignas(TaggedRecord) char out_buf[128] = {};
     TaggedRecord *out = reinterpret_cast<TaggedRecord *>(out_buf);
-    ufifo_get(fifo_, out, sizeof(out_buf));
+    ASSERT_EQ(static_cast<ssize_t>(sizeof(TaggedRecord) + strlen("first_2") + 1),
+              ufifo_get(fifo_, out, sizeof(out_buf)));
     EXPECT_EQ(2u, out->tag);
-    EXPECT_EQ(0, memcmp(out->data, "first_2", 7));
+    EXPECT_STREQ("first_2", out->data);
 }
 
 TEST_F(TagSpecificTest, NewestByTag)
@@ -59,21 +63,26 @@ TEST_F(TagSpecificTest, NewestByTag)
     PutRec(2, "first_2");
     PutRec(1, "second_1");
 
-    ufifo_newest(fifo_, 1); // seek to newest with tag=1
-    char out_buf[128] = {};
+    ASSERT_EQ(0, ufifo_newest(fifo_, 1));
+    alignas(TaggedRecord) char out_buf[128] = {};
     TaggedRecord *out = reinterpret_cast<TaggedRecord *>(out_buf);
-    ufifo_get(fifo_, out, sizeof(out_buf));
+    ASSERT_EQ(static_cast<ssize_t>(sizeof(TaggedRecord) + strlen("second_1") + 1),
+              ufifo_get(fifo_, out, sizeof(out_buf)));
     EXPECT_EQ(1u, out->tag);
-    EXPECT_EQ(0, memcmp(out->data, "second_1", 8));
+    EXPECT_STREQ("second_1", out->data);
 }
 
 TEST_F(TagSpecificTest, TagNotFound)
 {
     PutRec(1, "data");
-    ufifo_oldest(fifo_, 999); // non-existent tag
-    char out_buf[128] = {};
-    ssize_t ret = ufifo_get(fifo_, out_buf, sizeof(out_buf));
-    (void)ret; // shouldn't crash
+    errno = 0;
+    EXPECT_EQ(-ESPIPE, ufifo_oldest(fifo_, 999));
+    EXPECT_EQ(ESPIPE, errno);
+    EXPECT_EQ(0, ufifo_len(fifo_));
+    alignas(TaggedRecord) char out_buf[128] = {};
+    errno = 0;
+    EXPECT_EQ(-EAGAIN, ufifo_get(fifo_, out_buf, sizeof(out_buf)));
+    EXPECT_EQ(EAGAIN, errno);
 }
 
 TEST_F(TagSpecificTest, MultiTagMixed)
@@ -86,15 +95,12 @@ TEST_F(TagSpecificTest, MultiTagMixed)
 
     int count = 0;
     while (ufifo_len(fifo_) > 0) {
-        ufifo_oldest(fifo_, 0);
-        char out_buf[128] = {};
+        ASSERT_EQ(0, ufifo_oldest(fifo_, 0));
+        alignas(TaggedRecord) char out_buf[128] = {};
         TaggedRecord *out = reinterpret_cast<TaggedRecord *>(out_buf);
-        if (ufifo_get(fifo_, out, sizeof(out_buf)) <= 0)
-            break;
-        if (out->tag == 0)
-            count++;
-        else
-            break;
+        ASSERT_GT(ufifo_get(fifo_, out, sizeof(out_buf)), 0);
+        ASSERT_EQ(0u, out->tag);
+        count++;
     }
-    EXPECT_GT(count, 0);
+    EXPECT_EQ(4, count);
 }

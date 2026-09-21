@@ -1,3 +1,5 @@
+#include <algorithm>
+
 #include "ufifo_test_support.hpp"
 
 namespace {
@@ -39,8 +41,26 @@ struct TopologyRun {
           messages_per_producer(messages_per_producer),
           total_messages(producer_count * messages_per_producer),
           shared(shared),
-          gate(producer_count + consumer_count)
+          gate(producer_count + consumer_count),
+          deadline(std::chrono::steady_clock::now() + std::chrono::seconds(30)),
+          received(consumer_count)
     {}
+
+    void Fail(int failure)
+    {
+        int no_error = 0;
+        error.compare_exchange_strong(no_error, failure);
+    }
+
+    bool ShouldStop()
+    {
+        if (error.load() != 0)
+            return true;
+        if (std::chrono::steady_clock::now() < deadline)
+            return false;
+        Fail(-ETIMEDOUT);
+        return true;
+    }
 
     int producer_count;
     int consumer_count;
@@ -48,7 +68,10 @@ struct TopologyRun {
     int total_messages;
     bool shared;
     StartGate gate;
+    std::chrono::steady_clock::time_point deadline;
     std::atomic<int> sole_consumed{ 0 };
+    std::atomic<int> error{ 0 };
+    std::vector<std::vector<int>> received;
     std::vector<std::thread> threads;
 };
 
@@ -71,19 +94,28 @@ class ParameterizedTestBase : public ::testing::TestWithParam<TestParam> {
         run.threads.emplace_back([&, producer_index]() {
             run.gate.ArriveAndWait();
             ufifo_t *handle = adapter_->GetHandle(producer_index);
-            for (int count = 0; count < run.messages_per_producer;) {
+            if (!handle) {
+                run.Fail(-EINVAL);
+                return;
+            }
+            for (int count = 0; count < run.messages_per_producer && !run.ShouldStop();) {
                 const int value = producer_index * 100000 + count;
-                if (adapter_->PutValue(handle, value, producer_index) > 0) {
+                ssize_t ret = adapter_->PutValue(handle, value, producer_index);
+                if (ret > 0) {
                     count++;
+                } else if (ret != -EAGAIN) {
+                    run.Fail(ret < 0 ? static_cast<int>(ret) : -EIO);
                 } else if (run.shared) {
                     int discarded = 0;
-                    adapter_->GetValue(handle, discarded);
+                    ret = adapter_->GetValue(handle, discarded, 10);
+                    if (ret <= 0 && ret != -EAGAIN && ret != -ETIMEDOUT)
+                        run.Fail(ret < 0 ? static_cast<int>(ret) : -EIO);
                 } else {
                     std::this_thread::yield();
                 }
             }
-            if (run.shared)
-                adapter_->Detach(handle);
+            if (run.shared && adapter_->Detach(handle) != 0)
+                run.Fail(-EIO);
         });
     }
 
@@ -93,19 +125,62 @@ class ParameterizedTestBase : public ::testing::TestWithParam<TestParam> {
             run.gate.ArriveAndWait();
             int count = 0;
             ufifo_t *handle = adapter_->GetHandle(handle_index);
+            if (!handle) {
+                run.Fail(-EINVAL);
+                return;
+            }
+            std::vector<int> &values = run.received[handle_index - run.producer_count];
+            values.reserve(run.total_messages);
             while ((run.shared && count < run.total_messages)
                    || (!run.shared && run.sole_consumed.load(std::memory_order_relaxed) < run.total_messages)) {
+                if (run.ShouldStop())
+                    break;
                 int value = 0;
-                if (adapter_->GetValue(handle, value, 10) > 0) {
+                ssize_t ret = adapter_->GetValue(handle, value, 10);
+                if (ret > 0) {
+                    values.push_back(value);
                     count++;
                     if (!run.shared)
                         run.sole_consumed.fetch_add(1, std::memory_order_relaxed);
+                } else if (ret != -EAGAIN && ret != -ETIMEDOUT) {
+                    run.Fail(ret < 0 ? static_cast<int>(ret) : -EIO);
                 }
             }
-            if (run.shared) {
-                EXPECT_EQ(run.total_messages, count);
-            }
         });
+    }
+
+    std::vector<int> ExpectedValues(const TopologyRun &run)
+    {
+        std::vector<int> expected;
+        expected.reserve(run.total_messages);
+        for (int producer = 0; producer < run.producer_count; producer++) {
+            for (int count = 0; count < run.messages_per_producer; count++)
+                expected.push_back(producer * 100000 + count);
+        }
+        return expected;
+    }
+
+    void ExpectProducerOrder(const TopologyRun &run, const std::vector<int> &values)
+    {
+        std::vector<int> next_count(run.producer_count, 0);
+        for (int value : values) {
+            const int producer = value / 100000;
+            const int count = value % 100000;
+            if (producer < 0 || producer >= run.producer_count) {
+                ADD_FAILURE() << "Invalid producer id in value " << value;
+                continue;
+            }
+            EXPECT_EQ(next_count[producer], count) << "Out-of-order value from producer " << producer;
+            next_count[producer]++;
+        }
+        for (int count : next_count)
+            EXPECT_EQ(run.messages_per_producer, count);
+    }
+
+    void ExpectExactValues(const std::vector<int> &expected, std::vector<int> actual)
+    {
+        std::sort(actual.begin(), actual.end());
+        EXPECT_EQ(expected, actual);
     }
 
     void RunTopology(int producer_count, int consumer_count, int messages_per_producer, int fifo_size)
@@ -131,8 +206,22 @@ class ParameterizedTestBase : public ::testing::TestWithParam<TestParam> {
         run.gate.Release();
         for (auto &thread : run.threads)
             thread.join();
-        if (!shared) {
+
+        ASSERT_EQ(0, run.error.load());
+        const std::vector<int> expected = ExpectedValues(run);
+        if (shared) {
+            for (const auto &values : run.received) {
+                EXPECT_EQ(run.total_messages, static_cast<int>(values.size()));
+                ExpectExactValues(expected, values);
+                ExpectProducerOrder(run, values);
+            }
+        } else {
+            std::vector<int> all_values;
+            all_values.reserve(run.total_messages);
+            for (const auto &values : run.received)
+                all_values.insert(all_values.end(), values.begin(), values.end());
             EXPECT_EQ(run.total_messages, run.sole_consumed.load(std::memory_order_relaxed));
+            ExpectExactValues(expected, std::move(all_values));
         }
     }
 };

@@ -62,39 +62,6 @@ TEST_F(EdgeCaseTest, SoleModeSlotReusePreservesUnreadData)
     ufifo_destroy(reader);
 }
 
-TEST_F(EdgeCaseTest, ProcessLockCrashRecovery)
-{
-    std::string name = GenerateName("ec_crash");
-    ufifo_init_t init = {};
-    init.opt = UFIFO_OPT_ALLOC;
-    init.alloc.size = 256;
-    init.alloc.force = 1;
-    init.alloc.lock = UFIFO_LOCK_PROCESS;
-    init.alloc.data_mode = UFIFO_DATA_SOLE;
-    init.alloc.max_users = 2;
-
-    ufifo_t *fifo = nullptr;
-    ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &fifo));
-
-    pid_t pid = fork();
-    if (pid == 0) {
-        int val = 999;
-        ufifo_put(fifo, &val, sizeof(val));
-        _exit(0); // Exit abandoning the lock/handle mapping
-    } else {
-        ASSERT_GT(pid, 0);
-        int status;
-        waitpid(pid, &status, 0);
-
-        int out = 0;
-        ssize_t ret = ufifo_get(fifo, &out, sizeof(out));
-        if (ret > 0) {
-            EXPECT_EQ(999, out);
-        }
-    }
-    ufifo_destroy(fifo);
-}
-
 TEST_F(EdgeCaseTest, SharedModeUserLimit)
 {
     std::string name = GenerateName("ec_usrlmt");

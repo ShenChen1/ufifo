@@ -45,73 +45,55 @@ TEST_F(FaultInjectionTest, ReaderCrashRecovery)
 {
     std::string name = UniqueName("rec01");
     ufifo_t *fifo = nullptr;
-    ASSERT_EQ(0, CreateFifo(name, &fifo, 256, 4));
+    ASSERT_EQ(0, CreateFifo(name, &fifo, 256, 2));
 
-    // Normal exit child
-    pid_t pid1 = fork();
-    if (pid1 == 0) {
+    int command_pipe[2], ready_pipe[2];
+    ASSERT_EQ(0, pipe(command_pipe));
+    ASSERT_EQ(0, pipe(ready_pipe));
+
+    pid_t pid = fork();
+    ASSERT_GE(pid, 0);
+    if (pid == 0) {
+        close(command_pipe[1]);
+        close(ready_pipe[0]);
         ufifo_t *child_fifo = nullptr;
-        if (AttachFifo(name, &child_fifo) == 0) {
-            char buf[10] = "test";
-            ufifo_put(child_fifo, buf, 10);
-            ufifo_close(child_fifo);
-        }
-        _exit(0);
+        char ready = AttachFifo(name, &child_fifo) == 0 ? '1' : '0';
+        if (write(ready_pipe[1], &ready, 1) != 1 || ready != '1')
+            _exit(1);
+        char command = 0;
+        if (read(command_pipe[0], &command, 1) != 1)
+            _exit(2);
+        kill(getpid(), SIGKILL);
+        _exit(3);
     }
-    ASSERT_GT(pid1, 0);
-    int status1;
-    waitpid(pid1, &status1, 0);
+    close(command_pipe[0]);
+    close(ready_pipe[1]);
 
-    // Crash child
-    int p2c[2], c2p[2];
-    ASSERT_EQ(0, pipe(p2c));
-    ASSERT_EQ(0, pipe(c2p));
+    char ready = 0;
+    ASSERT_EQ(1, read(ready_pipe[0], &ready, 1));
+    ASSERT_EQ('1', ready);
+    close(ready_pipe[0]);
 
-    pid_t pid2 = fork();
-    if (pid2 == 0) {
-        close(p2c[1]);
-        close(c2p[0]);
-        ufifo_t *child_fifo = nullptr;
-        if (AttachFifo(name, &child_fifo) == 0) {
-            char buf[10] = "test";
-            ufifo_put(child_fifo, buf, 10);
+    char fill[256] = {};
+    ASSERT_EQ(sizeof(fill), ufifo_put(fifo, fill, sizeof(fill)));
+    for (size_t i = 0; i < sizeof(fill); i++)
+        ASSERT_EQ(1, ufifo_skip(fifo));
 
-            char ready = '1';
-            write(c2p[1], &ready, 1);
-            char wait_cmd;
-            read(p2c[0], &wait_cmd, 1); // wait for parent to close pipe
-            kill(getpid(), SIGKILL);
-        }
-        _exit(1);
-    }
-    ASSERT_GT(pid2, 0);
-    close(p2c[0]);
-    close(c2p[1]);
-
-    // Wait for child to attach before triggering crash
-    char ready;
-    EXPECT_EQ(1, read(c2p[0], &ready, 1));
-    close(p2c[1]); // unblocks child's read, triggering SIGKILL
-
-    int status2;
-    waitpid(pid2, &status2, 0);
-
-    // Parent fills the FIFO
-    char fill[256];
-    memset(fill, 'A', sizeof(fill));
-    ssize_t written = ufifo_put(fifo, fill, sizeof(fill));
-
-    // In SHARED mode, the parent must also consume to advance its out
-    for (ssize_t i = 0; i < written; i++) {
-        ufifo_skip(fifo);
-    }
-
-    // Now parent uses put_timeout, should succeed because dead reader is reaped
     char data = 'B';
-    ssize_t ret = ufifo_put_timeout(fifo, &data, 1, 1000);
-    EXPECT_EQ(1u, ret);
+    errno = 0;
+    EXPECT_EQ(-EAGAIN, ufifo_put(fifo, &data, 1));
+    EXPECT_EQ(EAGAIN, errno);
 
-    ufifo_destroy(fifo);
+    char command = 'k';
+    ASSERT_EQ(1, write(command_pipe[1], &command, 1));
+    close(command_pipe[1]);
+    int status = 0;
+    ASSERT_EQ(pid, waitpid(pid, &status, 0));
+    ASSERT_TRUE(WIFSIGNALED(status));
+    ASSERT_EQ(SIGKILL, WTERMSIG(status));
+
+    EXPECT_EQ(1, ufifo_put_timeout(fifo, &data, 1, 1000));
+    EXPECT_EQ(0, ufifo_destroy(fifo));
 }
 
 TEST_F(FaultInjectionTest, AllReadersCrash)
@@ -149,21 +131,34 @@ TEST_F(FaultInjectionTest, AllReadersCrash)
     }
 
     for (int i = 0; i < 3; i++) {
-        char ready;
-        EXPECT_EQ(1, read(c2p[i][0], &ready, 1));
-        char cmd = 'k';
-        EXPECT_EQ(1, write(p2c[i][1], &cmd, 1));
-        close(p2c[i][1]); // trigger crash
-        int status;
-        waitpid(pids[i], &status, 0);
+        char ready = 0;
+        ASSERT_EQ(1, read(c2p[i][0], &ready, 1));
+        ASSERT_EQ('1', ready);
+        close(c2p[i][0]);
     }
 
-    // Parent verifies it can put data
-    char data[10] = "hello";
-    ssize_t ret = ufifo_put(fifo, data, 10);
-    EXPECT_EQ(10u, ret);
+    char fill[256] = {};
+    ASSERT_EQ(sizeof(fill), ufifo_put(fifo, fill, sizeof(fill)));
+    for (size_t i = 0; i < sizeof(fill); i++)
+        ASSERT_EQ(1, ufifo_skip(fifo));
 
-    ufifo_destroy(fifo);
+    char data = 'B';
+    errno = 0;
+    EXPECT_EQ(-EAGAIN, ufifo_put(fifo, &data, 1));
+    EXPECT_EQ(EAGAIN, errno);
+
+    for (int i = 0; i < 3; i++) {
+        char command = 'k';
+        ASSERT_EQ(1, write(p2c[i][1], &command, 1));
+        close(p2c[i][1]);
+        int status = 0;
+        ASSERT_EQ(pids[i], waitpid(pids[i], &status, 0));
+        ASSERT_TRUE(WIFSIGNALED(status));
+        ASSERT_EQ(SIGKILL, WTERMSIG(status));
+    }
+
+    EXPECT_EQ(1, ufifo_put_timeout(fifo, &data, 1, 1000));
+    EXPECT_EQ(0, ufifo_destroy(fifo));
 }
 
 TEST_F(FaultInjectionTest, ConcurrentAttachRace)
@@ -337,31 +332,51 @@ TEST_F(FaultInjectionTest, LockNoneWaiterRace)
 
     std::atomic<int> total_written{ 0 };
     std::atomic<int> total_read{ 0 };
+    std::atomic<int> operation_error{ 0 };
     std::atomic<bool> running{ true };
     const int target = 10000;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
 
     std::thread writer([&]() {
         char data = 'X';
-        while (total_written < target) {
-            if (ufifo_put(fifo, &data, 1) > 0)
+        while (total_written < target && operation_error.load() == 0) {
+            ssize_t ret = ufifo_put(fifo, &data, 1);
+            if (ret == 1) {
                 total_written++;
-            else
+            } else if (ret != -EAGAIN) {
+                operation_error.store(ret < 0 ? static_cast<int>(ret) : -EIO);
+                break;
+            } else if (std::chrono::steady_clock::now() >= deadline) {
+                operation_error.store(-ETIMEDOUT);
+                break;
+            } else {
                 std::this_thread::yield();
+            }
         }
         running = false;
     });
 
     std::thread reader([&]() {
         char buf;
-        while (running || total_read < total_written) {
-            if (ufifo_get_timeout(fifo, &buf, 1, 100) > 0)
+        while (operation_error.load() == 0 && (running || total_read < total_written)) {
+            ssize_t ret = ufifo_get_timeout(fifo, &buf, 1, 100);
+            if (ret == 1) {
                 total_read++;
+            } else if (ret != -ETIMEDOUT && ret != -EAGAIN) {
+                operation_error.store(ret < 0 ? static_cast<int>(ret) : -EIO);
+                break;
+            } else if (std::chrono::steady_clock::now() >= deadline) {
+                operation_error.store(-ETIMEDOUT);
+                break;
+            }
         }
     });
 
     writer.join();
     reader.join();
 
+    EXPECT_EQ(0, operation_error.load());
+    EXPECT_EQ(target, total_written.load());
     EXPECT_EQ(total_written.load(), total_read.load());
-    ufifo_destroy(fifo);
+    EXPECT_EQ(0, ufifo_destroy(fifo));
 }

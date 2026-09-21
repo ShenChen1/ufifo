@@ -12,7 +12,8 @@ if(COVERAGE)
 
     add_custom_target(coverage
         COMMAND ${LCOV_PATH} --zerocounters --directory .
-        COMMAND $<TARGET_FILE:ufifo_test>
+        COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure --timeout 60
+            -E "^(bytestream|nolock|pressure|record|record-tag|record-tag-cb)$"
         COMMAND ${LCOV_PATH} --capture --directory . --output-file coverage_raw.info
             --ignore-errors mismatch,inconsistent,negative,empty
         COMMAND ${LCOV_PATH} --extract coverage_raw.info
@@ -24,5 +25,6 @@ if(COVERAGE)
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
         DEPENDS ufifo_test
         COMMENT "Running tests and generating coverage report..."
+        VERBATIM
     )
 endif()

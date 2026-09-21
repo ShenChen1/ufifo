@@ -168,27 +168,51 @@ TEST_F(EdgeCaseTest, LockFreeLostWakeupStress)
 
     const int iterations = 50000;
     std::atomic<int> consumed{ 0 };
+    std::atomic<int> reader_error{ 0 };
+    std::atomic<int> writer_error{ 0 };
+    std::atomic<bool> stop{ false };
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
 
     std::thread reader_thread([&]() {
         char buf[1];
         for (int i = 0; i < iterations; i++) {
-            // Short timeout to avoid hanging the test suite indefinitely if bug triggers
-            if (ufifo_get_timeout(reader, buf, 1, 500) > 0) {
+            ssize_t ret = ufifo_get_timeout(reader, buf, 1, 500);
+            if (ret == 1) {
                 consumed++;
             } else {
-                break; // Lost wakeup or timeout
+                reader_error.store(ret < 0 ? static_cast<int>(ret) : -EIO);
+                stop.store(true);
+                break;
             }
         }
     });
 
     for (int i = 0; i < iterations; i++) {
         char data[1] = { 0x42 };
-        while (ufifo_put(writer, data, 1) <= 0) {
+        for (;;) {
+            ssize_t ret = ufifo_put(writer, data, 1);
+            if (ret == 1)
+                break;
+            if (ret != -EAGAIN) {
+                writer_error.store(ret < 0 ? static_cast<int>(ret) : -EIO);
+                stop.store(true);
+                break;
+            }
+            if (stop.load() || std::chrono::steady_clock::now() >= deadline) {
+                writer_error.store(-ETIMEDOUT);
+                stop.store(true);
+                break;
+            }
             std::this_thread::yield();
         }
+        if (stop.load())
+            break;
     }
 
+    stop.store(true);
     reader_thread.join();
+    EXPECT_EQ(0, writer_error.load());
+    EXPECT_EQ(0, reader_error.load());
     EXPECT_EQ(iterations, consumed.load()) << "Lost wakeup occurred during Lock-Free stress test";
 
     ufifo_close(reader);
