@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "ufifo_test_adapter.hpp"
+#include "ufifo_test_runtime.hpp"
 
 extern "C" {
 #include "ufifo_internal.h"

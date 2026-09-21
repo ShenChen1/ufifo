@@ -21,6 +21,7 @@ set(UFIFO_DATA_TEST_SOURCES
     test/data/ufifo_tag_test.cpp
 )
 set(UFIFO_CONCURRENCY_TEST_SOURCES
+    test/concurrency/ufifo_test_runtime_test.cpp
     test/concurrency/ufifo_timeout_regression_test.cpp
     test/concurrency/ufifo_topology_test.cpp
     test/concurrency/ufifo_wait_regression_test.cpp
@@ -39,6 +40,7 @@ add_executable(ufifo_test
     ${UFIFO_DATA_TEST_SOURCES}
     ${UFIFO_CONCURRENCY_TEST_SOURCES}
     ${UFIFO_LIFECYCLE_TEST_SOURCES}
+    test/support/ufifo_test_runtime.cpp
     test/support/ufifo_test_support.cpp
 )
 target_link_libraries(ufifo_test PRIVATE
