@@ -19,20 +19,18 @@ typedef struct {
 
 static int run_mode = 0;
 
+static void read_record_header(record_t *record, uint8_t *p1, size_t n1, uint8_t *p2)
+{
+    size_t first_size = n1 < sizeof(*record) ? n1 : sizeof(*record);
+    memcpy(record, p1, first_size);
+    memcpy((uint8_t *)record + first_size, p2, sizeof(*record) - first_size);
+}
+
 static size_t recsize(uint8_t *p1, size_t n1, uint8_t *p2)
 {
-    size_t size = sizeof(record_t);
-
-    if (n1 >= size) {
-        record_t *rec = (record_t *)p1;
-        size = rec->size;
-    } else {
-        record_t rec;
-        char *p = (char *)(&rec);
-        memcpy(p, p1, n1);
-        memcpy(p + n1, p2, size - n1);
-        size = rec.size;
-    }
+    record_t record;
+    read_record_header(&record, p1, n1, p2);
+    size_t size = record.size;
 
     assert(size == sizeof("hello"));
     return sizeof(record_t) + size;

@@ -31,54 +31,32 @@ struct TaggedRecord {
     char data[0];
 };
 
+template <typename Header>
+inline Header copy_split_header(uint8_t *p1, size_t n1, uint8_t *p2)
+{
+    Header header;
+    const size_t first_size = n1 < sizeof(header) ? n1 : sizeof(header);
+    memcpy(&header, p1, first_size);
+    memcpy(reinterpret_cast<uint8_t *>(&header) + first_size, p2, sizeof(header) - first_size);
+    return header;
+}
+
 // Hooks
 inline size_t test_recsize(uint8_t *p1, size_t n1, uint8_t *p2)
 {
-    size_t size = sizeof(TestRecord);
-    if (n1 >= size) {
-        TestRecord *rec = reinterpret_cast<TestRecord *>(p1);
-        size = rec->size;
-    } else {
-        TestRecord rec;
-        char *p = reinterpret_cast<char *>(&rec);
-        memcpy(p, p1, n1);
-        memcpy(p + n1, p2, size - n1);
-        size = rec.size;
-    }
-    return sizeof(TestRecord) + size;
+    const TestRecord record = copy_split_header<TestRecord>(p1, n1, p2);
+    return sizeof(TestRecord) + record.size;
 }
 
 inline size_t tagged_recsize(uint8_t *p1, size_t n1, uint8_t *p2)
 {
-    size_t size = sizeof(TaggedRecord);
-    if (n1 >= size) {
-        TaggedRecord *rec = reinterpret_cast<TaggedRecord *>(p1);
-        size = rec->size;
-    } else {
-        TaggedRecord rec;
-        char *p = reinterpret_cast<char *>(&rec);
-        memcpy(p, p1, n1);
-        memcpy(p + n1, p2, size - n1);
-        size = rec.size;
-    }
-    return sizeof(TaggedRecord) + size;
+    const TaggedRecord record = copy_split_header<TaggedRecord>(p1, n1, p2);
+    return sizeof(TaggedRecord) + record.size;
 }
 
 inline size_t tagged_rectag(uint8_t *p1, size_t n1, uint8_t *p2)
 {
-    size_t tag = 0;
-    size_t size = sizeof(TaggedRecord);
-    if (n1 >= size) {
-        TaggedRecord *rec = reinterpret_cast<TaggedRecord *>(p1);
-        tag = rec->tag;
-    } else {
-        TaggedRecord rec;
-        char *p = reinterpret_cast<char *>(&rec);
-        memcpy(p, p1, n1);
-        memcpy(p + n1, p2, size - n1);
-        tag = rec.tag;
-    }
-    return tag;
+    return copy_split_header<TaggedRecord>(p1, n1, p2).tag;
 }
 
 class UfifoTestAdapter {
@@ -190,7 +168,7 @@ class UfifoTestAdapter {
     // Unifies putting an integer value with a payload. (Tag uses modulo of value for tag if TAG format)
     ssize_t PutValue(ufifo_t *handle, int value, int tag = -1, long timeout_ms = 0)
     {
-        char buf[64];
+        alignas(TaggedRecord) char buf[64];
         size_t size = sizeof(buf);
 
         if (format_ == DataFormat::BYTESTREAM) {
@@ -220,7 +198,7 @@ class UfifoTestAdapter {
 
     ssize_t GetValue(ufifo_t *handle, int &value, long timeout_ms = 0)
     {
-        char buf[64] = {};
+        alignas(TaggedRecord) char buf[64] = {};
         size_t size = sizeof(buf);
         ssize_t ret = 0;
         if (format_ == DataFormat::BYTESTREAM) {
