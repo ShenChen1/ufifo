@@ -13,6 +13,8 @@
 
 #include <gtest/gtest.h>
 
+#include "ufifo_test_runtime.hpp"
+
 extern "C" {
 #include "ufifo_internal.h"
 }
@@ -43,9 +45,8 @@ ufifo_t *OpenWaitTestFifo(const char *prefix, size_t size)
 
 void WaitUntilArmed(const uint32_t *wait_word)
 {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    while ((__atomic_load_n(wait_word, __ATOMIC_ACQUIRE) & 1U) == 0 &&
-           std::chrono::steady_clock::now() < deadline)
+    TestDeadline deadline(TEST_PROCESS_TIMEOUT);
+    while ((__atomic_load_n(wait_word, __ATOMIC_ACQUIRE) & 1U) == 0 && !deadline.Expired())
         std::this_thread::yield();
     ASSERT_EQ(1U, __atomic_load_n(wait_word, __ATOMIC_ACQUIRE) & 1U);
 }
@@ -115,35 +116,36 @@ TEST(UfifoWaitWordTest, NotifyWakesProcessSharedWaiter)
     ASSERT_NE(MAP_FAILED, wait_word);
     *wait_word = 0;
 
-    int ready_pipe[2] = {};
-    ASSERT_EQ(0, pipe(ready_pipe));
+    TestPipe ready_pipe;
+    ASSERT_EQ(0, TestPipe::Create(&ready_pipe));
 
     const pid_t child = fork();
     ASSERT_GE(child, 0);
     if (child == 0) {
-        close(ready_pipe[0]);
+        ready_pipe.CloseRead();
         const uint32_t expected = __ufifo_wait_arm(wait_word);
-        const char ready = 'R';
-        if (write(ready_pipe[1], &ready, sizeof(ready)) != sizeof(ready))
+        if (ready_pipe.WriteByte('R') != 0)
             _exit(EXIT_FAILURE);
         const timespec deadline = DeadlineAfterMilliseconds(2000);
         _exit(__ufifo_futex_wait(wait_word, expected, &deadline) == 0 ? EXIT_SUCCESS : EXIT_FAILURE);
     }
 
-    close(ready_pipe[1]);
+    ChildProcess process(child);
+    ready_pipe.CloseWrite();
     char ready = 0;
-    ASSERT_EQ(1, read(ready_pipe[0], &ready, sizeof(ready)));
+    TestDeadline ready_deadline(TEST_PROCESS_TIMEOUT);
+    ASSERT_EQ(0, ready_pipe.ReadByteUntil(ready_deadline, &ready));
     EXPECT_EQ('R', ready);
 
     __ufifo_wait_notify(wait_word);
 
     int status = 0;
-    ASSERT_EQ(child, waitpid(child, &status, 0));
+    TestDeadline child_deadline(TEST_PROCESS_TIMEOUT);
+    ASSERT_EQ(0, process.WaitUntil(child_deadline, &status));
     EXPECT_TRUE(WIFEXITED(status));
     EXPECT_EQ(EXIT_SUCCESS, WEXITSTATUS(status));
     EXPECT_EQ(2u, *wait_word);
 
-    close(ready_pipe[0]);
     EXPECT_EQ(0, munmap(wait_word, sizeof(*wait_word)));
 }
 

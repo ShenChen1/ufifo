@@ -150,8 +150,10 @@ TEST(UfifoLifetimeTest, ForkInheritedHandleIsRejected)
         _exit(rejected ? 0 : 1);
     }
 
+    ChildProcess child(pid);
     int status = 0;
-    ASSERT_EQ(pid, waitpid(pid, &status, 0));
+    TestDeadline child_deadline(TEST_PROCESS_TIMEOUT);
+    ASSERT_EQ(0, child.WaitUntil(child_deadline, &status));
     ASSERT_TRUE(WIFEXITED(status));
     ASSERT_EQ(0, WEXITSTATUS(status));
 
@@ -175,30 +177,33 @@ TEST(UfifoLifetimeTest, ActiveAttachPreventsDestroy)
     ufifo_t *owner = CreateFifo(name);
     ASSERT_NE(nullptr, owner);
 
-    int ready_pipe[2];
-    int exit_pipe[2];
-    ASSERT_EQ(0, pipe(ready_pipe));
-    ASSERT_EQ(0, pipe(exit_pipe));
+    TestPipe ready_pipe;
+    TestPipe exit_pipe;
+    ASSERT_EQ(0, TestPipe::Create(&ready_pipe));
+    ASSERT_EQ(0, TestPipe::Create(&exit_pipe));
 
     const pid_t pid = fork();
     ASSERT_GE(pid, 0);
     if (pid == 0) {
-        close(ready_pipe[0]);
-        close(exit_pipe[1]);
+        ready_pipe.CloseRead();
+        exit_pipe.CloseWrite();
         ufifo_init_t attach = {};
         attach.opt = UFIFO_OPT_ATTACH;
         ufifo_t *client = nullptr;
         const char status = ufifo_open(name.c_str(), &attach, &client) == 0 ? '1' : '0';
-        (void)write(ready_pipe[1], &status, 1);
+        (void)ready_pipe.WriteByte(status);
         char signal;
-        (void)read(exit_pipe[0], &signal, 1);
-        _exit(status == '1' ? 0 : 1);
+        TestDeadline exit_deadline(TEST_PROCESS_TIMEOUT);
+        const int signal_result = exit_pipe.ReadByteUntil(exit_deadline, &signal);
+        _exit(status == '1' && signal_result == 0 ? 0 : 1);
     }
 
-    close(ready_pipe[1]);
-    close(exit_pipe[0]);
+    ChildProcess child(pid);
+    ready_pipe.CloseWrite();
+    exit_pipe.CloseRead();
     char status = '0';
-    ASSERT_EQ(1, read(ready_pipe[0], &status, 1));
+    TestDeadline ready_deadline(TEST_PROCESS_TIMEOUT);
+    ASSERT_EQ(0, ready_pipe.ReadByteUntil(ready_deadline, &status));
     ASSERT_EQ('1', status);
 
     const int ret = ufifo_destroy(owner);
@@ -212,14 +217,12 @@ TEST(UfifoLifetimeTest, ActiveAttachPreventsDestroy)
         EXPECT_EQ(value, output);
     }
 
-    ASSERT_EQ(1, write(exit_pipe[1], "x", 1));
+    ASSERT_EQ(0, exit_pipe.WriteByte('x'));
     int child_status = 0;
-    ASSERT_EQ(pid, waitpid(pid, &child_status, 0));
+    TestDeadline child_deadline(TEST_PROCESS_TIMEOUT);
+    ASSERT_EQ(0, child.WaitUntil(child_deadline, &child_status));
     EXPECT_TRUE(WIFEXITED(child_status));
     EXPECT_EQ(0, WEXITSTATUS(child_status));
-    close(ready_pipe[0]);
-    close(exit_pipe[1]);
-
     if (owner != nullptr) {
         EXPECT_EQ(0, ufifo_destroy(owner));
     }

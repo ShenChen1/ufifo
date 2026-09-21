@@ -123,8 +123,10 @@ TEST_F(EdgeCaseTest, DeadReaderReapWakesBlockedWriter)
         _exit(0);
     }
     ASSERT_GT(pid, 0);
-    int status;
-    waitpid(pid, &status, 0);
+    ChildProcess child(pid);
+    int status = 0;
+    TestDeadline child_deadline(TEST_PROCESS_TIMEOUT);
+    ASSERT_EQ(0, child.WaitUntil(child_deadline, &status));
     ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0);
 
     /* Dead reader's out pointer is stuck at 0. Fill the buffer so the writer blocks. */
@@ -168,10 +170,9 @@ TEST_F(EdgeCaseTest, LockFreeLostWakeupStress)
 
     const int iterations = 50000;
     std::atomic<int> consumed{ 0 };
-    std::atomic<int> reader_error{ 0 };
-    std::atomic<int> writer_error{ 0 };
+    FirstFailure first_failure;
     std::atomic<bool> stop{ false };
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    TestDeadline deadline(std::chrono::seconds(10));
 
     std::thread reader_thread([&]() {
         char buf[1];
@@ -180,7 +181,7 @@ TEST_F(EdgeCaseTest, LockFreeLostWakeupStress)
             if (ret == 1) {
                 consumed++;
             } else {
-                reader_error.store(ret < 0 ? static_cast<int>(ret) : -EIO);
+                first_failure.Record(ret < 0 ? static_cast<int>(ret) : -EIO);
                 stop.store(true);
                 break;
             }
@@ -194,12 +195,12 @@ TEST_F(EdgeCaseTest, LockFreeLostWakeupStress)
             if (ret == 1)
                 break;
             if (ret != -EAGAIN) {
-                writer_error.store(ret < 0 ? static_cast<int>(ret) : -EIO);
+                first_failure.Record(ret < 0 ? static_cast<int>(ret) : -EIO);
                 stop.store(true);
                 break;
             }
-            if (stop.load() || std::chrono::steady_clock::now() >= deadline) {
-                writer_error.store(-ETIMEDOUT);
+            if (stop.load() || deadline.Expired()) {
+                first_failure.Record(-ETIMEDOUT);
                 stop.store(true);
                 break;
             }
@@ -211,8 +212,7 @@ TEST_F(EdgeCaseTest, LockFreeLostWakeupStress)
 
     stop.store(true);
     reader_thread.join();
-    EXPECT_EQ(0, writer_error.load());
-    EXPECT_EQ(0, reader_error.load());
+    EXPECT_EQ(0, first_failure.Get());
     EXPECT_EQ(iterations, consumed.load()) << "Lost wakeup occurred during Lock-Free stress test";
 
     ufifo_close(reader);

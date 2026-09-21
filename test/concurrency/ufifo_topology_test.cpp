@@ -4,36 +4,6 @@
 
 namespace {
 
-class StartGate {
-  public:
-    explicit StartGate(int participant_count) : participant_count_(participant_count) {}
-
-    void ArriveAndWait()
-    {
-        std::unique_lock<std::mutex> lock(mutex_);
-        ready_count_++;
-        ready_.notify_one();
-        start_.wait(lock, [&] { return started_; });
-    }
-
-    void Release()
-    {
-        std::unique_lock<std::mutex> lock(mutex_);
-        ready_.wait(lock, [&] { return ready_count_ == participant_count_; });
-        started_ = true;
-        lock.unlock();
-        start_.notify_all();
-    }
-
-  private:
-    const int participant_count_;
-    int ready_count_ = 0;
-    bool started_ = false;
-    std::mutex mutex_;
-    std::condition_variable ready_;
-    std::condition_variable start_;
-};
-
 struct TopologyRun {
     TopologyRun(int producer_count, int consumer_count, int messages_per_producer, bool shared)
         : producer_count(producer_count),
@@ -42,21 +12,20 @@ struct TopologyRun {
           total_messages(producer_count * messages_per_producer),
           shared(shared),
           gate(producer_count + consumer_count),
-          deadline(std::chrono::steady_clock::now() + std::chrono::seconds(30)),
+          deadline(std::chrono::seconds(30)),
           received(consumer_count)
     {}
 
     void Fail(int failure)
     {
-        int no_error = 0;
-        error.compare_exchange_strong(no_error, failure);
+        first_failure.Record(failure);
     }
 
     bool ShouldStop()
     {
-        if (error.load() != 0)
+        if (!first_failure.Ok())
             return true;
-        if (std::chrono::steady_clock::now() < deadline)
+        if (!deadline.Expired())
             return false;
         Fail(-ETIMEDOUT);
         return true;
@@ -68,9 +37,9 @@ struct TopologyRun {
     int total_messages;
     bool shared;
     StartGate gate;
-    std::chrono::steady_clock::time_point deadline;
+    TestDeadline deadline;
     std::atomic<int> sole_consumed{ 0 };
-    std::atomic<int> error{ 0 };
+    FirstFailure first_failure;
     std::vector<std::vector<int>> received;
     std::vector<std::thread> threads;
 };
@@ -92,7 +61,10 @@ class ParameterizedTestBase : public ::testing::TestWithParam<TestParam> {
     void AddProducer(TopologyRun &run, int producer_index)
     {
         run.threads.emplace_back([&, producer_index]() {
-            run.gate.ArriveAndWait();
+            if (!run.gate.ArriveAndWait(run.deadline)) {
+                run.Fail(-ETIMEDOUT);
+                return;
+            }
             ufifo_t *handle = adapter_->GetHandle(producer_index);
             if (!handle) {
                 run.Fail(-EINVAL);
@@ -122,7 +94,10 @@ class ParameterizedTestBase : public ::testing::TestWithParam<TestParam> {
     void AddConsumer(TopologyRun &run, int handle_index)
     {
         run.threads.emplace_back([&, handle_index]() {
-            run.gate.ArriveAndWait();
+            if (!run.gate.ArriveAndWait(run.deadline)) {
+                run.Fail(-ETIMEDOUT);
+                return;
+            }
             int count = 0;
             ufifo_t *handle = adapter_->GetHandle(handle_index);
             if (!handle) {
@@ -203,11 +178,12 @@ class ParameterizedTestBase : public ::testing::TestWithParam<TestParam> {
             AddProducer(run, producer);
         for (int consumer = 0; consumer < consumer_count; consumer++)
             AddConsumer(run, producer_count + consumer);
-        run.gate.Release();
+        if (!run.gate.Release(run.deadline))
+            run.Fail(-ETIMEDOUT);
         for (auto &thread : run.threads)
             thread.join();
 
-        ASSERT_EQ(0, run.error.load());
+        ASSERT_EQ(0, run.first_failure.Get());
         const std::vector<int> expected = ExpectedValues(run);
         if (shared) {
             for (const auto &values : run.received) {

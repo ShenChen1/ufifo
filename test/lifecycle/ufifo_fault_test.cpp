@@ -47,32 +47,35 @@ TEST_F(FaultInjectionTest, ReaderCrashRecovery)
     ufifo_t *fifo = nullptr;
     ASSERT_EQ(0, CreateFifo(name, &fifo, 256, 2));
 
-    int command_pipe[2], ready_pipe[2];
-    ASSERT_EQ(0, pipe(command_pipe));
-    ASSERT_EQ(0, pipe(ready_pipe));
+    TestPipe command_pipe;
+    TestPipe ready_pipe;
+    ASSERT_EQ(0, TestPipe::Create(&command_pipe));
+    ASSERT_EQ(0, TestPipe::Create(&ready_pipe));
 
     pid_t pid = fork();
     ASSERT_GE(pid, 0);
     if (pid == 0) {
-        close(command_pipe[1]);
-        close(ready_pipe[0]);
+        command_pipe.CloseWrite();
+        ready_pipe.CloseRead();
         ufifo_t *child_fifo = nullptr;
-        char ready = AttachFifo(name, &child_fifo) == 0 ? '1' : '0';
-        if (write(ready_pipe[1], &ready, 1) != 1 || ready != '1')
+        const char ready = AttachFifo(name, &child_fifo) == 0 ? '1' : '0';
+        if (ready_pipe.WriteByte(ready) != 0 || ready != '1')
             _exit(1);
         char command = 0;
-        if (read(command_pipe[0], &command, 1) != 1)
+        TestDeadline command_deadline(TEST_PROCESS_TIMEOUT);
+        if (command_pipe.ReadByteUntil(command_deadline, &command) != 0)
             _exit(2);
         kill(getpid(), SIGKILL);
         _exit(3);
     }
-    close(command_pipe[0]);
-    close(ready_pipe[1]);
+    ChildProcess child(pid);
+    command_pipe.CloseRead();
+    ready_pipe.CloseWrite();
 
     char ready = 0;
-    ASSERT_EQ(1, read(ready_pipe[0], &ready, 1));
+    TestDeadline ready_deadline(TEST_PROCESS_TIMEOUT);
+    ASSERT_EQ(0, ready_pipe.ReadByteUntil(ready_deadline, &ready));
     ASSERT_EQ('1', ready);
-    close(ready_pipe[0]);
 
     char fill[256] = {};
     ASSERT_EQ(sizeof(fill), ufifo_put(fifo, fill, sizeof(fill)));
@@ -84,11 +87,11 @@ TEST_F(FaultInjectionTest, ReaderCrashRecovery)
     EXPECT_EQ(-EAGAIN, ufifo_put(fifo, &data, 1));
     EXPECT_EQ(EAGAIN, errno);
 
-    char command = 'k';
-    ASSERT_EQ(1, write(command_pipe[1], &command, 1));
-    close(command_pipe[1]);
+    ASSERT_EQ(0, command_pipe.WriteByte('k'));
+    command_pipe.CloseWrite();
     int status = 0;
-    ASSERT_EQ(pid, waitpid(pid, &status, 0));
+    TestDeadline child_deadline(TEST_PROCESS_TIMEOUT);
+    ASSERT_EQ(0, child.WaitUntil(child_deadline, &status));
     ASSERT_TRUE(WIFSIGNALED(status));
     ASSERT_EQ(SIGKILL, WTERMSIG(status));
 
@@ -102,39 +105,42 @@ TEST_F(FaultInjectionTest, AllReadersCrash)
     ufifo_t *fifo = nullptr;
     ASSERT_EQ(0, CreateFifo(name, &fifo, 256, 4));
 
-    int p2c[3][2], c2p[3][2];
-    pid_t pids[3];
+    TestPipe p2c[3];
+    TestPipe c2p[3];
+    ChildProcess children[3];
     for (int i = 0; i < 3; i++) {
-        ASSERT_EQ(0, pipe(p2c[i]));
-        ASSERT_EQ(0, pipe(c2p[i]));
-        pids[i] = fork();
-        if (pids[i] == 0) {
-            for (int j = 0; j < i; j++) {
-                close(p2c[j][1]);
-                close(c2p[j][0]);
+        ASSERT_EQ(0, TestPipe::Create(&p2c[i]));
+        ASSERT_EQ(0, TestPipe::Create(&c2p[i]));
+        const pid_t pid = fork();
+        if (pid == 0) {
+            for (int j = 0; j <= i; j++) {
+                p2c[j].CloseWrite();
+                c2p[j].CloseRead();
             }
-            close(p2c[i][1]);
-            close(c2p[i][0]);
             ufifo_t *child_fifo = nullptr;
             if (AttachFifo(name, &child_fifo) == 0) {
-                char ready = '1';
-                write(c2p[i][1], &ready, 1);
-                char wait_cmd;
-                read(p2c[i][0], &wait_cmd, 1);
+                if (c2p[i].WriteByte('1') != 0)
+                    _exit(2);
+                char wait_command = 0;
+                TestDeadline command_deadline(TEST_PROCESS_TIMEOUT);
+                if (p2c[i].ReadByteUntil(command_deadline, &wait_command) != 0)
+                    _exit(3);
                 kill(getpid(), SIGKILL);
             }
             _exit(1);
         }
-        ASSERT_GT(pids[i], 0);
-        close(p2c[i][0]);
-        close(c2p[i][1]);
+        ASSERT_GT(pid, 0);
+        children[i] = ChildProcess(pid);
+        p2c[i].CloseRead();
+        c2p[i].CloseWrite();
     }
 
+    TestDeadline ready_deadline(TEST_PROCESS_TIMEOUT);
     for (int i = 0; i < 3; i++) {
         char ready = 0;
-        ASSERT_EQ(1, read(c2p[i][0], &ready, 1));
+        ASSERT_EQ(0, c2p[i].ReadByteUntil(ready_deadline, &ready));
         ASSERT_EQ('1', ready);
-        close(c2p[i][0]);
+        c2p[i].CloseRead();
     }
 
     char fill[256] = {};
@@ -148,11 +154,11 @@ TEST_F(FaultInjectionTest, AllReadersCrash)
     EXPECT_EQ(EAGAIN, errno);
 
     for (int i = 0; i < 3; i++) {
-        char command = 'k';
-        ASSERT_EQ(1, write(p2c[i][1], &command, 1));
-        close(p2c[i][1]);
+        ASSERT_EQ(0, p2c[i].WriteByte('k'));
+        p2c[i].CloseWrite();
         int status = 0;
-        ASSERT_EQ(pids[i], waitpid(pids[i], &status, 0));
+        TestDeadline child_deadline(TEST_PROCESS_TIMEOUT);
+        ASSERT_EQ(0, children[i].WaitUntil(child_deadline, &status));
         ASSERT_TRUE(WIFSIGNALED(status));
         ASSERT_EQ(SIGKILL, WTERMSIG(status));
     }
@@ -168,11 +174,11 @@ TEST_F(FaultInjectionTest, ConcurrentAttachRace)
     ASSERT_EQ(0, CreateFifo(name, &fifo, 256, 16));
 
     const int num_procs = 8;
-    pid_t pids[num_procs];
+    ChildProcess children[num_procs];
 
     for (int i = 0; i < num_procs; i++) {
-        pids[i] = fork();
-        if (pids[i] == 0) {
+        const pid_t pid = fork();
+        if (pid == 0) {
             ufifo_t *child_fifo = nullptr;
             if (AttachFifo(name, &child_fifo) == 0) {
                 // Exit without ufifo_close to simulate concurrent attach/detach race conditions
@@ -180,13 +186,15 @@ TEST_F(FaultInjectionTest, ConcurrentAttachRace)
             }
             _exit(1);
         }
-        ASSERT_GT(pids[i], 0);
+        ASSERT_GT(pid, 0);
+        children[i] = ChildProcess(pid);
     }
 
     int success_count = 0;
     for (int i = 0; i < num_procs; i++) {
-        int status;
-        waitpid(pids[i], &status, 0);
+        int status = 0;
+        TestDeadline child_deadline(TEST_PROCESS_TIMEOUT);
+        ASSERT_EQ(0, children[i].WaitUntil(child_deadline, &status));
         if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
             success_count++;
         }
@@ -206,36 +214,46 @@ TEST_F(FaultInjectionTest, CtrlMutexOwnerDeath)
     ufifo_t *fifo = nullptr;
     ASSERT_EQ(0, CreateFifo(name, &fifo, 4096, 4));
 
-    int p2c[2], c2p[2];
-    ASSERT_EQ(0, pipe(p2c));
-    ASSERT_EQ(0, pipe(c2p));
+    TestPipe p2c;
+    TestPipe c2p;
+    ASSERT_EQ(0, TestPipe::Create(&p2c));
+    ASSERT_EQ(0, TestPipe::Create(&c2p));
 
     pid_t pid = fork();
     if (pid == 0) {
-        close(p2c[1]);
-        close(c2p[0]);
+        p2c.CloseWrite();
+        c2p.CloseRead();
         ufifo_t *child_fifo = nullptr;
         if (AttachFifo(name, &child_fifo) == 0) {
             pthread_mutex_lock(&child_fifo->ctrl->ctrl_mutex);
             child_fifo->ctrl->num_users = 99; // Corrupt state
-            char ready = '1';
-            write(c2p[1], &ready, 1);
-            char wait_cmd;
-            read(p2c[0], &wait_cmd, 1); // wait for parent
+            if (c2p.WriteByte('1') != 0)
+                _exit(2);
+            char wait_command = 0;
+            TestDeadline command_deadline(TEST_PROCESS_TIMEOUT);
+            if (p2c.ReadByteUntil(command_deadline, &wait_command) != 0)
+                _exit(3);
             kill(getpid(), SIGKILL);
         }
         _exit(1);
     }
     ASSERT_GT(pid, 0);
-    close(p2c[0]);
-    close(c2p[1]);
+    ChildProcess child(pid);
+    p2c.CloseRead();
+    c2p.CloseWrite();
 
-    char ready;
-    EXPECT_EQ(1, read(c2p[0], &ready, 1));
-    close(p2c[1]); // unblocks child's read, triggering SIGKILL
+    char ready = 0;
+    TestDeadline ready_deadline(TEST_PROCESS_TIMEOUT);
+    ASSERT_EQ(0, c2p.ReadByteUntil(ready_deadline, &ready));
+    ASSERT_EQ('1', ready);
+    ASSERT_EQ(0, p2c.WriteByte('k'));
+    p2c.CloseWrite();
 
-    int status;
-    waitpid(pid, &status, 0);
+    int status = 0;
+    TestDeadline child_deadline(TEST_PROCESS_TIMEOUT);
+    ASSERT_EQ(0, child.WaitUntil(child_deadline, &status));
+    ASSERT_TRUE(WIFSIGNALED(status));
+    ASSERT_EQ(SIGKILL, WTERMSIG(status));
 
     ufifo_t *new_reader = nullptr;
     int ret = AttachFifo(name, &new_reader);
@@ -266,8 +284,10 @@ TEST_F(FaultInjectionTest, ExistingHandleSurvivesCtrlMutexRecovery)
         _exit(0);
     }
 
+    ChildProcess child(pid);
     int status = 0;
-    ASSERT_EQ(pid, waitpid(pid, &status, 0));
+    TestDeadline child_deadline(TEST_PROCESS_TIMEOUT);
+    ASSERT_EQ(0, child.WaitUntil(child_deadline, &status));
     ASSERT_TRUE(WIFEXITED(status));
     ASSERT_EQ(0, WEXITSTATUS(status));
 
@@ -297,8 +317,10 @@ TEST_F(FaultInjectionTest, DataMutexOwnerDeathResetsAndReportsOnce)
         _exit(0);
     }
 
+    ChildProcess child(pid);
     int status = 0;
-    ASSERT_EQ(pid, waitpid(pid, &status, 0));
+    TestDeadline child_deadline(TEST_PROCESS_TIMEOUT);
+    ASSERT_EQ(0, child.WaitUntil(child_deadline, &status));
     ASSERT_TRUE(WIFEXITED(status));
     ASSERT_EQ(0, WEXITSTATUS(status));
 
@@ -332,22 +354,22 @@ TEST_F(FaultInjectionTest, LockNoneWaiterRace)
 
     std::atomic<int> total_written{ 0 };
     std::atomic<int> total_read{ 0 };
-    std::atomic<int> operation_error{ 0 };
+    FirstFailure first_failure;
     std::atomic<bool> running{ true };
     const int target = 10000;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    TestDeadline deadline(std::chrono::seconds(10));
 
     std::thread writer([&]() {
         char data = 'X';
-        while (total_written < target && operation_error.load() == 0) {
+        while (total_written < target && first_failure.Ok()) {
             ssize_t ret = ufifo_put(fifo, &data, 1);
             if (ret == 1) {
                 total_written++;
             } else if (ret != -EAGAIN) {
-                operation_error.store(ret < 0 ? static_cast<int>(ret) : -EIO);
+                first_failure.Record(ret < 0 ? static_cast<int>(ret) : -EIO);
                 break;
-            } else if (std::chrono::steady_clock::now() >= deadline) {
-                operation_error.store(-ETIMEDOUT);
+            } else if (deadline.Expired()) {
+                first_failure.Record(-ETIMEDOUT);
                 break;
             } else {
                 std::this_thread::yield();
@@ -358,15 +380,15 @@ TEST_F(FaultInjectionTest, LockNoneWaiterRace)
 
     std::thread reader([&]() {
         char buf;
-        while (operation_error.load() == 0 && (running || total_read < total_written)) {
+        while (first_failure.Ok() && (running || total_read < total_written)) {
             ssize_t ret = ufifo_get_timeout(fifo, &buf, 1, 100);
             if (ret == 1) {
                 total_read++;
             } else if (ret != -ETIMEDOUT && ret != -EAGAIN) {
-                operation_error.store(ret < 0 ? static_cast<int>(ret) : -EIO);
+                first_failure.Record(ret < 0 ? static_cast<int>(ret) : -EIO);
                 break;
-            } else if (std::chrono::steady_clock::now() >= deadline) {
-                operation_error.store(-ETIMEDOUT);
+            } else if (deadline.Expired()) {
+                first_failure.Record(-ETIMEDOUT);
                 break;
             }
         }
@@ -375,7 +397,7 @@ TEST_F(FaultInjectionTest, LockNoneWaiterRace)
     writer.join();
     reader.join();
 
-    EXPECT_EQ(0, operation_error.load());
+    EXPECT_EQ(0, first_failure.Get());
     EXPECT_EQ(target, total_written.load());
     EXPECT_EQ(total_written.load(), total_read.load());
     EXPECT_EQ(0, ufifo_destroy(fifo));

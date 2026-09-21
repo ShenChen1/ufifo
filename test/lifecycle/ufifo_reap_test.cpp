@@ -36,8 +36,11 @@ TEST_F(UfifoReapTest, ReapDeadUserOnRegister)
         _exit(ufifo_open(name.c_str(), &attach_init, &fifo_child) == 0 ? 0 : 1);
     }
 
-    int status;
-    ASSERT_EQ(pid, waitpid(pid, &status, 0));
+    ASSERT_GT(pid, 0);
+    ChildProcess child(pid);
+    int status = 0;
+    TestDeadline child_deadline(TEST_PROCESS_TIMEOUT);
+    ASSERT_EQ(0, child.WaitUntil(child_deadline, &status));
     ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0);
 
     ufifo_t *fifo2 = nullptr;
@@ -62,34 +65,36 @@ TEST_F(UfifoReapTest, ReapDeadUserOnPut)
     ufifo_t *producer = nullptr;
     ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &producer));
 
-    int ready_pipe[2];
-    ASSERT_EQ(0, pipe(ready_pipe));
+    TestPipe ready_pipe;
+    ASSERT_EQ(0, TestPipe::Create(&ready_pipe));
     pid_t pid = fork();
     ASSERT_GE(pid, 0);
     if (pid == 0) {
-        close(ready_pipe[0]);
+        ready_pipe.CloseRead();
         ufifo_init_t attach_init = {};
         attach_init.opt = UFIFO_OPT_ATTACH;
         ufifo_t *reader = nullptr;
-        char ready = ufifo_open(name.c_str(), &attach_init, &reader) == 0 ? '1' : '0';
-        if (write(ready_pipe[1], &ready, 1) != 1 || ready != '1')
+        const char ready = ufifo_open(name.c_str(), &attach_init, &reader) == 0 ? '1' : '0';
+        if (ready_pipe.WriteByte(ready) != 0 || ready != '1')
             _exit(1);
         char value = 0;
         _exit(ufifo_get_timeout(reader, &value, 1, 1000) == 1 && value == 'A' ? 0 : 1);
     }
 
-    close(ready_pipe[1]);
+    ChildProcess child(pid);
+    ready_pipe.CloseWrite();
     char ready = 0;
-    ASSERT_EQ(1, read(ready_pipe[0], &ready, 1));
+    TestDeadline ready_deadline(TEST_PROCESS_TIMEOUT);
+    ASSERT_EQ(0, ready_pipe.ReadByteUntil(ready_deadline, &ready));
     ASSERT_EQ('1', ready);
-    close(ready_pipe[0]);
 
     char data = 'A';
     ASSERT_EQ(1, ufifo_put(producer, &data, 1));
     ASSERT_EQ(1, ufifo_skip(producer));
 
-    int status;
-    ASSERT_EQ(pid, waitpid(pid, &status, 0));
+    int status = 0;
+    TestDeadline child_deadline(TEST_PROCESS_TIMEOUT);
+    ASSERT_EQ(0, child.WaitUntil(child_deadline, &status));
     ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0);
 
     char buffer[64] = {};

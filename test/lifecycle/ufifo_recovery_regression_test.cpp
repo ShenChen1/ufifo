@@ -34,8 +34,10 @@ TEST(UfifoCoreRegressionTest, ReapDoesNotRemoveReusedLiveSlot)
         _exit(ufifo_open(name.c_str(), &attach, &reader) == 0 ? 0 : 1);
     }
 
+    ChildProcess child(pid);
     int status = 0;
-    ASSERT_EQ(pid, waitpid(pid, &status, 0));
+    TestDeadline child_deadline(TEST_PROCESS_TIMEOUT);
+    ASSERT_EQ(0, child.WaitUntil(child_deadline, &status));
     ASSERT_TRUE(WIFEXITED(status));
     ASSERT_EQ(0, WEXITSTATUS(status));
 
@@ -76,8 +78,10 @@ TEST(UfifoCoreRegressionTest, ControlMutexRecoversWithLockNone)
             _exit(0);
         }
 
+        ChildProcess holder_process(holder);
         int holder_status = 0;
-        if (holder < 0 || waitpid(holder, &holder_status, 0) != holder || holder_status != 0)
+        TestDeadline holder_deadline(TEST_PROCESS_TIMEOUT);
+        if (holder < 0 || holder_process.WaitUntil(holder_deadline, &holder_status) != 0 || holder_status != 0)
             _exit(4);
         alarm(1);
         if (__ufifo_ctrl_lock(owner) != 0)
@@ -88,8 +92,10 @@ TEST(UfifoCoreRegressionTest, ControlMutexRecoversWithLockNone)
         _exit(0);
     }
 
+    ChildProcess scenario_process(scenario);
     int status = 0;
-    ASSERT_EQ(scenario, waitpid(scenario, &status, 0));
+    TestDeadline scenario_deadline(TEST_PROCESS_TIMEOUT);
+    ASSERT_EQ(0, scenario_process.WaitUntil(scenario_deadline, &status));
     EXPECT_TRUE(WIFEXITED(status));
     EXPECT_EQ(0, WEXITSTATUS(status));
     shm_unlink(name.c_str());

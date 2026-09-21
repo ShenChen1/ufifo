@@ -24,9 +24,9 @@ double ElapsedMilliseconds(const std::chrono::steady_clock::time_point &start,
 
 bool WaitUntilArmed(uint32_t *wait_word, std::chrono::milliseconds timeout)
 {
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    TestDeadline deadline(timeout);
     while ((smp_load_acquire(wait_word) & 1U) == 0) {
-        if (std::chrono::steady_clock::now() >= deadline)
+        if (deadline.Expired())
             return false;
         std::this_thread::yield();
     }

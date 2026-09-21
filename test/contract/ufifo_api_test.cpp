@@ -210,8 +210,10 @@ TEST_F(UfifoApiTest, VersionMismatchMajor)
         _exit(ret == -EPROTO ? 0 : 2);
     } else {
         ASSERT_GT(pid, 0);
-        int status;
-        waitpid(pid, &status, 0);
+        ChildProcess child(pid);
+        int status = 0;
+        TestDeadline child_deadline(TEST_PROCESS_TIMEOUT);
+        ASSERT_EQ(0, child.WaitUntil(child_deadline, &status));
         EXPECT_TRUE(WIFEXITED(status));
         EXPECT_EQ(0, WEXITSTATUS(status)) << "Child should exit 0 (attach rejected with -EPROTO)";
     }
