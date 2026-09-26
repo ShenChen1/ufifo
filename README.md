@@ -105,7 +105,15 @@ Based on its architectural design, `ufifo` has several distinctive advantages an
 - **Multithreaded Load**: Throughput remains highly efficient even under heavy load (MPSC scenarios) thanks to process-shared robust mutexes minimizing wait times.
 - **Armed-Epoch Notification**: A producer or consumer only issues `FUTEX_WAKE` when the corresponding wait word is armed. With no waiter, notification is a read-only atomic check and does not dirty the shared cache line.
 
-You can run the benchmark suite `ufifo_bench` in the `build/bin` directory to test throughput and latency metrics directly on your target hardware.
+You can run the benchmark suite directly on the target hardware:
+
+```bash
+./build/bin/ufifo_bench 1 --repetitions=5
+```
+
+The harness pins measured threads before opening a synchronized start gate, alternates suite order, and reports the
+median plus the sample spread. Compare results only on the same machine and flag high-spread concurrent cases for
+additional runs. Use `--json` for machine-readable output and `--no-pin` only when CPU affinity is unavailable.
 
 ## Build Instructions
 

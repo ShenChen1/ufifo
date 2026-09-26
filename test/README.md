@@ -24,3 +24,17 @@ Run a category by GoogleTest suite name when diagnosing a focused failure, for e
 ```sh
 ./build/bin/ufifo_test --gtest_filter='UfifoWait*:*Timeout*'
 ```
+
+Build and run the benchmark with its default five repetitions:
+
+```sh
+cmake --build build --target ufifo_bench -- -j2
+./build/bin/ufifo_bench 1 --repetitions=5
+```
+
+The harness uses `steady_clock`, pins every measured thread before opening a start gate, alternates suite order, and
+reports the median. `Spread` is `(maximum - minimum) / median`; a large value marks a noisy result rather than a
+precise regression. Use an odd repetition count. `--no-pin` is available only for environments that reject CPU
+affinity, and `--json` emits the format consumed by CI. `SharedSPSC` counts all three API operations performed per
+item: one put plus the producer and consumer gets. CI produces all results but applies its regression gate only to the
+lower-noise single-threaded `PingPong` and `Burst` families.

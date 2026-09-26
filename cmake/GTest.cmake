@@ -34,14 +34,19 @@ set(UFIFO_LIFECYCLE_TEST_SOURCES
     test/lifecycle/ufifo_reap_test.cpp
     test/lifecycle/ufifo_recovery_regression_test.cpp
 )
+set(UFIFO_BENCHMARK_TEST_SOURCES
+    test/benchmark/ufifo_bench_test.cpp
+)
 
 add_executable(ufifo_test
     ${UFIFO_CONTRACT_TEST_SOURCES}
     ${UFIFO_DATA_TEST_SOURCES}
     ${UFIFO_CONCURRENCY_TEST_SOURCES}
     ${UFIFO_LIFECYCLE_TEST_SOURCES}
+    ${UFIFO_BENCHMARK_TEST_SOURCES}
     test/support/ufifo_test_runtime.cpp
     test/support/ufifo_test_support.cpp
+    test/benchmark/ufifo_bench_support.cpp
 )
 target_link_libraries(ufifo_test PRIVATE
     ufifo_static
@@ -52,6 +57,7 @@ target_link_libraries(ufifo_test PRIVATE
 target_include_directories(ufifo_test PRIVATE
     ${CMAKE_SOURCE_DIR}/inc
     ${CMAKE_SOURCE_DIR}/test/support
+    ${CMAKE_SOURCE_DIR}/test/benchmark
 )
 target_compile_options(ufifo_test PRIVATE -g -O0 -Wall -Werror -Wno-error=maybe-uninitialized)
 if(COVERAGE)

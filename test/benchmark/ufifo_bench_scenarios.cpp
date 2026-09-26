@@ -13,6 +13,7 @@ namespace {
 
 constexpr unsigned int FIFO_SIZE = 65536;
 constexpr int WARMUP_ITERATIONS = 5000;
+constexpr std::chrono::seconds WORKER_READY_TIMEOUT{ 5 };
 
 std::atomic<int> name_counter{ 0 };
 
@@ -52,7 +53,7 @@ ufifo_t *OpenFifo(
 BenchResult MakeResult(const std::string &name,
                        int data_size,
                        long long total_ops,
-                       const std::chrono::high_resolution_clock::duration &duration)
+                       const std::chrono::steady_clock::duration &duration)
 {
     const double elapsed = std::chrono::duration<double>(duration).count();
     const double bytes = static_cast<double>(total_ops) * data_size;
@@ -63,6 +64,36 @@ BenchResult MakeResult(const std::string &name,
              total_ops / elapsed,
              bytes / elapsed / (1024.0 * 1024.0),
              elapsed * 1e9 / total_ops };
+}
+
+void PrepareWorker(BenchStartGate &gate, std::atomic<int> &affinity_error, int logical_cpu)
+{
+    const int error = PinCurrentThread(logical_cpu);
+    if (error != 0) {
+        int expected = 0;
+        affinity_error.compare_exchange_strong(expected, error);
+    }
+    gate.WorkerReadyAndWait();
+}
+
+std::chrono::steady_clock::time_point StartWorkers(BenchStartGate &gate,
+                                                    size_t worker_count,
+                                                    const std::atomic<int> &affinity_error)
+{
+    if (!gate.WaitUntilReady(worker_count, WORKER_READY_TIMEOUT)) {
+        gate.Start();
+        fprintf(stderr, "ufifo_bench: workers did not become ready within 5 seconds\n");
+        exit(EXIT_FAILURE);
+    }
+    if (affinity_error.load() != 0) {
+        gate.Start();
+        fprintf(stderr, "ufifo_bench: cannot pin worker thread: %d\n", affinity_error.load());
+        exit(EXIT_FAILURE);
+    }
+
+    const auto start = std::chrono::steady_clock::now();
+    gate.Start();
+    return start;
 }
 
 } // namespace
@@ -78,12 +109,12 @@ BenchResult RunPingPongBenchmark(int data_size, ufifo_lock_e lock, int iteration
         ufifo_get(fifo, read_buffer.data(), data_size);
     }
 
-    const auto start = std::chrono::high_resolution_clock::now();
+    const auto start = std::chrono::steady_clock::now();
     for (int index = 0; index < iterations; index++) {
         ufifo_put(fifo, write_buffer.data(), data_size);
         ufifo_get(fifo, read_buffer.data(), data_size);
     }
-    const auto duration = std::chrono::high_resolution_clock::now() - start;
+    const auto duration = std::chrono::steady_clock::now() - start;
     ufifo_destroy(fifo);
 
     const std::string name = "PingPong/" + LockName(lock) + "/" + std::to_string(data_size) + "B";
@@ -100,8 +131,10 @@ BenchResult RunSpscBenchmark(int data_size, ufifo_lock_e lock, int total_items)
         ufifo_get(fifo, read_buffer.data(), data_size);
     }
 
-    const auto start = std::chrono::high_resolution_clock::now();
+    BenchStartGate start_gate;
+    std::atomic<int> affinity_error{ 0 };
     std::thread producer([&]() {
+        PrepareWorker(start_gate, affinity_error, 0);
         for (int count = 0; count < total_items;) {
             if (ufifo_put(fifo, write_buffer.data(), data_size) > 0)
                 count++;
@@ -109,8 +142,8 @@ BenchResult RunSpscBenchmark(int data_size, ufifo_lock_e lock, int total_items)
                 std::this_thread::yield();
         }
     });
-    PinThread(producer, 0);
     std::thread consumer([&]() {
+        PrepareWorker(start_gate, affinity_error, 1);
         for (int count = 0; count < total_items;) {
             if (ufifo_get(fifo, read_buffer.data(), data_size) > 0)
                 count++;
@@ -118,10 +151,10 @@ BenchResult RunSpscBenchmark(int data_size, ufifo_lock_e lock, int total_items)
                 std::this_thread::yield();
         }
     });
-    PinThread(consumer, 1);
+    const auto start = StartWorkers(start_gate, 2, affinity_error);
     producer.join();
     consumer.join();
-    const auto duration = std::chrono::high_resolution_clock::now() - start;
+    const auto duration = std::chrono::steady_clock::now() - start;
     ufifo_destroy(fifo);
 
     const std::string name = "SPSC/" + LockName(lock) + "/" + std::to_string(data_size) + "B";
@@ -141,14 +174,14 @@ BenchResult RunBurstBenchmark(int data_size, ufifo_lock_e lock, int rounds)
             ufifo_get(fifo, read_buffer.data(), data_size);
     }
 
-    const auto start = std::chrono::high_resolution_clock::now();
+    const auto start = std::chrono::steady_clock::now();
     for (int round = 0; round < rounds; round++) {
         for (int item = 0; item < items_per_burst; item++)
             ufifo_put(fifo, write_buffer.data(), data_size);
         for (int item = 0; item < items_per_burst; item++)
             ufifo_get(fifo, read_buffer.data(), data_size);
     }
-    const auto duration = std::chrono::high_resolution_clock::now() - start;
+    const auto duration = std::chrono::steady_clock::now() - start;
     ufifo_destroy(fifo);
 
     const long long total_ops = static_cast<long long>(rounds) * items_per_burst * 2;
@@ -167,10 +200,12 @@ BenchResult RunMpscBenchmark(int data_size, int producer_count, int items_per_pr
     }
 
     const int total_items = producer_count * items_per_producer;
-    const auto start = std::chrono::high_resolution_clock::now();
+    BenchStartGate start_gate;
+    std::atomic<int> affinity_error{ 0 };
     std::vector<std::thread> threads;
     for (int producer_index = 0; producer_index < producer_count; producer_index++) {
-        threads.emplace_back([&]() {
+        threads.emplace_back([&, producer_index]() {
+            PrepareWorker(start_gate, affinity_error, producer_index + 1);
             for (int count = 0; count < items_per_producer;) {
                 if (ufifo_put(fifo, write_buffer.data(), data_size) > 0)
                     count++;
@@ -178,9 +213,9 @@ BenchResult RunMpscBenchmark(int data_size, int producer_count, int items_per_pr
                     std::this_thread::yield();
             }
         });
-        PinThread(threads.back(), producer_index + 1);
     }
     threads.emplace_back([&]() {
+        PrepareWorker(start_gate, affinity_error, 0);
         for (int count = 0; count < total_items;) {
             if (ufifo_get(fifo, read_buffer.data(), data_size) > 0)
                 count++;
@@ -188,10 +223,10 @@ BenchResult RunMpscBenchmark(int data_size, int producer_count, int items_per_pr
                 std::this_thread::yield();
         }
     });
-    PinThread(threads.back(), 0);
+    const auto start = StartWorkers(start_gate, threads.size(), affinity_error);
     for (auto &thread : threads)
         thread.join();
-    const auto duration = std::chrono::high_resolution_clock::now() - start;
+    const auto duration = std::chrono::steady_clock::now() - start;
     ufifo_destroy(fifo);
 
     const std::string name = "MPSC/" + std::to_string(producer_count) + "P/" + std::to_string(data_size) + "B";
@@ -237,17 +272,23 @@ BenchResult RunSharedSpscBenchmark(int data_size, int total_items)
     warmup_producer.join();
     warmup_consumer.join();
 
-    const auto start = std::chrono::high_resolution_clock::now();
-    std::thread producer_thread(run_producer, total_items);
-    PinThread(producer_thread, 0);
-    std::thread consumer_thread(run_consumer, total_items);
-    PinThread(consumer_thread, 1);
+    BenchStartGate start_gate;
+    std::atomic<int> affinity_error{ 0 };
+    std::thread producer_thread([&]() {
+        PrepareWorker(start_gate, affinity_error, 0);
+        run_producer(total_items);
+    });
+    std::thread consumer_thread([&]() {
+        PrepareWorker(start_gate, affinity_error, 1);
+        run_consumer(total_items);
+    });
+    const auto start = StartWorkers(start_gate, 2, affinity_error);
     producer_thread.join();
     consumer_thread.join();
-    const auto duration = std::chrono::high_resolution_clock::now() - start;
+    const auto duration = std::chrono::steady_clock::now() - start;
 
     ufifo_close(consumer);
     ufifo_destroy(producer);
     const std::string name = "SharedSPSC/" + std::to_string(data_size) + "B";
-    return MakeResult(name, data_size, static_cast<long long>(total_items) * 2, duration);
+    return MakeResult(name, data_size, static_cast<long long>(total_items) * 3, duration);
 }

@@ -23,17 +23,20 @@ jobs:
           cmake --build build --target ufifo_bench -j$(nproc)
 
       - name: Run benchmark
-        run: ./build/bin/ufifo_bench 1 --no-pin --json > benchmark-result.json
+        run: |
+          ./build/bin/ufifo_bench 1 --repetitions=5 --json > benchmark-result.json
+          jq '[.[] | select(.name | test("^(PingPong|Burst)/"))]' \
+            benchmark-result.json > benchmark-stable-result.json
 
       - name: Store benchmark result
         uses: benchmark-action/github-action-benchmark@v1
         with:
           name: ufifo Performance Benchmark
           tool: 'customBiggerIsBetter'
-          output-file-path: benchmark-result.json
+          output-file-path: benchmark-stable-result.json
           github-token: ${{ secrets.GITHUB_TOKEN }}
           auto-push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
           # Show alert with commit comment on detecting possible performance regression
-          alert-threshold: '150%'
+          alert-threshold: '30%'
           comment-on-alert: true
           fail-on-alert: true

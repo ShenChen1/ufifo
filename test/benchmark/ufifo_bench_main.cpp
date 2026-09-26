@@ -4,13 +4,26 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <utility>
 
 namespace {
 
 struct Options {
     int scale = 1;
+    int repetitions = 5;
 };
+
+int ParsePositiveInt(const char *text, const char *option)
+{
+    char *end = nullptr;
+    const long value = strtol(text, &end, 10);
+    if (text[0] == '\0' || *end != '\0' || value < 1 || value > 1000) {
+        fprintf(stderr, "ufifo_bench: invalid %s: %s\n", option, text);
+        exit(EXIT_FAILURE);
+    }
+    return static_cast<int>(value);
+}
 
 Options ParseOptions(int argc, char **argv)
 {
@@ -20,18 +33,26 @@ Options ParseOptions(int argc, char **argv)
             g_json_output = true;
         else if (strcmp(argv[index], "--no-pin") == 0)
             g_pin_threads = false;
+        else if (strncmp(argv[index], "--repetitions=", 14) == 0)
+            options.repetitions = ParsePositiveInt(argv[index] + 14, "repetitions");
         else
-            options.scale = std::max(1, atoi(argv[index]));
+            options.scale = ParsePositiveInt(argv[index], "scale");
+    }
+    if ((options.repetitions & 1) == 0) {
+        fprintf(stderr, "ufifo_bench: repetitions must be odd\n");
+        exit(EXIT_FAILURE);
     }
     return options;
 }
 
-void PrintSystemInfo(int scale)
+void PrintSystemInfo(const Options &options)
 {
     if (g_json_output)
         return;
 
-    printf("\n=== ufifo Performance Benchmark (scale=%d) ===\n", scale);
+    printf("\n=== ufifo Performance Benchmark (scale=%d, repetitions=%d) ===\n",
+           options.scale,
+           options.repetitions);
     printf("System Info:\n");
     printf("  Hardware Concurrency (Total system CPUs): %u\n", std::thread::hardware_concurrency());
 #if defined(__linux__)
@@ -51,74 +72,91 @@ void PrintSystemInfo(int scale)
 
 void AddResult(std::vector<BenchResult> &results, BenchResult result)
 {
-    PrintResult(result);
     results.push_back(std::move(result));
 }
 
 void RunPingPongSection(int scale, std::vector<BenchResult> &results)
 {
-    if (!g_json_output)
-        printf("[1] Single-thread Ping-Pong (put+get round-trip, zero contention)\n");
-    PrintHeader();
     const int iterations = 500000 * scale;
     for (int size : { 4, 64, 256, 1024, 4096 })
         AddResult(results, RunPingPongBenchmark(size, UFIFO_LOCK_NONE, iterations));
     for (int size : { 4, 64, 256, 1024, 4096 })
         AddResult(results, RunPingPongBenchmark(size, UFIFO_LOCK_THREAD, iterations * 4));
-    if (!g_json_output)
-        printf("\n");
 }
 
 void RunSpscSection(int scale, std::vector<BenchResult> &results)
 {
-    if (!g_json_output)
-        printf("[2] SPSC Throughput (producer + consumer threads)\n");
-    PrintHeader();
     const int items = 500000 * scale;
     for (int size : { 4, 64, 256, 1024 })
         AddResult(results, RunSpscBenchmark(size, UFIFO_LOCK_NONE, items));
     for (int size : { 4, 64, 256, 1024 })
         AddResult(results, RunSpscBenchmark(size, UFIFO_LOCK_THREAD, items * 3));
-    if (!g_json_output)
-        printf("\n");
 }
 
 void RunBurstSection(int scale, std::vector<BenchResult> &results)
 {
-    if (!g_json_output)
-        printf("[3] Burst Throughput (fill then drain, single thread)\n");
-    PrintHeader();
     const int rounds = 2000 * scale;
     for (int size : { 4, 64, 256, 1024 })
         AddResult(results, RunBurstBenchmark(size, UFIFO_LOCK_NONE, rounds));
     for (int size : { 4, 64, 256, 1024 })
         AddResult(results, RunBurstBenchmark(size, UFIFO_LOCK_THREAD, rounds * 4));
-    if (!g_json_output)
-        printf("\n");
 }
 
 void RunMpscSection(int scale, std::vector<BenchResult> &results)
 {
-    if (!g_json_output)
-        printf("[4] MPSC Throughput (multi-producer, single consumer)\n");
-    PrintHeader();
     const int items_per_producer = 500000 * scale;
     for (int size : { 4, 64, 256 })
         AddResult(results, RunMpscBenchmark(size, 2, items_per_producer));
     for (int size : { 4, 64, 256 })
         AddResult(results, RunMpscBenchmark(size, 4, items_per_producer));
-    if (!g_json_output)
-        printf("\n");
 }
 
 void RunSharedSpscSection(int scale, std::vector<BenchResult> &results)
 {
-    if (!g_json_output)
-        printf("[5] Shared-mode SPSC Throughput (broadcast mode)\n");
-    PrintHeader();
     const int items = 500000 * scale;
     for (int size : { 4, 64, 256, 1024 })
         AddResult(results, RunSharedSpscBenchmark(size, items));
+}
+
+std::vector<BenchResult> RunSuite(int scale, bool reverse_order)
+{
+    std::vector<BenchResult> results;
+    if (!reverse_order) {
+        RunPingPongSection(scale, results);
+        RunSpscSection(scale, results);
+        RunBurstSection(scale, results);
+        RunMpscSection(scale, results);
+        RunSharedSpscSection(scale, results);
+    } else {
+        RunSharedSpscSection(scale, results);
+        RunMpscSection(scale, results);
+        RunBurstSection(scale, results);
+        RunSpscSection(scale, results);
+        RunPingPongSection(scale, results);
+    }
+    return results;
+}
+
+std::vector<BenchResult> RunRepeated(const Options &options)
+{
+    std::vector<std::string> result_order;
+    std::map<std::string, std::vector<BenchResult>> samples;
+
+    for (int repetition = 0; repetition < options.repetitions; repetition++) {
+        if (!g_json_output)
+            fprintf(stderr, "ufifo_bench: repetition %d/%d\n", repetition + 1, options.repetitions);
+        std::vector<BenchResult> run = RunSuite(options.scale, (repetition & 1) != 0);
+        for (BenchResult &result : run) {
+            if (samples.find(result.name) == samples.end())
+                result_order.push_back(result.name);
+            samples[result.name].push_back(std::move(result));
+        }
+    }
+
+    std::vector<BenchResult> summaries;
+    for (const std::string &name : result_order)
+        summaries.push_back(SummarizeBenchResults(samples[name]));
+    return summaries;
 }
 
 void PrintSummary(const std::vector<BenchResult> &results)
@@ -127,14 +165,13 @@ void PrintSummary(const std::vector<BenchResult> &results)
         PrintJson(results);
         return;
     }
+    PrintHeader();
+    for (const BenchResult &result : results)
+        PrintResult(result);
     printf("\n=== Summary: %zu benchmarks completed ===\n\n", results.size());
-    printf("Key metrics to compare before/after the commit:\n");
-    printf("  - PingPong/nolock/4B: isolates barrier-only cost (highest expected improvement)\n");
-    printf("  - SPSC/nolock/*: realistic SPSC throughput (5-15%% improvement expected)\n");
-    printf("  - SPSC/locked/*: mutex-dominated path (<3%% improvement expected)\n");
-    printf("  - Burst/nolock/*: sequential fill-drain without contention\n");
-    printf("  - MPSC/*: multi-producer contention (mutex-dominated)\n");
-    printf("  - SharedSPSC/*: shared-mode broadcast (no improvement expected)\n\n");
+    printf("Each result is the median; Spread is (maximum - minimum) / median.\n");
+    printf("PingPong and Burst isolate single-thread cost; SPSC and MPSC include scheduler noise.\n");
+    printf("SharedSPSC counts three API operations per item: one put and two gets.\n\n");
 }
 
 } // namespace
@@ -144,16 +181,15 @@ int main(int argc, char **argv)
     const Options options = ParseOptions(argc, argv);
     if (g_pin_threads) {
         InitializeAffinity();
-        PinCurrentThread(0);
+        const int affinity_error = PinCurrentThread(0);
+        if (affinity_error != 0) {
+            fprintf(stderr, "ufifo_bench: cannot pin main thread: %d\n", affinity_error);
+            return EXIT_FAILURE;
+        }
     }
-    PrintSystemInfo(options.scale);
+    PrintSystemInfo(options);
 
-    std::vector<BenchResult> results;
-    RunPingPongSection(options.scale, results);
-    RunSpscSection(options.scale, results);
-    RunBurstSection(options.scale, results);
-    RunMpscSection(options.scale, results);
-    RunSharedSpscSection(options.scale, results);
+    std::vector<BenchResult> results = RunRepeated(options);
     PrintSummary(results);
     return 0;
 }
