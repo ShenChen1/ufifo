@@ -27,11 +27,11 @@ static int __ufifo_prepare_deadline(ufifo_wait_type_e wait_type,
     return 0;
 }
 
-static int __ufifo_begin_data_operation(ufifo_t *handle,
-                                        ufifo_wait_type_e wait_type,
-                                        long millisec,
-                                        struct timespec *storage,
-                                        const struct timespec **deadline)
+static inline __attribute__((always_inline)) int __ufifo_begin_data_operation(ufifo_t *handle,
+                                                                              ufifo_wait_type_e wait_type,
+                                                                              long millisec,
+                                                                              struct timespec *storage,
+                                                                              const struct timespec **deadline)
 {
     int ret = __ufifo_prepare_deadline(wait_type, millisec, storage, deadline);
     if (ret == 0)
@@ -128,10 +128,20 @@ __ufifo_put(ufifo_t *handle, void *buf, size_t size, ufifo_wait_type_e wait_type
     ret = __ufifo_begin_data_operation(handle, wait_type, millisec, &deadline_storage, &deadline);
     if (ret < 0)
         return ret;
-    ret = __ufifo_wait_for_space(handle, size, wait_type, deadline, &wait_result);
-    len = wait_result.length;
-    if (ret < 0) {
-        goto end;
+    if (wait_type == UFIFO_WAIT_NONE) {
+        len = __ufifo_unused_len(handle);
+        if (len < size && !__ufifo_is_shared(handle)) {
+            errno = EAGAIN;
+            ret = -EAGAIN;
+            len = 0;
+            goto end;
+        }
+    }
+    if (wait_type != UFIFO_WAIT_NONE || len < size) {
+        ret = __ufifo_wait_for_space(handle, size, wait_type, deadline, &wait_result);
+        len = wait_result.length;
+        if (ret < 0)
+            goto end;
     }
 
     if (unlikely(handle->hook.recput)) {
@@ -198,10 +208,19 @@ __ufifo_get(ufifo_t *handle, void *buf, size_t size, ufifo_wait_type_e wait_type
     ret = __ufifo_begin_data_operation(handle, wait_type, millisec, &deadline_storage, &deadline);
     if (ret < 0)
         return ret;
-    ret = __ufifo_wait_for_data(handle, wait_type, deadline, &wait_result);
-    len = wait_result.length;
-    if (ret < 0) {
-        goto end;
+    if (wait_type == UFIFO_WAIT_NONE) {
+        len = __ufifo_peek_data_len(
+            handle, READ_ONCE(handle->kfifo.out), smp_load_acquire(handle->kfifo.in));
+        if (len == 0) {
+            errno = EAGAIN;
+            ret = -EAGAIN;
+            goto end;
+        }
+    } else {
+        ret = __ufifo_wait_for_data(handle, wait_type, deadline, &wait_result);
+        len = wait_result.length;
+        if (ret < 0)
+            goto end;
     }
 
     if (unlikely(handle->hook.recsize && size < len)) {
@@ -282,10 +301,19 @@ __ufifo_peek(ufifo_t *handle, void *buf, size_t size, ufifo_wait_type_e wait_typ
     ret = __ufifo_begin_data_operation(handle, wait_type, millisec, &deadline_storage, &deadline);
     if (ret < 0)
         return ret;
-    ret = __ufifo_wait_for_data(handle, wait_type, deadline, &wait_result);
-    len = wait_result.length;
-    if (ret < 0) {
-        goto end;
+    if (wait_type == UFIFO_WAIT_NONE) {
+        len = __ufifo_peek_data_len(
+            handle, READ_ONCE(handle->kfifo.out), smp_load_acquire(handle->kfifo.in));
+        if (len == 0) {
+            errno = EAGAIN;
+            ret = -EAGAIN;
+            goto end;
+        }
+    } else {
+        ret = __ufifo_wait_for_data(handle, wait_type, deadline, &wait_result);
+        len = wait_result.length;
+        if (ret < 0)
+            goto end;
     }
 
     if (unlikely(handle->hook.recsize && size < len)) {

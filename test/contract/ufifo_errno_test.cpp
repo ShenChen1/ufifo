@@ -119,6 +119,23 @@ TEST_F(UfifoErrnoTest, EmptyAndFull)
     EXPECT_EQ(EAGAIN, errno);
 }
 
+TEST_F(UfifoErrnoTest, NonBlockingFailuresLeaveFifoUsable)
+{
+    char input = 'A';
+    char output = 0;
+
+    ASSERT_EQ(-EAGAIN, ufifo_get(fifo, &output, 1));
+    ASSERT_EQ(1, ufifo_put(fifo, &input, 1));
+    ASSERT_EQ(1, ufifo_get(fifo, &output, 1));
+    EXPECT_EQ(input, output);
+
+    for (int i = 0; i < 64; i++)
+        ASSERT_EQ(1, ufifo_put(fifo, &input, 1));
+    ASSERT_EQ(-EAGAIN, ufifo_put(fifo, &input, 1));
+    ASSERT_EQ(1, ufifo_get(fifo, &output, 1));
+    EXPECT_EQ(1, ufifo_put(fifo, &input, 1));
+}
+
 TEST_F(UfifoErrnoTest, Timeout)
 {
     char data = 'A';
