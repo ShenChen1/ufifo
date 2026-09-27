@@ -128,6 +128,25 @@ TEST(UfifoLifetimeTest, ForceReplacesAbandonedObject)
     EXPECT_EQ(0, ufifo_destroy(replacement));
 }
 
+TEST(UfifoLifetimeTest, ProcessIdentityCacheTracksFork)
+{
+    ASSERT_EQ(0, __ufifo_process_identity_init());
+    EXPECT_EQ(getpid(), __ufifo_process_pid());
+
+    const pid_t pid = fork();
+    ASSERT_GE(pid, 0);
+    if (pid == 0)
+        _exit(__ufifo_process_pid() == getpid() ? 0 : 1);
+
+    ChildProcess child(pid);
+    int status = 0;
+    TestDeadline child_deadline(TEST_PROCESS_TIMEOUT);
+    ASSERT_EQ(0, child.WaitUntil(child_deadline, &status));
+    ASSERT_TRUE(WIFEXITED(status));
+    EXPECT_EQ(0, WEXITSTATUS(status));
+    EXPECT_EQ(getpid(), __ufifo_process_pid());
+}
+
 TEST(UfifoLifetimeTest, ForkInheritedHandleIsRejected)
 {
     const std::string name = GenerateName("fork_inherited");

@@ -94,6 +94,7 @@ Based on its architectural design, `ufifo` has several distinctive advantages an
 - **Local IPC Only**: Restricted to communication within a single machine. Because it uses POSIX shared memory (`shm_open` and `mmap`), it cannot span across network boundaries.
 - **Fixed Power-of-Two Capacity**: The buffer size is established during initialization and must be a power of two. It cannot dynamically allocate more memory or grow to accommodate traffic spikes once initialized.
 - **Shared-Memory ABI Boundary**: Processes that exchange one FIFO must use the same shared-layout ABI. Attach rejects incompatible layouts before using their control fields.
+- **Fork Boundary**: A handle belongs to the process that opened it and inherited handles return `-ECHILD`. PID tracking follows POSIX `fork()` through `pthread_atfork`; bypassing libc with raw `fork`/`clone` syscalls is outside this contract.
 - **Platform Specificity**: Designed around Linux-specific semantics such as futexes, `F_OFD_SETLK` liveness detection, POSIX shared memory, and robust mutexes. This significantly limits portability to non-Linux environments like macOS or Windows.
 - **Setup Complexity**: Utilizing the advanced record mode and custom hooks requires writing specific serialization callbacks, making the initial setup slightly more complex than a basic pipe or POSIX Message Queue.
 

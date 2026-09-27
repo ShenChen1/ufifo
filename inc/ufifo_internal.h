@@ -46,12 +46,16 @@ struct ufifo {
     ufifo_ctrl_t *ctrl;
 };
 
+/* ufifo_process.c */
+int __ufifo_process_identity_init(void);
+pid_t __ufifo_process_pid(void);
+
 static inline int __ufifo_validate_handle(const ufifo_t *handle)
 {
     int error = 0;
     if (handle == NULL || handle->magic != UFIFO_MAGIC)
         error = EINVAL;
-    else if (handle->owner_pid != getpid())
+    else if (handle->owner_pid != __ufifo_process_pid())
         error = ECHILD;
     if (error != 0)
         errno = error;

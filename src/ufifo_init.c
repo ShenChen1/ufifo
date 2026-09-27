@@ -46,7 +46,7 @@ static int __ufifo_register_slot(ufifo_t *handle, size_t user_id, pid_t pid)
 static int __ufifo_register(ufifo_t *handle, size_t *user_id)
 {
     ufifo_ctrl_t *ctrl = handle->ctrl;
-    pid_t pid = getpid();
+    pid_t pid = __ufifo_process_pid();
 
     for (size_t i = 0; i < ctrl->max_users; i++) {
         if (!READ_ONCE(&ctrl->users[i].active)) {
@@ -374,13 +374,16 @@ int ufifo_open(const char *name, const ufifo_init_t *init, ufifo_t **handle)
     ret = __ufifo_init_validate(init);
     if (ret < 0)
         return ret;
+    ret = __ufifo_process_identity_init();
+    if (ret < 0)
+        return ret;
 
     fifo_init = *init;
     fifo = calloc(1, sizeof(*fifo));
     if (fifo == NULL)
         return -ENOMEM;
     strncpy(fifo->name, name, sizeof(fifo->name) - 1);
-    fifo->owner_pid = getpid();
+    fifo->owner_pid = __ufifo_process_pid();
     __ufifo_hook_init(fifo, &fifo_init.hook);
     ret = __ufifo_open_fd(name, &fifo_init, &is_alloc);
     if (ret < 0)
