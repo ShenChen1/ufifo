@@ -292,7 +292,7 @@ TEST_F(FaultInjectionTest, ExistingHandleSurvivesCtrlMutexRecovery)
     ASSERT_EQ(0, WEXITSTATUS(status));
 
     ASSERT_EQ(0, __ufifo_ctrl_lock(fifo));
-    EXPECT_TRUE(READ_ONCE(&fifo->ctrl->users[fifo->user_id].active));
+    EXPECT_TRUE(ufifo_atomic_load_relaxed(&fifo->ctrl->users[fifo->user_id].active));
     EXPECT_EQ(1U, fifo->ctrl->num_users);
     EXPECT_EQ(0, __ufifo_ctrl_unlock(fifo));
     EXPECT_EQ(0, ufifo_destroy(fifo));
@@ -313,7 +313,7 @@ TEST_F(FaultInjectionTest, DataMutexOwnerDeathResetsAndReportsOnce)
         if (pthread_mutex_lock(&child_fifo->ctrl->data_mutex) != 0)
             _exit(2);
         static_cast<char *>(child_fifo->shm_mem)[0] = 'Q';
-        smp_store_release(&child_fifo->ctrl->in, 1);
+        ufifo_atomic_store_release(&child_fifo->ctrl->in, 1);
         _exit(0);
     }
 

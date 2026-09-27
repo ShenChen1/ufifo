@@ -21,9 +21,9 @@ bool __ufifo_reap_dead_user(ufifo_t *handle, size_t user_id)
 {
     ufifo_ctrl_t *ctrl = handle->ctrl;
 
-    if (!READ_ONCE(&ctrl->users[user_id].active) || !__ufifo_is_user_dead(handle->shm_fd, user_id))
+    if (!ufifo_atomic_load_relaxed(&ctrl->users[user_id].active) || !__ufifo_is_user_dead(handle->shm_fd, user_id))
         return false;
-    smp_store_release(&ctrl->users[user_id].active, false);
+    ufifo_atomic_store_release(&ctrl->users[user_id].active, false);
     ctrl->num_users--;
     return true;
 }
@@ -36,9 +36,9 @@ static int __ufifo_register_slot(ufifo_t *handle, size_t user_id, pid_t pid)
     if (ret < 0)
         return ret;
     if (ctrl->data_mode == UFIFO_DATA_SHARED)
-        WRITE_ONCE(&ctrl->users[user_id].out, READ_ONCE(&ctrl->in));
+        ufifo_atomic_store_relaxed(&ctrl->users[user_id].out, ufifo_atomic_load_relaxed(&ctrl->in));
     ctrl->users[user_id].pid = pid;
-    smp_store_release(&ctrl->users[user_id].active, true);
+    ufifo_atomic_store_release(&ctrl->users[user_id].active, true);
     ctrl->num_users++;
     return 0;
 }
@@ -49,7 +49,7 @@ static int __ufifo_register(ufifo_t *handle, size_t *user_id)
     pid_t pid = __ufifo_process_pid();
 
     for (size_t i = 0; i < ctrl->max_users; i++) {
-        if (!READ_ONCE(&ctrl->users[i].active)) {
+        if (!ufifo_atomic_load_relaxed(&ctrl->users[i].active)) {
             int ret = __ufifo_register_slot(handle, i, pid);
             if (ret == 0)
                 *user_id = i;
@@ -74,16 +74,16 @@ static void __ufifo_unregister(ufifo_t *handle)
 
     if (!handle->registered)
         return;
-    if (handle->user_id >= ctrl->max_users || !READ_ONCE(&ctrl->users[handle->user_id].active)) {
+    if (handle->user_id >= ctrl->max_users || !ufifo_atomic_load_relaxed(&ctrl->users[handle->user_id].active)) {
         handle->registered = false;
         return;
     }
-    smp_store_release(&ctrl->users[handle->user_id].active, false);
+    ufifo_atomic_store_release(&ctrl->users[handle->user_id].active, false);
     __ufifo_ofd_unlock(handle->shm_fd, handle->user_id);
     ctrl->num_users--;
     handle->registered = false;
-    __ufifo_update_cached_min_out(handle);
-    __ufifo_notify_writers(handle);
+    if (__ufifo_update_cached_min_out(handle))
+        __ufifo_notify_writers(handle);
 }
 
 static void __ufifo_hook_init(ufifo_t *handle, const ufifo_hook_t *hook)
@@ -207,6 +207,12 @@ static int __ufifo_validate_layout(ufifo_t *handle, size_t file_size)
         return -EPROTO;
     return 0;
 }
+static bool __ufifo_shared_atomics_lock_free(ufifo_ctrl_t *ctrl)
+{
+    return ufifo_atomic_is_lock_free(&ctrl->in) && ufifo_atomic_is_lock_free(&ctrl->cached_min_out) &&
+           ufifo_atomic_is_lock_free(&ctrl->rx_wait.value) && ufifo_atomic_is_lock_free(&ctrl->tx_wait.value) &&
+           ufifo_atomic_is_lock_free(&ctrl->users[0].active) && ufifo_atomic_is_lock_free(&ctrl->users[0].out);
+}
 
 static int __ufifo_configure_data(ufifo_t *handle, bool initialize)
 {
@@ -244,10 +250,8 @@ static int __ufifo_register_handle(ufifo_t *handle, bool initialize)
         }
         return ret;
     }
-    if (__ufifo_is_shared(handle)) {
-        __ufifo_update_cached_min_out(handle);
+    if (__ufifo_is_shared(handle) && __ufifo_update_cached_min_out(handle))
         __ufifo_notify_writers(handle);
-    }
     return 0;
 }
 
@@ -278,6 +282,10 @@ static int __ufifo_init_from_shm(ufifo_t *handle)
     ret = __ufifo_validate_layout(handle, handle->mapping_size);
     if (ret < 0)
         goto error;
+    if (!__ufifo_shared_atomics_lock_free(handle->ctrl)) {
+        ret = -EOPNOTSUPP;
+        goto error;
+    }
 
     handle->shm_size = handle->ctrl->data_size;
     handle->shm_mem = (char *)mapping + handle->ctrl->data_offset;
@@ -323,6 +331,18 @@ static int __ufifo_init_from_user(ufifo_t *handle, const ufifo_alloc_t *alloc)
     handle->ctrl->max_users = alloc->max_users;
     handle->ctrl->num_users = 0;
     memset(handle->ctrl->users, 0, slot_count * sizeof(ufifo_sub_ctrl_t));
+    ufifo_atomic_init(&handle->ctrl->in, 0);
+    ufifo_atomic_init(&handle->ctrl->cached_min_out, 0);
+    ufifo_atomic_init(__ufifo_rx_wait_word(handle), 0);
+    ufifo_atomic_init(__ufifo_tx_wait_word(handle), 0);
+    for (size_t i = 0; i < slot_count; i++) {
+        ufifo_atomic_init(&handle->ctrl->users[i].active, false);
+        ufifo_atomic_init(&handle->ctrl->users[i].out, 0);
+    }
+    if (!__ufifo_shared_atomics_lock_free(handle->ctrl)) {
+        ret = -EOPNOTSUPP;
+        goto error_lock;
+    }
 
     ret = __ufifo_register_handle(handle, true);
     if (ret < 0)

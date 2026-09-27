@@ -84,9 +84,9 @@ int __ufifo_force_unlink(const char *name);
 int __ufifo_name_matches_fd(const char *name, int fd);
 
 /* ufifo_wait.c */
-uint32_t __ufifo_wait_arm(uint32_t *wait_word);
-int __ufifo_futex_wait(uint32_t *wait_word, uint32_t expected, const struct timespec *deadline);
-void __ufifo_wait_notify(uint32_t *wait_word);
+uint32_t __ufifo_wait_arm(ufifo_atomic_uint32_t *wait_word);
+int __ufifo_futex_wait(ufifo_atomic_uint32_t *wait_word, uint32_t expected, const struct timespec *deadline);
+void __ufifo_wait_notify(ufifo_atomic_uint32_t *wait_word);
 int __ufifo_wait_for_space(
     ufifo_t *handle,
     size_t size,
@@ -118,10 +118,19 @@ static inline ufifo_sub_ctrl_t *__ufifo_rx_ctrl(ufifo_t *handle)
 {
     return &handle->ctrl->users[__ufifo_rx_slot_id(handle)];
 }
+static inline ufifo_atomic_uint32_t *__ufifo_rx_wait_word(ufifo_t *handle)
+{
+    return &handle->ctrl->rx_wait.value;
+}
+static inline ufifo_atomic_uint32_t *__ufifo_tx_wait_word(ufifo_t *handle)
+{
+    return &handle->ctrl->tx_wait.value;
+}
 void __ufifo_log(const char *fmt, ...);
 
 /* ufifo_opts.c */
-void __ufifo_update_cached_min_out(ufifo_t *handle);
+/* Returns true only when SHARED available capacity increases. */
+bool __ufifo_update_cached_min_out(ufifo_t *handle);
 size_t __ufifo_unused_len(ufifo_t *handle);
 size_t __ufifo_peek_data_len(ufifo_t *handle, size_t offset, size_t in_val);
 /* Caller must hold data_mutex unless the FIFO uses UFIFO_LOCK_NONE. */
@@ -134,26 +143,16 @@ void __ufifo_reset_data_locked(ufifo_t *handle);
  *   - reader unregisters (close)
  *   - dead reader reaped
  *   - FIFO reset
- *   - new reader joins with out=in (attach)
- * No-op when the TX wait word is not armed.
+ * Advances and wakes only when the shared TX word is armed.
  */
 static inline void __ufifo_notify_writers(ufifo_t *handle)
 {
-    __ufifo_wait_notify(&handle->ctrl->tx_wait_word);
+    __ufifo_wait_notify(__ufifo_tx_wait_word(handle));
 }
 
 static inline void __ufifo_notify_readers(ufifo_t *handle)
 {
-    if (__ufifo_is_shared(handle)) {
-        for (size_t i = 0; i < handle->ctrl->max_users; i++) {
-            if (!smp_load_acquire(&handle->ctrl->users[i].active))
-                continue;
-            __ufifo_wait_notify(&handle->ctrl->users[i].rx_wait_word);
-        }
-    } else {
-        size_t rx_slot = __ufifo_rx_slot_id(handle);
-        __ufifo_wait_notify(&handle->ctrl->users[rx_slot].rx_wait_word);
-    }
+    __ufifo_wait_notify(__ufifo_rx_wait_word(handle));
 }
 
 #endif /* UFIFO_INTERNAL_H */

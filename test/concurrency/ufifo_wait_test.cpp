@@ -43,12 +43,12 @@ ufifo_t *OpenWaitTestFifo(const char *prefix, size_t size)
     return fifo;
 }
 
-void WaitUntilArmed(const uint32_t *wait_word)
+void WaitUntilArmed(const ufifo_atomic_uint32_t *wait_word)
 {
     TestDeadline deadline(TEST_PROCESS_TIMEOUT);
-    while ((__atomic_load_n(wait_word, __ATOMIC_ACQUIRE) & 1U) == 0 && !deadline.Expired())
+    while ((ufifo_atomic_load_acquire(wait_word) & 1U) == 0 && !deadline.Expired())
         std::this_thread::yield();
-    ASSERT_EQ(1U, __atomic_load_n(wait_word, __ATOMIC_ACQUIRE) & 1U);
+    ASSERT_EQ(1U, ufifo_atomic_load_acquire(wait_word) & 1U);
 }
 
 size_t CountOpenEventFds()
@@ -85,13 +85,15 @@ timespec DeadlineAfterMilliseconds(long milliseconds)
     return deadline;
 }
 
-TEST(UfifoWaitWordTest, ArmAndNotifyAdvanceOneEpoch)
+TEST(UfifoWaitWordTest, NotifyOnlyAdvancesArmedEpoch)
 {
-    uint32_t wait_word = 0;
+    ufifo_atomic_uint32_t wait_word = 0;
+
+    __ufifo_wait_notify(&wait_word);
+    EXPECT_EQ(0u, wait_word);
 
     EXPECT_EQ(1u, __ufifo_wait_arm(&wait_word));
     EXPECT_EQ(1u, wait_word);
-
     __ufifo_wait_notify(&wait_word);
     EXPECT_EQ(2u, wait_word);
 
@@ -101,7 +103,7 @@ TEST(UfifoWaitWordTest, ArmAndNotifyAdvanceOneEpoch)
 
 TEST(UfifoWaitWordTest, TimedWaitReportsTimeout)
 {
-    uint32_t wait_word = 0;
+    ufifo_atomic_uint32_t wait_word = 0;
     const uint32_t expected = __ufifo_wait_arm(&wait_word);
     const timespec deadline = DeadlineAfterMilliseconds(20);
 
@@ -111,10 +113,15 @@ TEST(UfifoWaitWordTest, TimedWaitReportsTimeout)
 
 TEST(UfifoWaitWordTest, NotifyWakesProcessSharedWaiter)
 {
-    auto *wait_word = static_cast<uint32_t *>(
-        mmap(nullptr, sizeof(uint32_t), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0));
+    auto *wait_word = static_cast<ufifo_atomic_uint32_t *>(
+        mmap(nullptr,
+             sizeof(ufifo_atomic_uint32_t),
+             PROT_READ | PROT_WRITE,
+             MAP_SHARED | MAP_ANONYMOUS,
+             -1,
+             0));
     ASSERT_NE(MAP_FAILED, wait_word);
-    *wait_word = 0;
+    ufifo_atomic_init(wait_word, 0);
 
     TestPipe ready_pipe;
     ASSERT_EQ(0, TestPipe::Create(&ready_pipe));
@@ -156,7 +163,7 @@ TEST(UfifoWaitIntegrationTest, PutWakesBlockedReader)
 
     char received = 0;
     std::thread reader([&] { EXPECT_EQ(1u, ufifo_get_block(fifo, &received, 1)); });
-    WaitUntilArmed(&__ufifo_rx_ctrl(fifo)->rx_wait_word);
+    WaitUntilArmed(__ufifo_rx_wait_word(fifo));
 
     const char sent = 'x';
     EXPECT_EQ(1u, ufifo_put(fifo, const_cast<char *>(&sent), 1));
@@ -176,7 +183,7 @@ TEST(UfifoWaitIntegrationTest, GetWakesBlockedWriter)
 
     char pending = 'x';
     std::thread writer([&] { EXPECT_EQ(1u, ufifo_put_block(fifo, &pending, 1)); });
-    WaitUntilArmed(&fifo->ctrl->tx_wait_word);
+    WaitUntilArmed(__ufifo_tx_wait_word(fifo));
 
     char received = 0;
     EXPECT_EQ(1u, ufifo_get(fifo, &received, 1));
@@ -194,13 +201,85 @@ TEST(UfifoWaitIntegrationTest, TimedOutArmIsClearedByNextPublish)
     errno = 0;
     EXPECT_EQ(-ETIMEDOUT, ufifo_get_timeout(fifo, &received, 1, 20));
     EXPECT_EQ(ETIMEDOUT, errno);
-    EXPECT_EQ(1U, __ufifo_rx_ctrl(fifo)->rx_wait_word & 1U);
+    EXPECT_EQ(1U, ufifo_atomic_load_acquire(__ufifo_rx_wait_word(fifo)) & 1U);
 
     char sent = 'x';
     EXPECT_EQ(1u, ufifo_put(fifo, &sent, 1));
-    EXPECT_EQ(0U, __ufifo_rx_ctrl(fifo)->rx_wait_word & 1U);
+    EXPECT_EQ(0U, ufifo_atomic_load_acquire(__ufifo_rx_wait_word(fifo)) & 1U);
 
     EXPECT_EQ(0, ufifo_destroy(fifo));
+}
+
+TEST(UfifoWaitIntegrationTest, NoWaiterPublishLeavesWaitWordsIdle)
+{
+    ufifo_t *fifo = OpenWaitTestFifo("wait_idle", 64);
+    ASSERT_NE(nullptr, fifo);
+
+    char value = 'x';
+    ASSERT_EQ(1u, ufifo_put(fifo, &value, 1));
+    EXPECT_EQ(0U, ufifo_atomic_load_acquire(__ufifo_rx_wait_word(fifo)));
+
+    ASSERT_EQ(1u, ufifo_get(fifo, &value, 1));
+    EXPECT_EQ(0U, ufifo_atomic_load_acquire(__ufifo_tx_wait_word(fifo)));
+
+    EXPECT_EQ(0, ufifo_destroy(fifo));
+}
+
+TEST(UfifoWaitIntegrationTest, SharedHandlesUseOneReceiveEpoch)
+{
+    ufifo_init_t init = {};
+    init.opt = UFIFO_OPT_ALLOC;
+    init.alloc.size = 64;
+    init.alloc.force = 1;
+    init.alloc.lock = UFIFO_LOCK_NONE;
+    init.alloc.data_mode = UFIFO_DATA_SHARED;
+    init.alloc.max_users = 2;
+
+    const std::string name = WaitTestName("wait_shared_epoch");
+    ufifo_t *owner = nullptr;
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &owner));
+    ufifo_init_t attach = {};
+    attach.opt = UFIFO_OPT_ATTACH;
+    ufifo_t *reader = nullptr;
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &attach, &reader));
+
+    EXPECT_EQ(1U, __ufifo_wait_arm(__ufifo_rx_wait_word(owner)));
+    EXPECT_EQ(1U, ufifo_atomic_load_acquire(__ufifo_rx_wait_word(reader)));
+    __ufifo_wait_notify(__ufifo_rx_wait_word(reader));
+    EXPECT_EQ(2U, ufifo_atomic_load_acquire(__ufifo_rx_wait_word(owner)));
+
+    EXPECT_EQ(0, ufifo_close(reader));
+    EXPECT_EQ(0, ufifo_destroy(owner));
+}
+
+TEST(UfifoWaitIntegrationTest, SharedWriterEpochAdvancesOnlyWithCapacity)
+{
+    ufifo_init_t init = {};
+    init.opt = UFIFO_OPT_ALLOC;
+    init.alloc.size = 64;
+    init.alloc.force = 1;
+    init.alloc.lock = UFIFO_LOCK_NONE;
+    init.alloc.data_mode = UFIFO_DATA_SHARED;
+    init.alloc.max_users = 2;
+
+    const std::string name = WaitTestName("wait_shared_capacity");
+    ufifo_t *owner = nullptr;
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &owner));
+    ufifo_init_t attach = {};
+    attach.opt = UFIFO_OPT_ATTACH;
+    ufifo_t *reader = nullptr;
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &attach, &reader));
+
+    char value = 'x';
+    ASSERT_EQ(1, ufifo_put(owner, &value, 1));
+    const uint32_t armed_tx_epoch = __ufifo_wait_arm(__ufifo_tx_wait_word(owner));
+    ASSERT_EQ(1, ufifo_get(owner, &value, 1));
+    EXPECT_EQ(armed_tx_epoch, ufifo_atomic_load_acquire(__ufifo_tx_wait_word(owner)));
+    ASSERT_EQ(1, ufifo_get(reader, &value, 1));
+    EXPECT_EQ(armed_tx_epoch + 1U, ufifo_atomic_load_acquire(__ufifo_tx_wait_word(owner)));
+
+    EXPECT_EQ(0, ufifo_close(reader));
+    EXPECT_EQ(0, ufifo_destroy(owner));
 }
 
 TEST(UfifoWaitIntegrationTest, CoreOpenDoesNotCreateEventFds)

@@ -5,15 +5,15 @@
 #include <string.h>
 
 typedef struct __kfifo {
-    size_t *in;
-    size_t *out;
+    ufifo_atomic_size_t *in;
+    ufifo_atomic_size_t *out;
     size_t mask;
 } kfifo_t;
 
 static inline __attribute__((always_inline)) int kfifo_init(kfifo_t *fifo, size_t size)
 {
-    *fifo->in = 0;
-    *fifo->out = 0;
+    ufifo_atomic_store_relaxed(fifo->in, 0);
+    ufifo_atomic_store_relaxed(fifo->out, 0);
 
     if (size < 2) {
         fifo->mask = 0;
@@ -26,8 +26,8 @@ static inline __attribute__((always_inline)) int kfifo_init(kfifo_t *fifo, size_
 
 static inline __attribute__((always_inline)) size_t __kfifo_unused(kfifo_t *fifo)
 {
-    size_t in = READ_ONCE(fifo->in);
-    size_t out = smp_load_acquire(fifo->out);
+    size_t in = ufifo_atomic_load_relaxed(fifo->in);
+    size_t out = ufifo_atomic_load_seq_cst(fifo->out);
     return (fifo->mask + 1) - (in - out);
 }
 
@@ -54,9 +54,9 @@ static inline __attribute__((always_inline)) size_t kfifo_in(kfifo_t *fifo, void
     if (len > l)
         len = l;
 
-    size_t in = READ_ONCE(fifo->in);
+    size_t in = ufifo_atomic_load_relaxed(fifo->in);
     __kfifo_copy_in(fifo, base, buf, len, in);
-    smp_store_release(fifo->in, in + len);
+    ufifo_atomic_store_release(fifo->in, in + len);
     return len;
 }
 
@@ -78,8 +78,8 @@ __kfifo_copy_out(kfifo_t *fifo, void *base, void *dst, size_t len, size_t off)
 static inline __attribute__((always_inline)) size_t kfifo_out_peek(kfifo_t *fifo, void *base, void *buf, size_t len)
 {
     size_t l;
-    size_t in = smp_load_acquire(fifo->in);
-    size_t out = READ_ONCE(fifo->out);
+    size_t in = ufifo_atomic_load_seq_cst(fifo->in);
+    size_t out = ufifo_atomic_load_relaxed(fifo->out);
 
     l = in - out;
     if (len > l)
@@ -92,8 +92,8 @@ static inline __attribute__((always_inline)) size_t kfifo_out_peek(kfifo_t *fifo
 static inline __attribute__((always_inline)) size_t kfifo_out(kfifo_t *fifo, void *base, void *buf, size_t len)
 {
     len = kfifo_out_peek(fifo, base, buf, len);
-    size_t out = READ_ONCE(fifo->out);
-    smp_store_release(fifo->out, out + len);
+    size_t out = ufifo_atomic_load_relaxed(fifo->out);
+    ufifo_atomic_store_release(fifo->out, out + len);
     return len;
 }
 

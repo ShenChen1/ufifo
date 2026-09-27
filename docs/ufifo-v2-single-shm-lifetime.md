@@ -46,7 +46,7 @@ unlink 也使“对象仍被谁持有”无法由一个内核对象表达。
 - 不改变 FIFO 数据分发、record hook 或 futex wait-word 语义。
 - 不让 `ufifo_destroy()` 等待其他 handle 退出；忙时立即返回 `-EBUSY`。
 - 不提供跨主机、持久化或崩溃后保留数据的保证。
-- 不兼容、探测或清理旧双-shm 布局，也不处理遗留 broker；attach 对非 ABI 3 对象返回 `-EPROTO`。
+- 不兼容、探测或清理旧双-shm 布局，也不处理遗留 broker；attach 对非 ABI 4 对象返回 `-EPROTO`。
 - fork 继承的同一 open file description 不计作独立 lifetime lease；继承 handle 的 API 返回
   `-ECHILD` 并设置 `errno=ECHILD`，child 必须重新 attach。
 
@@ -92,7 +92,7 @@ size_t data_size;
 
 规则：
 
-- `slot_count = max_users + 1`；额外槽继续供 SOLE 全局 RX 状态使用；
+- `slot_count = max_users + 1`；额外槽继续供 SOLE 全局读位置使用；
 - `max_users >= 1`；不再有 broker 派生的固定用户数上限，实际边界由 `size_t`、布局
   溢出检查、`off_t` 文件大小和系统资源共同决定；
 - `data_offset = align_up(sizeof(ufifo_ctrl_t) + slot_count * sizeof(ufifo_sub_ctrl_t), 64)`；
@@ -101,7 +101,7 @@ size_t data_size;
 - `mask + 1 == data_size`；
 - `handle->ctrl` 指向映射起点，`handle->shm_mem` 指向 `base + data_offset`。
 
-共享布局 ABI 当前为 3；attach 通过 `layout_abi` 明确拒绝不兼容对象。初始化完成性
+共享布局 ABI 当前为 4；attach 通过 `layout_abi` 明确拒绝不兼容对象。初始化完成性
 由 lifetime OFD lock 仲裁，不在共享布局中维护额外状态机。
 
 ## 4. OFD Lock 分配
@@ -174,7 +174,7 @@ exclusive lock 证明不存在其他遵守当前协议的活跃 handle，因此�
 1. 若名字不存在，直接创建；
 2. 只有取得 exclusive lifetime lock 才能 unlink；否则 `-EBUSY`；
 3. force 表示调用方拥有该名字，因此不探测对象布局，直接 unlink 当前对象；
-4. 创建 ABI 3 单对象；
+4. 创建 ABI 4 单对象；
 5. 全程不在遵守 lifetime lock 的活跃 handle 存在时创建同名新代对象。
 
 ## 7. 状态与错误
@@ -215,7 +215,7 @@ FORCE:      open old -> try EXCLUSIVE -> unlink -> create/init new
 - `UFIFO_LOCK_NONE` 的 ctrl mutex owner 死亡后，下一个管理操作可恢复，不会永久阻塞。
 - 伪造/截断的 mapping size、data offset、data size、max_users，以及由 `max_users + 1`
   导致的布局溢出全部返回 `-EPROTO`。
-- 非 ABI 3 对象的 attach 返回 `-EPROTO`；force 不探测 layout，直接替换无活跃 lease 的对象。
+- 非 ABI 4 对象的 attach 返回 `-EPROTO`；force 不探测 layout，直接替换无活跃 lease 的对象。
 - creator 在任意初始化阶段死亡后，force 可以在取得 exclusive lock 后回收残留名字。
 - fork child 的继承 handle 返回 `-ECHILD`，不会注销 parent slot 或解除 parent OFD lock。
 - data mutex owner death 由下一个 locker 检测；该调用返回 `-EOWNERDEAD`，后续读写正常。
@@ -224,7 +224,7 @@ FORCE:      open old -> try EXCLUSIVE -> unlink -> create/init new
 
 ## 9. 影响说明
 
-- `inc/ufifo_layout.h`：布局 ABI 3，保存单映射边界，不增加初始化或数据健康状态机。
+- `inc/ufifo_layout.h`：布局 ABI 4，使用保持标量 size/alignment 的 C11 lock-free 原子字段，保存单映射边界以及全局 RX/TX 条件 armed epoch，不增加初始化或数据健康状态机。
 - `inc/ufifo_internal.h`：删除 `ctrl_fd/ctrl_size`，增加 `mapping_size`。
 - `src/ufifo_sync.c`：lifetime lock 与平移后的 user liveness lock。
 - `src/ufifo_init.c`：按 create/attach/map/validate/destroy 职责拆分。

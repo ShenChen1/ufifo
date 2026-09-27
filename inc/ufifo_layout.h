@@ -6,19 +6,26 @@
 #include <stdint.h>
 
 #include "ufifo.h"
+#include "utils.h"
 
-#define UFIFO_LAYOUT_ABI 3U
+#define UFIFO_LAYOUT_ABI 4U
+#define UFIFO_CACHELINE_SIZE 64U
+
+/* Keep independently published RX/TX epochs on separate cache lines. */
+typedef struct __attribute__((aligned(UFIFO_CACHELINE_SIZE))) {
+    ufifo_atomic_uint32_t value;
+    uint8_t reserved[UFIFO_CACHELINE_SIZE - sizeof(ufifo_atomic_uint32_t)];
+} ufifo_wait_word_t;
 
 /*
  * Receive-slot control data (stored in shared memory).
  * users[0..max_users-1] are registered user slots.
- * In SOLE mode, users[max_users] is reserved for the global receive state.
+ * In SOLE mode, users[max_users] stores the global receive position.
  */
 typedef struct {
     pid_t pid;
-    bool active;
-    size_t out;
-    uint32_t rx_wait_word; /* even = idle epoch, odd = armed epoch */
+    ufifo_atomic_bool_t active;
+    ufifo_atomic_size_t out;
 } ufifo_sub_ctrl_t;
 
 /* Global FIFO control data (stored in shared memory) */
@@ -30,15 +37,16 @@ typedef struct {
     size_t data_offset;
     size_t data_size;
 
-    size_t in;
+    ufifo_atomic_size_t in;
     size_t mask;
-    size_t cached_min_out; /* O(1) cache for SHARED mode */
+    ufifo_atomic_size_t cached_min_out; /* O(1) cache for SHARED mode */
 
     ufifo_lock_e lock;
     pthread_mutex_t ctrl_mutex; /* always active: protects control data */
     pthread_mutex_t data_mutex; /* governed by ufifo_lock_e: protects index movement */
 
-    uint32_t tx_wait_word; /* even = idle epoch, odd = armed epoch */
+    ufifo_wait_word_t rx_wait; /* even = idle epoch, odd = armed epoch */
+    ufifo_wait_word_t tx_wait; /* even = idle epoch, odd = armed epoch */
 
     ufifo_data_mode_e data_mode;
     size_t max_users;

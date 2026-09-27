@@ -178,7 +178,7 @@ TEST_F(UfifoErrnoTest, LongTimeoutOverflow)
 TEST_F(UfifoErrnoTest, StrictTimeoutWithSpuriousWakeup)
 {
     char data = 'A';
-    uint32_t *wait_word = &__ufifo_rx_ctrl(fifo)->rx_wait_word;
+    ufifo_atomic_uint32_t *wait_word = __ufifo_rx_wait_word(fifo);
 
     std::thread t([&]() {
         for (int i = 0; i < 5; i++) {

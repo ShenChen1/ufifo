@@ -50,8 +50,8 @@ int ufifo_dump(ufifo_t *handle)
 
     size_t mask = handle->kfifo.mask;
     size_t size = mask + 1;
-    size_t in = READ_ONCE(handle->kfifo.in);
-    size_t out = READ_ONCE(handle->kfifo.out);
+    size_t in = ufifo_atomic_load_relaxed(handle->kfifo.in);
+    size_t out = ufifo_atomic_load_relaxed(handle->kfifo.out);
 
     __ufifo_log("=== ufifo_dump: %s ===\n", handle->name);
     __ufifo_log(
@@ -75,12 +75,12 @@ int ufifo_dump(ufifo_t *handle)
     __ufifo_log("Pointers: in = %zu (offset: %zu), out = %zu (offset: %zu)\n", in, in & mask, out, out & mask);
 
     __ufifo_log("Wait Words: tx = %u, rx = %u\n",
-                smp_load_acquire(&handle->ctrl->tx_wait_word),
-                smp_load_acquire(&__ufifo_rx_ctrl(handle)->rx_wait_word));
+                ufifo_atomic_load_acquire(__ufifo_tx_wait_word(handle)),
+                ufifo_atomic_load_acquire(__ufifo_rx_wait_word(handle)));
 
     for (size_t i = 0; i < handle->ctrl->max_users; i++) {
-        if (READ_ONCE(&handle->ctrl->users[i].active)) {
-            size_t u_out = READ_ONCE(&handle->ctrl->users[i].out);
+        if (ufifo_atomic_load_relaxed(&handle->ctrl->users[i].active)) {
+            size_t u_out = ufifo_atomic_load_relaxed(&handle->ctrl->users[i].out);
             unsigned int pid = handle->ctrl->users[i].pid;
             __ufifo_log("  User[%zu]: pid = %d, out = %zu (offset: %zu)\n", i, pid, u_out, u_out & mask);
         }

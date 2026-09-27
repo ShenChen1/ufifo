@@ -7,7 +7,7 @@
 
 ## Why ufifo? (Comparison)
 
-While there are many IPC and message-passing solutions available, **ufifo** is designed specifically to fill the gap for a lightweight, dependency-free shared-memory ring buffer with advanced data distribution patterns. Built with C99 and GCC built-in atomics, it targets GNU/Linux systems.
+While there are many IPC and message-passing solutions available, **ufifo** is designed specifically to fill the gap for a lightweight, dependency-free shared-memory ring buffer with advanced data distribution patterns. Built with C11 atomics, it targets GNU/Linux systems.
 
 Here is how `ufifo` compares to other common alternatives:
 
@@ -37,7 +37,7 @@ Here is how `ufifo` compares to other common alternatives:
 - **Safe Across Versions**: A version stamp is embedded into shared memory at creation time. If a client links against an incompatible library version, `ufifo_open` rejects it immediately — no silent corruption.
 - **Three Blocking Flavors**: Every read/write operation comes in non-blocking, blocking (futex-based), and timed variants (`_block`, `_timeout`), so you choose the back-pressure strategy that fits your architecture.
 - **Unambiguous Results**: Data and length APIs return the actual byte count when `ret >= 0`; handle control APIs return `0` on success. These handle APIs return the corresponding negative `errno` on failure and also set `errno`.
-- **Lightweight, No External Dependencies**: Pure C99 + POSIX. No Boost, no Protobuf, no ZeroMQ runtime — just link against `librt` and `libpthread`.
+- **Lightweight, No External Dependencies**: Pure C11 + POSIX. No Boost, no Protobuf, no ZeroMQ runtime — just link against `librt` and `libpthread`.
 
 ## Common Topologies & Use Cases
 
@@ -47,7 +47,7 @@ Here is how `ufifo` compares to other common alternatives:
 `UFIFO_LOCK_NONE` + `UFIFO_DATA_SHARED` (Single-Producer, Multi-Consumer)
 
 - **Scenario**: High-frequency market data tickers, realtime video frame fan-outs, or IoT sensor telemetry distribution.
-- **The Magic**: By combining `LOCK_NONE` with the `SHARED` broadcast mode, each reader is assigned its own independent read pointer. The single producer writes data and updates the write pointer using strict C11 atomic memory barriers (Acquire/Release). Since no two processes try to modify the same variable simultaneously, no locks are needed.
+- **The Magic**: By combining `LOCK_NONE` with the `SHARED` broadcast mode, each reader is assigned its own independent read pointer. The single producer writes data and updates the write pointer using C11 atomic operations. Since no two processes try to modify the same variable simultaneously, no locks are needed.
 - **The Advantage**: **Actual Zero-Contention.** The single producer broadcasts to N disparate worker processes seamlessly. Consumers fetch data completely lock-free, delivering unparalleled latency benchmarks that crush traditional mutex-bound IPC pipelines.
 - **Self-Healing**: If a consumer process crashes, its stale read pointer could block the entire ring buffer. ufifo automatically detects the dead process via OFD lock probing and reaps its slot on the next write attempt — no manual cleanup, no stalled producers.
 
@@ -62,8 +62,8 @@ Here is how `ufifo` compares to other common alternatives:
 `UFIFO_LOCK_PROCESS` + `ufifo_put_block()` / `ufifo_get_block()`
 
 - **Scenario**: Process pipelines that need strict backpressure without polling loops or helper processes.
-- **The Magic**: Readers arm a receive wait word only while the FIFO is empty; writers arm a transmit wait word only while capacity is insufficient. Every waiter rechecks the predicate after arming, which closes the lost-wakeup window.
-- **The Advantage**: Idle workers consume no CPU, while the no-waiter hot path avoids notification syscalls and extra cache-line writes.
+- **The Magic**: Readers arm a receive wait word only while the FIFO is empty; writers arm a transmit wait word only while capacity is insufficient. A sequentially consistent fence orders readiness publication before the publisher observes the wait word; the waiter uses sequentially consistent arm and predicate recheck operations to close the lost-wakeup window.
+- **The Advantage**: Idle workers consume no CPU. The no-waiter hot path reads the wait word but neither modifies it nor executes a notification syscall.
 
 ## Quick Start
 
@@ -81,13 +81,13 @@ Based on its architectural design, `ufifo` has several distinctive advantages an
 
 ### Pros
 
-- **Lock-Free Performance (`UFIFO_LOCK_NONE`)**: Achieves extreme high performance leveraging C11 memory barriers (`smp_load_acquire` / `smp_store_release`) for Single-Producer scenarios, completely bypassing kernel space.
+- **Lock-Free Operation (`UFIFO_LOCK_NONE`)**: Uses explicit C11 acquire/release publication for supported single-producer topologies and bypasses kernel space while no thread needs to sleep.
 - **Multi-Layer Crash Detection**: Combines robust mutex owner-death recovery, OFD lock-based liveness detection, and automatic dead-reader reaping.
 - **Race-Free Lifecycle**: OFD file locking serializes initialization, attach, destroy, and force without sleep/retry polling inside the core.
 - **Versatile Distribution Modes**: Natively supports both `SOLE` (competing consumers, perfect for worker pools) and `SHARED` (broadcast/pub-sub topologies).
 - **Process-Shared Futex Waits**: Blocking and timed operations wait directly on shared RX/TX words, with no broker process or descriptor distribution protocol.
 - **Zero-Allocation Record Hooks**: Custom callbacks (`recsize`, `recput`, `recget`) enable direct serialization/deserialization within the shared ring buffer, avoiding intermediate memory copies.
-- **Lightweight & Dependency-Free**: Relies exclusively on standard C99/POSIX interfaces with no external third-party dependencies.
+- **Lightweight & Dependency-Free**: Relies exclusively on standard C11/POSIX interfaces with no external third-party dependencies.
 
 ### Cons
 
@@ -100,11 +100,11 @@ Based on its architectural design, `ufifo` has several distinctive advantages an
 
 ## Performance & Benchmarks
 
-`ufifo` relies heavily on fine-grained C11 memory barriers (`smp_load_acquire` / `smp_store_release`) to maximize performance. 
+`ufifo` expresses shared-memory publication with C11 atomic objects and operations. GCC 15.2 emits TSan atomic hooks for these operations, but also warns that `atomic_thread_fence` is not fully supported by TSan; sanitizer success is therefore supporting evidence, not a proof of the fence handshake.
 
 - **Lock-Free Operation (`UFIFO_LOCK_NONE`)**: Achieves peak performance, isolating the memory barrier cost without contention. The ctrl/data dual-lock architecture ensures that even administrative operations (register/unregister) never block the hot data path.
 - **Multithreaded Load**: Throughput remains highly efficient even under heavy load (MPSC scenarios) thanks to process-shared robust mutexes minimizing wait times.
-- **Armed-Epoch Notification**: A producer or consumer only issues `FUTEX_WAKE` when the corresponding wait word is armed. With no waiter, notification is a read-only atomic check and does not dirty the shared cache line.
+- **Armed-Epoch Notification**: A producer or consumer advances the corresponding epoch and issues `FUTEX_WAKE` only when the previous state was armed. RX and TX epochs occupy separate cache lines to avoid false sharing.
 
 You can run the benchmark suite directly on the target hardware:
 

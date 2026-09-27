@@ -22,10 +22,10 @@ double ElapsedMilliseconds(const std::chrono::steady_clock::time_point &start,
     return std::chrono::duration<double, std::milli>(end - start).count();
 }
 
-bool WaitUntilArmed(uint32_t *wait_word, std::chrono::milliseconds timeout)
+bool WaitUntilArmed(ufifo_atomic_uint32_t *wait_word, std::chrono::milliseconds timeout)
 {
     TestDeadline deadline(timeout);
-    while ((smp_load_acquire(wait_word) & 1U) == 0) {
+    while ((ufifo_atomic_load_acquire(wait_word) & 1U) == 0) {
         if (deadline.Expired())
             return false;
         std::this_thread::yield();
@@ -79,7 +79,7 @@ TEST(UfifoCoreRegressionTest, TimeoutIncludesDataLockReacquire)
         result = ufifo_get_timeout(fifo, &output, sizeof(output), 40);
         elapsed_ms = ElapsedMilliseconds(start, std::chrono::steady_clock::now());
     });
-    uint32_t *wait_word = &__ufifo_rx_ctrl(fifo)->rx_wait_word;
+    ufifo_atomic_uint32_t *wait_word = __ufifo_rx_wait_word(fifo);
     const bool armed = WaitUntilArmed(wait_word, std::chrono::seconds(1));
     int lock_result = EINVAL;
     int unlock_result = EINVAL;

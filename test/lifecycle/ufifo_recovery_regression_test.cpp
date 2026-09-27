@@ -49,7 +49,7 @@ TEST(UfifoCoreRegressionTest, ReapDoesNotRemoveReusedLiveSlot)
     __ufifo_reap_dead_user(owner, replacement->user_id);
     ASSERT_EQ(0, __ufifo_ctrl_unlock(owner));
 
-    EXPECT_TRUE(smp_load_acquire(&owner->ctrl->users[replacement->user_id].active));
+    EXPECT_TRUE(ufifo_atomic_load_acquire(&owner->ctrl->users[replacement->user_id].active));
     EXPECT_EQ(2U, owner->ctrl->num_users);
     EXPECT_EQ(0, ufifo_close(replacement));
     EXPECT_EQ(0, ufifo_destroy(owner));

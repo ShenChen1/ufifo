@@ -1,5 +1,25 @@
 #include "ufifo_test_support.hpp"
 
+#include <cstddef>
+
+TEST(UfifoLayoutTest, AtomicFieldsPreserveScalarLayout)
+{
+    EXPECT_EQ(sizeof(bool), sizeof(ufifo_atomic_bool_t));
+    EXPECT_EQ(alignof(bool), alignof(ufifo_atomic_bool_t));
+    EXPECT_EQ(sizeof(size_t), sizeof(ufifo_atomic_size_t));
+    EXPECT_EQ(alignof(size_t), alignof(ufifo_atomic_size_t));
+    EXPECT_EQ(sizeof(uint32_t), sizeof(ufifo_atomic_uint32_t));
+    EXPECT_EQ(alignof(uint32_t), alignof(ufifo_atomic_uint32_t));
+}
+
+TEST(UfifoLayoutTest, WaitEpochsUseSeparateCacheLines)
+{
+    EXPECT_EQ(UFIFO_CACHELINE_SIZE, sizeof(ufifo_wait_word_t));
+    EXPECT_EQ(0U, offsetof(ufifo_ctrl_t, rx_wait) % UFIFO_CACHELINE_SIZE);
+    EXPECT_EQ(0U, offsetof(ufifo_ctrl_t, tx_wait) % UFIFO_CACHELINE_SIZE);
+    EXPECT_EQ(UFIFO_CACHELINE_SIZE, offsetof(ufifo_ctrl_t, tx_wait) - offsetof(ufifo_ctrl_t, rx_wait));
+}
+
 TEST(UfifoLayoutTest, RejectsIncompatibleSharedLayout)
 {
     ufifo_init_t init = {};

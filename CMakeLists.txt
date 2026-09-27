@@ -8,7 +8,7 @@ set(SANITIZER "" CACHE STRING "Sanitizer to enable: asan, tsan, ubsan (comma-sep
 option(COVERAGE "Enable code coverage with gcov/lcov" OFF)
 
 # Compiler settings
-set(CMAKE_C_STANDARD 99)
+set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 add_compile_definitions(_GNU_SOURCE)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)

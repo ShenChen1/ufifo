@@ -52,7 +52,7 @@ ufifo 当前以共享内存 ring buffer 传输数据，同时用同一组 `event
 
 ### Constraints
 
-- C99；Linux 专用；最低运行内核 6.7。
+- C11；Linux 专用；最低运行内核 6.7。
 - 构建环境必须提供含 `IORING_OP_FUTEX_WAIT` 和 `FUTEX2_SIZE_U32` 的 Linux UAPI headers。
 - 不新增运行时第三方依赖。
 - 公共函数参数不超过 5 个；单函数不超过 80 行；单源码文件不超过 500 行。
@@ -102,9 +102,11 @@ ufifo 当前以共享内存 ring buffer 传输数据，同时用同一组 `event
 
 | 方案 | 优点 | 缺点/风险 | 结论 |
 | --- | --- | --- | --- |
-| 每次状态变化无条件 `seq++` | 最容易证明正确 | 无监听时仍产生跨核 atomic RMW | 拒绝 |
+| 每次状态变化无条件推进 armed epoch | publisher/waiter 在同一原子修改序中排序；TSan 可见 | 无监听时仍有一次 atomic RMW；实测回退 16%–35% | 拒绝 |
+| SC predicate + 条件推进 armed epoch | 无 waiter 时 wait word 只读；无需显式 fence | x86 SC store 生成带锁交换；实测部分场景回退 25%–32% | 拒绝 |
+| release predicate + SC fence + 条件推进 epoch | 索引发布保持 release store；不增加共享状态；使用标准 C11 原子 | publisher 每次发布执行 SC fence；GCC TSan 明确警告不完整支持 fence；实测 SPSC/SHARED 回退 17%–28% | 当前实验，性能未通过 |
 | `seq + waiter count` | 可跳过无用 wake | 进程崩溃可能永久泄漏计数 | 拒绝 |
-| 单个 `epoch + armed` 32 位字 | 无 waiter 时只读；崩溃只导致一次额外 wake；天然合并 | wake 时采用广播，可能有惊群 | 采用 |
+| acquire/release predicate + 条件推进 epoch | 无 waiter 时只读；索引发布便宜 | predicate store 与 ARMED load 跨地址，弱内存模型允许 lost wake | 拒绝 |
 
 ### 4.3 Adapter 触发语义
 
@@ -276,7 +278,7 @@ UFIFO_EPOLLOUT := unused_bytes >= write_threshold
 
 ## 8. Shared wait word
 
-控制区新增两个 4 字节对齐的原子字：
+控制区新增两个全局 32 位原子字；每个原子字独占一个 64 字节 cache line：
 
 ```c
 uint32_t rx_wait_word;
@@ -288,14 +290,15 @@ uint32_t tx_wait_word;
 ```text
 even value: ARMED=0
 odd value:  ARMED=1
-wake:       odd N -> even N+1
+unarmed publish: even N -> even N
+armed publish:   odd N+1 -> even N+2
 ```
 
 ### 8.1 Arm
 
 ```text
-expected = atomic_fetch_or(wait_word, ARMED) | ARMED
-recheck readiness predicate
+expected = atomic_fetch_or_seq_cst(wait_word, ARMED) | ARMED
+recheck readiness predicate with a seq_cst load
 wait only while *wait_word == expected
 ```
 
@@ -306,19 +309,34 @@ wait only while *wait_word == expected
 数据/索引先以 release 语义发布，再执行通知：
 
 ```text
-old = atomic_load(wait_word)
+atomic_thread_fence_seq_cst()
+old = atomic_load_seq_cst(wait_word)
 while old has ARMED:
-    if compare_exchange(old, old + 1):
-        futex_wake_shared(wait_word, INT_MAX)
-        break
+    if !compare_exchange_acq_rel(wait_word, old, old + 1):
+        continue
+    futex_wake_shared(wait_word, INT_MAX)
+    return
 ```
 
 性质：
 
-- 没有 waiter 时只有 atomic load，不修改 cache line，不执行 syscall；
+- 没有 waiter 时 wait word 保持不变，也不执行 syscall；
 - 多个 waiter 共用一个 ARMED bit，成功的 waker 广播唤醒；
 - waiter 超时或进程崩溃最多留下一个 ARMED bit；下一次状态变化会清除它；
-- epoch 回绕只在 arm-to-wait 窗口内恰好发生 `2^31` 次通知时构成 ABA，作为不可实现的运行边界记录，不额外增加 64 位 ABI。
+- epoch 回绕只在 arm-to-wait 窗口内恰好发生 `2^31` 次 armed publish 时构成 ABA，作为不可实现的运行边界记录，不额外增加 64 位 ABI。
+
+正确性依赖 C11 的 SC fence 顺序。令 `P` 为 predicate 的 release 发布，`F` 为紧随其后的
+SC fence，`N` 为 publisher 对 wait word 的 SC 观察，`A` 为 waiter 的 SC arm，`R` 为
+waiter 对 predicate 的 SC 复查。若 publisher 没看到 ARMED，则 SC 顺序中 `N < A`；若
+waiter 又读到 `P` 之前的 predicate 值，SC fence 规则要求 `R < F`。程序顺序还要求
+`F < N` 和 `A < R`，四条关系形成不可能的环，因此两边不能同时漏看。RX 的 `in`、
+SOLE TX 的 `out`、SHARED TX 的 `cached_min_out` 都按该模型发布和复查。RX 使用单一全局
+epoch，因此 SHARED put 不再逐用户扫描 wait word。
+
+共享布局中的并发字段使用 `_Atomic` 类型和 `atomic_*_explicit` 操作。attach/create 要求
+这些原子在目标平台 lock-free，否则返回 `-EOPNOTSUPP`；size/alignment 由编译期断言和
+ABI 测试约束。C11 本身没有定义跨进程共享原子的完整可移植语义，因此本契约仍限定为
+GNU/Linux 上 GCC 的 lock-free 实现，而不是跨任意 C11 平台的承诺。
 
 进程死亡本身不会唤醒睡在 RX/TX wait word 上的 waiter。robust mutex owner death 只在
 下一个 locker 获取 data mutex 时被检测；core 不承诺仅因 peer 死亡就立即结束无限等待。
@@ -341,7 +359,7 @@ monotonic absolute deadline：
 ### 8.4 状态变化映射
 
 - 成功 put：publish `in` 后 notify RX。
-- 成功 get/skip/oldest/newest：publish `out` 后 notify TX。
+- 成功 get/skip/oldest/newest：publish `out` 后，仅在可用容量实际增加时 notify TX。
 - SHARED reader close/reap、reset、attach 导致可用容量增加：notify TX。
 - 只读 peek 不 notify TX。
 

@@ -15,13 +15,13 @@ void __ufifo_recover_state(ufifo_t *handle)
 
     for (i = 0; i < ctrl->max_users; i++) {
         if (handle->registered && i == handle->user_id) {
-            if (smp_load_acquire(&ctrl->users[i].active))
+            if (ufifo_atomic_load_acquire(&ctrl->users[i].active))
                 count++;
             continue;
         }
-        if (smp_load_acquire(&ctrl->users[i].active)) {
+        if (ufifo_atomic_load_acquire(&ctrl->users[i].active)) {
             if (__ufifo_is_user_dead(handle->shm_fd, i)) {
-                smp_store_release(&ctrl->users[i].active, false);
+                ufifo_atomic_store_release(&ctrl->users[i].active, false);
             } else {
                 count++;
             }
@@ -30,9 +30,8 @@ void __ufifo_recover_state(ufifo_t *handle)
 
     ctrl->num_users = count;
 
-    if (__ufifo_is_shared(handle)) {
-        __ufifo_update_cached_min_out(handle);
-    }
+    if (__ufifo_is_shared(handle) && __ufifo_update_cached_min_out(handle))
+        __ufifo_notify_writers(handle);
 }
 
 int __ufifo_ctrl_lock(ufifo_t *handle)

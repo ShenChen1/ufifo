@@ -11,12 +11,12 @@
 
 #define UFIFO_WAIT_ARMED 1U
 
-uint32_t __ufifo_wait_arm(uint32_t *wait_word)
+uint32_t __ufifo_wait_arm(ufifo_atomic_uint32_t *wait_word)
 {
-    return atomic_fetch_or(wait_word, UFIFO_WAIT_ARMED) | UFIFO_WAIT_ARMED;
+    return ufifo_atomic_fetch_or_seq_cst(wait_word, UFIFO_WAIT_ARMED) | UFIFO_WAIT_ARMED;
 }
 
-int __ufifo_futex_wait(uint32_t *wait_word, uint32_t expected, const struct timespec *deadline)
+int __ufifo_futex_wait(ufifo_atomic_uint32_t *wait_word, uint32_t expected, const struct timespec *deadline)
 {
     int ret = syscall(SYS_futex, wait_word, FUTEX_WAIT_BITSET, expected, deadline, NULL, FUTEX_BITSET_MATCH_ANY);
 
@@ -25,13 +25,16 @@ int __ufifo_futex_wait(uint32_t *wait_word, uint32_t expected, const struct time
     return -errno;
 }
 
-void __ufifo_wait_notify(uint32_t *wait_word)
+void __ufifo_wait_notify(ufifo_atomic_uint32_t *wait_word)
 {
-    uint32_t observed = smp_load_acquire(wait_word);
+    /* Order predicate publication before observing ARMED. The waiter's SC RMW
+     * provides the other StoreLoad edge in the lost-wakeup handshake. */
+    ufifo_atomic_thread_fence_seq_cst();
+    uint32_t observed = ufifo_atomic_load_seq_cst(wait_word);
 
     while (observed & UFIFO_WAIT_ARMED) {
-        const uint32_t next_epoch = observed + 1;
-        if (!atomic_cmpxchg(wait_word, &observed, next_epoch))
+        const uint32_t next_epoch = observed + 1U;
+        if (!ufifo_atomic_compare_exchange_acq_rel(wait_word, &observed, next_epoch))
             continue;
         syscall(SYS_futex, wait_word, FUTEX_WAKE, INT_MAX, NULL, NULL, 0);
         return;
@@ -39,7 +42,7 @@ void __ufifo_wait_notify(uint32_t *wait_word)
 }
 
 static int __ufifo_wait_on_word(ufifo_t *handle,
-                                uint32_t *wait_word,
+                                ufifo_atomic_uint32_t *wait_word,
                                 uint32_t expected,
                                 const struct timespec *deadline,
                                 ufifo_wait_result_t *result)
@@ -61,7 +64,7 @@ static int __ufifo_try_reap_dead_readers(ufifo_t *handle)
     int cleaned = 0;
 
     for (size_t i = 0; i < handle->ctrl->max_users; i++) {
-        if (i == handle->user_id || !smp_load_acquire(&handle->ctrl->users[i].active))
+        if (i == handle->user_id || !ufifo_atomic_load_acquire(&handle->ctrl->users[i].active))
             continue;
         if (!__ufifo_is_user_dead(handle->shm_fd, i))
             continue;
@@ -76,10 +79,8 @@ static int __ufifo_try_reap_dead_readers(ufifo_t *handle)
             return cleaned;
     }
 
-    if (cleaned) {
-        __ufifo_update_cached_min_out(handle);
+    if (cleaned && __ufifo_update_cached_min_out(handle))
         __ufifo_notify_writers(handle);
-    }
     return cleaned;
 }
 
@@ -89,7 +90,8 @@ static size_t __ufifo_recheck_space(ufifo_t *handle, size_t size)
 
     if (len >= size || !__ufifo_is_shared(handle))
         return len;
-    __ufifo_update_cached_min_out(handle);
+    if (__ufifo_update_cached_min_out(handle))
+        __ufifo_notify_writers(handle);
     __ufifo_try_reap_dead_readers(handle);
     return __ufifo_unused_len(handle);
 }
@@ -110,10 +112,11 @@ int __ufifo_wait_for_space(
             break;
         }
 
-        const uint32_t expected = __ufifo_wait_arm(&handle->ctrl->tx_wait_word);
+        ufifo_atomic_uint32_t *wait_word = __ufifo_tx_wait_word(handle);
+        const uint32_t expected = __ufifo_wait_arm(wait_word);
         if (__ufifo_unused_len(handle) >= size)
             continue;
-        ret = __ufifo_wait_on_word(handle, &handle->ctrl->tx_wait_word, expected, deadline, result);
+        ret = __ufifo_wait_on_word(handle, wait_word, expected, deadline, result);
         if (ret)
             break;
     }
@@ -134,21 +137,23 @@ int __ufifo_wait_for_data(
 {
     int ret = 0;
     size_t len = 0;
-    ufifo_sub_ctrl_t *rx_ctrl = __ufifo_rx_ctrl(handle);
+    ufifo_atomic_uint32_t *wait_word = __ufifo_rx_wait_word(handle);
 
     while ((len = __ufifo_peek_data_len(
-                handle, READ_ONCE(handle->kfifo.out), smp_load_acquire(handle->kfifo.in)))
+                handle, ufifo_atomic_load_relaxed(handle->kfifo.out), ufifo_atomic_load_seq_cst(handle->kfifo.in)))
            == 0) {
         if (wait_type == UFIFO_WAIT_NONE) {
             ret = -EAGAIN;
             break;
         }
 
-        const uint32_t expected = __ufifo_wait_arm(&rx_ctrl->rx_wait_word);
-        len = __ufifo_peek_data_len(handle, READ_ONCE(handle->kfifo.out), smp_load_acquire(handle->kfifo.in));
+        const uint32_t expected = __ufifo_wait_arm(wait_word);
+        len = __ufifo_peek_data_len(handle,
+                                    ufifo_atomic_load_relaxed(handle->kfifo.out),
+                                    ufifo_atomic_load_seq_cst(handle->kfifo.in));
         if (len > 0)
             continue;
-        ret = __ufifo_wait_on_word(handle, &rx_ctrl->rx_wait_word, expected, deadline, result);
+        ret = __ufifo_wait_on_word(handle, wait_word, expected, deadline, result);
         if (ret)
             break;
     }
