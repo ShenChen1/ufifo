@@ -85,6 +85,9 @@ ssize_t ufifo_skip(ufifo_t *handle)
     int ret = __ufifo_validate_handle(handle);
     if (ret < 0)
         return ret;
+    ret = __ufifo_check_read_permission(handle);
+    if (ret < 0)
+        return ret;
 
     ret = __ufifo_data_lock(handle);
     if (ret < 0) {
@@ -112,6 +115,9 @@ ssize_t ufifo_peek_len(ufifo_t *handle)
 {
     ssize_t result;
     int ret = __ufifo_validate_handle(handle);
+    if (ret < 0)
+        return ret;
+    ret = __ufifo_check_read_permission(handle);
     if (ret < 0)
         return ret;
 

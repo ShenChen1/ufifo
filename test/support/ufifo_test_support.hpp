@@ -31,6 +31,8 @@ extern "C" {
 
 std::string GenerateName(const char *prefix);
 std::string PrintParam(const testing::TestParamInfo<TestParam> &info);
+bool WaitForWaitWordArm(const ufifo_atomic_uint32_t *wait_word,
+                        std::chrono::milliseconds timeout = std::chrono::seconds(1));
 
 extern const TestParam ALL_COMBINATIONS[18];
 extern const size_t ALL_COMBINATIONS_COUNT;

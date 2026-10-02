@@ -6,6 +6,18 @@ std::string GenerateName(const char *prefix)
     return std::string(prefix) + "_" + std::to_string(counter++) + "_" + std::to_string(getpid());
 }
 
+bool WaitForWaitWordArm(const ufifo_atomic_uint32_t *wait_word, std::chrono::milliseconds timeout)
+{
+    constexpr uint32_t kArmedBit = 1U;
+    TestDeadline deadline(timeout);
+    while ((ufifo_atomic_load_acquire(wait_word) & kArmedBit) == 0) {
+        if (deadline.Expired())
+            return false;
+        std::this_thread::yield();
+    }
+    return true;
+}
+
 const TestParam ALL_COMBINATIONS[] = { { DataFormat::BYTESTREAM, DataMode::SOLE, UFIFO_LOCK_NONE },
                                        { DataFormat::RECORD, DataMode::SOLE, UFIFO_LOCK_NONE },
                                        { DataFormat::TAG, DataMode::SOLE, UFIFO_LOCK_NONE },

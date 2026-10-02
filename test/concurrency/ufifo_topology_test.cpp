@@ -75,19 +75,12 @@ class ParameterizedTestBase : public ::testing::TestWithParam<TestParam> {
                 ssize_t ret = adapter_->PutValue(handle, value, producer_index);
                 if (ret > 0) {
                     count++;
-                } else if (ret != -EAGAIN) {
-                    run.Fail(ret < 0 ? static_cast<int>(ret) : -EIO);
-                } else if (run.shared) {
-                    int discarded = 0;
-                    ret = adapter_->GetValue(handle, discarded, 10);
-                    if (ret <= 0 && ret != -EAGAIN && ret != -ETIMEDOUT)
-                        run.Fail(ret < 0 ? static_cast<int>(ret) : -EIO);
-                } else {
+                } else if (ret == -EAGAIN) {
                     std::this_thread::yield();
+                } else {
+                    run.Fail(ret < 0 ? static_cast<int>(ret) : -EIO);
                 }
             }
-            if (run.shared && adapter_->Detach(handle) != 0)
-                run.Fail(-EIO);
         });
     }
 
@@ -167,10 +160,12 @@ class ParameterizedTestBase : public ::testing::TestWithParam<TestParam> {
             GTEST_SKIP() << "UFIFO_LOCK_NONE does not support multiple consumers in SOLE mode";
 
         const int handle_count = producer_count + consumer_count;
-        ASSERT_EQ(0, adapter_->Create(fifo_size, handle_count));
+        const ufifo_role_e creator_role = (producer_count > 0) ? UFIFO_ROLE_PRODUCER : UFIFO_ROLE_CONSUMER;
+        ASSERT_EQ(0, adapter_->Create(fifo_size, handle_count, creator_role));
         for (int index = 1; index < handle_count; index++) {
             ufifo_t *handle = nullptr;
-            ASSERT_EQ(0, adapter_->Attach(&handle));
+            const ufifo_role_e role = (index < producer_count) ? UFIFO_ROLE_PRODUCER : UFIFO_ROLE_CONSUMER;
+            ASSERT_EQ(0, adapter_->Attach(&handle, role));
         }
 
         TopologyRun run(producer_count, consumer_count, messages_per_producer, shared);

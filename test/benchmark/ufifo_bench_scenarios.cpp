@@ -50,6 +50,30 @@ ufifo_t *OpenFifo(
     return fifo;
 }
 
+ufifo_t *OpenProducerFifo(
+    const char *prefix, ufifo_lock_e lock, ufifo_data_mode_e mode, size_t max_users, std::string *opened_name = nullptr)
+{
+    ufifo_init_t init = {};
+    init.opt = UFIFO_OPT_ALLOC;
+    init.role = UFIFO_ROLE_PRODUCER;
+    init.alloc.size = FIFO_SIZE;
+    init.alloc.force = 1;
+    init.alloc.lock = lock;
+    init.alloc.data_mode = mode;
+    init.alloc.max_users = max_users;
+
+    ufifo_t *fifo = nullptr;
+    const std::string name = BenchmarkName(prefix);
+    const int result = ufifo_open(name.c_str(), &init, &fifo);
+    if (result != 0) {
+        fprintf(stderr, "ufifo_bench: cannot create %s: %d\n", prefix, result);
+        exit(EXIT_FAILURE);
+    }
+    if (opened_name != nullptr)
+        *opened_name = name;
+    return fifo;
+}
+
 BenchResult MakeResult(const std::string &name,
                        int data_size,
                        long long total_ops,
@@ -236,9 +260,10 @@ BenchResult RunMpscBenchmark(int data_size, int producer_count, int items_per_pr
 BenchResult RunSharedSpscBenchmark(int data_size, int total_items)
 {
     std::string fifo_name;
-    ufifo_t *producer = OpenFifo("shspsc", UFIFO_LOCK_NONE, UFIFO_DATA_SHARED, 2, &fifo_name);
+    ufifo_t *producer = OpenProducerFifo("shspsc", UFIFO_LOCK_NONE, UFIFO_DATA_SHARED, 2, &fifo_name);
     ufifo_init_t attach = {};
     attach.opt = UFIFO_OPT_ATTACH;
+    attach.role = UFIFO_ROLE_CONSUMER;
     ufifo_t *consumer = nullptr;
     if (ufifo_open(fifo_name.c_str(), &attach, &consumer) != 0) {
         fprintf(stderr, "ufifo_bench: cannot attach shared consumer\n");
@@ -246,16 +271,13 @@ BenchResult RunSharedSpscBenchmark(int data_size, int total_items)
     }
 
     std::vector<char> write_buffer(data_size, static_cast<char>(0xEE));
-    std::vector<char> producer_read_buffer(data_size);
     std::vector<char> consumer_read_buffer(data_size);
     auto run_producer = [&](int count_limit) {
         for (int count = 0; count < count_limit;) {
-            if (ufifo_put(producer, write_buffer.data(), data_size) > 0) {
-                ufifo_get(producer, producer_read_buffer.data(), data_size);
+            if (ufifo_put(producer, write_buffer.data(), data_size) > 0)
                 count++;
-            } else {
+            else
                 std::this_thread::yield();
-            }
         }
     };
     auto run_consumer = [&](int count_limit) {
@@ -290,5 +312,5 @@ BenchResult RunSharedSpscBenchmark(int data_size, int total_items)
     ufifo_close(consumer);
     ufifo_destroy(producer);
     const std::string name = "SharedSPSC/" + std::to_string(data_size) + "B";
-    return MakeResult(name, data_size, static_cast<long long>(total_items) * 3, duration);
+    return MakeResult(name, data_size, static_cast<long long>(total_items) * 2, duration);
 }

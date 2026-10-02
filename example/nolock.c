@@ -54,14 +54,6 @@ static size_t recsize(uint8_t *p1, size_t n1, uint8_t *p2)
 }
 
 /* ---- Producer thread ---- */
-/*
- * In SHARED mode the ALLOC handle is also registered as a user with its own
- * `out` pointer.  If we never call ufifo_get on it, __ufifo_min_out treats
- * the producer as the slowest consumer and the FIFO appears permanently full.
- * After each successful put we therefore drain the record we just wrote so that
- * our `out` keeps pace with `in`.
- */
-
 static void *producer_thread(void *arg)
 {
     (void)arg;
@@ -76,8 +68,6 @@ static void *producer_thread(void *arg)
         ret = ufifo_put(producer_fifo, rec, RECORD_SIZE);
         if (ret > 0) {
             assert(ret == RECORD_SIZE);
-            /* Advance producer's own out pointer */
-            ufifo_newest(producer_fifo, rec->index);
             if (rec->index == NUM) {
                 break;
             }
@@ -146,14 +136,15 @@ int main(void)
 
     int ret;
 
-    /* Create producer FIFO (ALLOC, SHARED, LOCK_NONE) */
+    /* Create producer FIFO (ALLOC, SHARED, LOCK_NONE, PRODUCER) */
     ufifo_init_t init = {};
     init.opt = UFIFO_OPT_ALLOC;
+    init.role = UFIFO_ROLE_PRODUCER;
     init.alloc.size = FIFO_SIZE;
     init.alloc.force = 1;
     init.alloc.lock = UFIFO_LOCK_NONE;
     init.alloc.data_mode = UFIFO_DATA_SHARED;
-    init.alloc.max_users = CONSUMER_COUNT + 1;
+    init.alloc.max_users = CONSUMER_COUNT;
     init.hook.recsize = recsize;
 
     ret = ufifo_open("nolock_spmc", &init, &producer_fifo);
@@ -167,6 +158,7 @@ int main(void)
     for (int i = 0; i < CONSUMER_COUNT; i++) {
         ufifo_init_t attach = {};
         attach.opt = UFIFO_OPT_ATTACH;
+        attach.role = UFIFO_ROLE_CONSUMER;
         attach.hook.recsize = recsize;
 
         consumer_args[i].id = i;

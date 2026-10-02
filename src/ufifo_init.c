@@ -213,7 +213,14 @@ static int __ufifo_configure_data(ufifo_t *handle, bool initialize)
     handle->is_shared = handle->ctrl->data_mode == UFIFO_DATA_SHARED;
     handle->lock_type = handle->ctrl->lock;
     handle->kfifo.in = &handle->ctrl->in;
-    handle->kfifo.out = &__ufifo_rx_ctrl(handle)->out;
+    if (handle->role_type == UFIFO_ROLE_PRODUCER) {
+        if (handle->is_shared)
+            handle->kfifo.out = &handle->ctrl->cached_min_out;
+        else
+            handle->kfifo.out = &handle->ctrl->users[handle->ctrl->max_users].out;
+    } else {
+        handle->kfifo.out = &__ufifo_rx_ctrl(handle)->out;
+    }
     if (initialize)
         return kfifo_init(&handle->kfifo, handle->shm_size);
     handle->kfifo.mask = handle->ctrl->mask;
@@ -225,26 +232,32 @@ static int __ufifo_register_handle(ufifo_t *handle, bool initialize)
     size_t user_id;
     int ret;
 
-    ret = __ufifo_ctrl_lock(handle);
-    if (ret < 0)
-        return ret;
-    ret = __ufifo_register(handle, &user_id);
-    int unlock_ret = __ufifo_ctrl_unlock(handle);
-    if (ret < 0)
-        return ret;
-    if (unlock_ret < 0)
-        return unlock_ret;
-    handle->user_id = user_id;
-    handle->registered = true;
+    if (handle->role_type != UFIFO_ROLE_PRODUCER) {
+        ret = __ufifo_ctrl_lock(handle);
+        if (ret < 0)
+            return ret;
+        ret = __ufifo_register(handle, &user_id);
+        int unlock_ret = __ufifo_ctrl_unlock(handle);
+        if (ret < 0)
+            return ret;
+        if (unlock_ret < 0)
+            return unlock_ret;
+        handle->user_id = user_id;
+        handle->registered = true;
+    } else {
+        handle->user_id = SIZE_MAX;
+        handle->registered = false;
+    }
+
     ret = __ufifo_configure_data(handle, initialize);
     if (ret < 0) {
-        if (__ufifo_ctrl_lock(handle) == 0) {
+        if (handle->registered && __ufifo_ctrl_lock(handle) == 0) {
             __ufifo_unregister(handle);
             __ufifo_ctrl_unlock(handle);
         }
         return ret;
     }
-    if (__ufifo_is_shared(handle) && __ufifo_update_cached_min_out(handle))
+    if (__ufifo_is_shared(handle) && handle->registered && __ufifo_update_cached_min_out(handle))
         __ufifo_notify_writers(handle);
     return 0;
 }
@@ -348,7 +361,7 @@ error_mapping:
 
 static int __ufifo_init_validate(const ufifo_init_t *init)
 {
-    if (init->opt >= UFIFO_OPT_MAX)
+    if (init->opt >= UFIFO_OPT_MAX || init->role >= UFIFO_ROLE_MAX)
         return -EINVAL;
     if (init->opt != UFIFO_OPT_ALLOC)
         return 0;
@@ -386,6 +399,7 @@ int ufifo_open(const char *name, const ufifo_init_t *init, ufifo_t **handle)
         return -ENOMEM;
     strncpy(fifo->name, name, sizeof(fifo->name) - 1);
     fifo->owner_pid = __ufifo_process_pid();
+    fifo->role_type = fifo_init.role;
     __ufifo_hook_init(fifo, &fifo_init.hook);
     ret = __ufifo_open_fd(name, &fifo_init, &is_alloc);
     if (ret < 0)

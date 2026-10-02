@@ -88,10 +88,11 @@ class UfifoTestAdapter {
         handles_.clear();
     }
 
-    int Create(size_t size, size_t max_users = 10)
+    int Create(size_t size, size_t max_users = 10, ufifo_role_e role = UFIFO_ROLE_DUPLEX)
     {
         ufifo_init_t init = {};
         init.opt = UFIFO_OPT_ALLOC;
+        init.role = role;
         init.alloc.size = size;
         init.alloc.force = 1;
         init.alloc.lock = lock_;
@@ -140,10 +141,11 @@ class UfifoTestAdapter {
         }
     }
 
-    int Attach(ufifo_t **handle)
+    int Attach(ufifo_t **handle, ufifo_role_e role = UFIFO_ROLE_DUPLEX)
     {
         ufifo_init_t init = {};
         init.opt = UFIFO_OPT_ATTACH;
+        init.role = role;
 
         switch (format_) {
         case DataFormat::RECORD:

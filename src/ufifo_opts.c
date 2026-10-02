@@ -118,6 +118,10 @@ static inline int __ufifo_prepare_read_size(ufifo_t *handle, size_t *size, size_
 static inline __attribute__((always_inline)) ssize_t
 __ufifo_put(ufifo_t *handle, void *buf, size_t size, ufifo_wait_type_e wait_type, long millisec)
 {
+    int perm_ret = __ufifo_check_write_permission(handle);
+    if (perm_ret < 0)
+        return perm_ret;
+
     int ret;
     size_t len = 0;
     struct timespec deadline_storage;
@@ -169,6 +173,10 @@ ssize_t ufifo_put_timeout(ufifo_t *handle, void *buf, size_t size, long millisec
 static inline __attribute__((always_inline)) ssize_t
 __ufifo_get(ufifo_t *handle, void *buf, size_t size, ufifo_wait_type_e wait_type, long millisec)
 {
+    int perm_ret = __ufifo_check_read_permission(handle);
+    if (perm_ret < 0)
+        return perm_ret;
+
     int ret;
     size_t len = 0;
     struct timespec deadline_storage;
@@ -246,6 +254,10 @@ ssize_t ufifo_get_timeout(ufifo_t *handle, void *buf, size_t size, long millisec
 static inline __attribute__((always_inline)) ssize_t
 __ufifo_peek(ufifo_t *handle, void *buf, size_t size, ufifo_wait_type_e wait_type, long millisec)
 {
+    int perm_ret = __ufifo_check_read_permission(handle);
+    if (perm_ret < 0)
+        return perm_ret;
+
     int ret = 0;
     size_t len = 0;
     struct timespec deadline_storage;
@@ -317,6 +329,10 @@ ssize_t ufifo_peek_timeout(ufifo_t *handle, void *buf, size_t size, long millise
 
 static int __ufifo_seek_tag(ufifo_t *handle, uint32_t tag, bool newest)
 {
+    int perm_ret = __ufifo_check_read_permission(handle);
+    if (perm_ret < 0)
+        return perm_ret;
+
     int ret = -ESPIPE;
     size_t len, tmp;
     size_t target_pos = 0;

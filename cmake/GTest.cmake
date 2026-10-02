@@ -15,6 +15,7 @@ set(UFIFO_CONTRACT_TEST_SOURCES
     test/contract/ufifo_api_test.cpp
     test/contract/ufifo_errno_test.cpp
     test/contract/ufifo_layout_test.cpp
+    test/contract/ufifo_role_test.cpp
 )
 set(UFIFO_DATA_TEST_SOURCES
     test/data/ufifo_shared_data_regression_test.cpp
@@ -27,6 +28,7 @@ set(UFIFO_CONCURRENCY_TEST_SOURCES
     test/concurrency/ufifo_wait_regression_test.cpp
     test/concurrency/ufifo_wait_test.cpp
     test/wait/ufifo_predicate_test.cpp
+    test/wait/ufifo_wait_policy_test.cpp
 )
 set(UFIFO_LIFECYCLE_TEST_SOURCES
     test/lifecycle/ufifo_fault_test.cpp

@@ -60,11 +60,19 @@ typedef enum {
 
 /** @brief Mutual-exclusion strategy. */
 typedef enum {
-    UFIFO_LOCK_NONE,    /**< No locking, single-thread only. */
+    UFIFO_LOCK_NONE,    /**< No locking. */
     UFIFO_LOCK_THREAD,  /**< Intra-process pthread mutex. */
     UFIFO_LOCK_PROCESS, /**< Inter-process robust shared mutex. */
     UFIFO_LOCK_MAX,
 } ufifo_lock_e;
+
+/** @brief Handle operating role. */
+typedef enum {
+    UFIFO_ROLE_DUPLEX = 0,   /**< Default: read & write (registers receive slot, backwards-compatible). */
+    UFIFO_ROLE_PRODUCER = 1, /**< Producer: write-only, does NOT register receive slot (safe for SPMC broadcast). */
+    UFIFO_ROLE_CONSUMER = 2, /**< Consumer: read-only, registers receive slot, rejects writes. */
+    UFIFO_ROLE_MAX,
+} ufifo_role_e;
 
 /** @brief Consumer data distribution mode. */
 typedef enum {
@@ -98,7 +106,8 @@ typedef struct {
 
 /** @brief Initialization parameters for ufifo_open(). */
 typedef struct {
-    ufifo_opt_e opt; /**< ALLOC or ATTACH. */
+    ufifo_opt_e opt;   /**< ALLOC or ATTACH. */
+    ufifo_role_e role; /**< Operating role (default: UFIFO_ROLE_DUPLEX). */
     union {
         ufifo_alloc_t alloc;   /**< Valid when opt == ALLOC. */
         ufifo_attach_t attach; /**< Valid when opt == ATTACH. */

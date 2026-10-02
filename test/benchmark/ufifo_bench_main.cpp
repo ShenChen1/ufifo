@@ -171,7 +171,7 @@ void PrintSummary(const std::vector<BenchResult> &results)
     printf("\n=== Summary: %zu benchmarks completed ===\n\n", results.size());
     printf("Each result is the median; Spread is (maximum - minimum) / median.\n");
     printf("PingPong and Burst isolate single-thread cost; SPSC and MPSC include scheduler noise.\n");
-    printf("SharedSPSC counts three API operations per item: one put and two gets.\n\n");
+    printf("SharedSPSC counts two API operations per item: one put and one get.\n\n");
 }
 
 } // namespace

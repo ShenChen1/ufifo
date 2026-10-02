@@ -35,6 +35,7 @@ struct ufifo {
     size_t user_id;
     bool is_shared;
     ufifo_lock_e lock_type;
+    ufifo_role_e role_type;
 
     ufifo_hook_t hook;
     kfifo_t kfifo;
@@ -50,6 +51,24 @@ struct ufifo {
 /* ufifo_process.c */
 int __ufifo_process_identity_init(void);
 pid_t __ufifo_process_pid(void);
+
+static inline int __ufifo_check_write_permission(const ufifo_t *handle)
+{
+    if (unlikely(handle->role_type == UFIFO_ROLE_CONSUMER)) {
+        errno = EPERM;
+        return -EPERM;
+    }
+    return 0;
+}
+
+static inline int __ufifo_check_read_permission(const ufifo_t *handle)
+{
+    if (unlikely(handle->role_type == UFIFO_ROLE_PRODUCER)) {
+        errno = EPERM;
+        return -EPERM;
+    }
+    return 0;
+}
 
 static inline int __ufifo_validate_handle(const ufifo_t *handle)
 {
