@@ -26,6 +26,7 @@ set(UFIFO_CONCURRENCY_TEST_SOURCES
     test/concurrency/ufifo_topology_test.cpp
     test/concurrency/ufifo_wait_regression_test.cpp
     test/concurrency/ufifo_wait_test.cpp
+    test/wait/ufifo_predicate_test.cpp
 )
 set(UFIFO_LIFECYCLE_TEST_SOURCES
     test/lifecycle/ufifo_fault_test.cpp
@@ -67,6 +68,24 @@ endif()
 include(GoogleTest)
 if(NOT CMAKE_CROSSCOMPILING OR CMAKE_CROSSCOMPILING_EMULATOR)
     gtest_discover_tests(ufifo_test)
+endif()
+
+# Link-time doubles are isolated from the integration test executable.
+add_executable(ufifo_wait_protocol_test test/wait/ufifo_wait_protocol_test.cpp)
+target_link_libraries(ufifo_wait_protocol_test PRIVATE ufifo_static ${RT_LIBRARY} ${PTHREAD_LIBRARY} GTest::gtest_main)
+target_compile_options(ufifo_wait_protocol_test PRIVATE -g -O0 -Wall -Werror)
+target_link_options(ufifo_wait_protocol_test PRIVATE
+    -Wl,--wrap=__ufifo_wait_arm
+    -Wl,--wrap=__ufifo_futex_wait
+    -Wl,--wrap=__ufifo_data_unlock
+    -Wl,--wrap=__ufifo_data_lock_until
+)
+if(COVERAGE)
+    ufifo_enable_coverage(ufifo_wait_protocol_test)
+    add_dependencies(coverage ufifo_wait_protocol_test)
+endif()
+if(NOT CMAKE_CROSSCOMPILING OR CMAKE_CROSSCOMPILING_EMULATOR)
+    gtest_discover_tests(ufifo_wait_protocol_test NO_PRETTY_VALUES PROPERTIES TIMEOUT 5)
 endif()
 
 # Performance benchmark executable (compiled with -O3 for realistic measurement)

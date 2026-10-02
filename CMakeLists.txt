@@ -37,10 +37,12 @@ find_library(PTHREAD_LIBRARY pthread)
 
 # Library source files
 set(LIB_SOURCES
+    src/ufifo_capacity.c
     src/ufifo_opts.c
     src/ufifo_state.c
     src/ufifo_sync.c
     src/ufifo_wait.c
+    src/ufifo_wait_word.c
     src/ufifo_lifetime.c
     src/ufifo_process.c
     src/ufifo_init.c

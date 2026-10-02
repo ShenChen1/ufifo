@@ -8,6 +8,7 @@
 #include "kfifo.h"
 #include "ufifo.h"
 #include "ufifo_layout.h"
+#include "ufifo_wait_word.h"
 
 #define UFIFO_MAGIC (0xf1f0f1f0)
 #define UFIFO_NAME_BUF_SIZE (UFIFO_NAME_MAX + 1)
@@ -84,9 +85,6 @@ int __ufifo_force_unlink(const char *name);
 int __ufifo_name_matches_fd(const char *name, int fd);
 
 /* ufifo_wait.c */
-uint32_t __ufifo_wait_arm(ufifo_atomic_uint32_t *wait_word);
-int __ufifo_futex_wait(ufifo_atomic_uint32_t *wait_word, uint32_t expected, const struct timespec *deadline);
-void __ufifo_wait_notify(ufifo_atomic_uint32_t *wait_word);
 int __ufifo_wait_for_space(
     ufifo_t *handle,
     size_t size,
@@ -128,11 +126,10 @@ static inline ufifo_atomic_uint32_t *__ufifo_tx_wait_word(ufifo_t *handle)
 }
 void __ufifo_log(const char *fmt, ...);
 
-/* ufifo_opts.c */
+/* ufifo_capacity.c */
 /* Returns true only when SHARED available capacity increases. */
 bool __ufifo_update_cached_min_out(ufifo_t *handle);
-size_t __ufifo_unused_len(ufifo_t *handle);
-size_t __ufifo_peek_data_len(ufifo_t *handle, size_t offset, size_t in_val);
+/* ufifo_state.c */
 /* Caller must hold data_mutex unless the FIFO uses UFIFO_LOCK_NONE. */
 void __ufifo_reset_data_locked(ufifo_t *handle);
 
@@ -153,6 +150,17 @@ static inline void __ufifo_notify_writers(ufifo_t *handle)
 static inline void __ufifo_notify_readers(ufifo_t *handle)
 {
     __ufifo_wait_notify(__ufifo_rx_wait_word(handle));
+}
+
+/* Caller has release-published out; SHARED capacity changes only when its minimum advances. */
+static inline void __ufifo_notify_after_consume(ufifo_t *handle, size_t old_out)
+{
+    if (!__ufifo_is_shared(handle)) {
+        __ufifo_notify_writers(handle);
+    } else if (old_out == ufifo_atomic_load_acquire(&handle->ctrl->cached_min_out)
+               && __ufifo_update_cached_min_out(handle)) {
+        __ufifo_notify_writers(handle);
+    }
 }
 
 #endif /* UFIFO_INTERNAL_H */

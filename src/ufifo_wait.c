@@ -1,45 +1,5 @@
 #include "ufifo_internal.h"
-
-#include <errno.h>
-#include <limits.h>
-#include <linux/futex.h>
-#include <stdint.h>
-#include <sys/syscall.h>
-#include <unistd.h>
-
-#include "utils.h"
-
-#define UFIFO_WAIT_ARMED 1U
-
-uint32_t __ufifo_wait_arm(ufifo_atomic_uint32_t *wait_word)
-{
-    return ufifo_atomic_fetch_or_seq_cst(wait_word, UFIFO_WAIT_ARMED) | UFIFO_WAIT_ARMED;
-}
-
-int __ufifo_futex_wait(ufifo_atomic_uint32_t *wait_word, uint32_t expected, const struct timespec *deadline)
-{
-    int ret = syscall(SYS_futex, wait_word, FUTEX_WAIT_BITSET, expected, deadline, NULL, FUTEX_BITSET_MATCH_ANY);
-
-    if (ret == 0 || errno == EAGAIN)
-        return 0;
-    return -errno;
-}
-
-void __ufifo_wait_notify(ufifo_atomic_uint32_t *wait_word)
-{
-    /* Order predicate publication before observing ARMED. The waiter's SC RMW
-     * provides the other StoreLoad edge in the lost-wakeup handshake. */
-    ufifo_atomic_thread_fence_seq_cst();
-    uint32_t observed = ufifo_atomic_load_seq_cst(wait_word);
-
-    while (observed & UFIFO_WAIT_ARMED) {
-        const uint32_t next_epoch = observed + 1U;
-        if (!ufifo_atomic_compare_exchange_acq_rel(wait_word, &observed, next_epoch))
-            continue;
-        syscall(SYS_futex, wait_word, FUTEX_WAKE, INT_MAX, NULL, NULL, 0);
-        return;
-    }
-}
+#include "ufifo_predicate.h"
 
 static int __ufifo_wait_on_word(ufifo_t *handle,
                                 ufifo_atomic_uint32_t *wait_word,
@@ -84,16 +44,16 @@ static int __ufifo_try_reap_dead_readers(ufifo_t *handle)
     return cleaned;
 }
 
-static size_t __ufifo_recheck_space(ufifo_t *handle, size_t size)
+static size_t __ufifo_refresh_write_space(ufifo_t *handle, size_t size)
 {
-    size_t len = __ufifo_unused_len(handle);
+    size_t len = __ufifo_tx_available_fast(handle);
 
     if (len >= size || !__ufifo_is_shared(handle))
         return len;
     if (__ufifo_update_cached_min_out(handle))
         __ufifo_notify_writers(handle);
     __ufifo_try_reap_dead_readers(handle);
-    return __ufifo_unused_len(handle);
+    return __ufifo_tx_available_fast(handle);
 }
 
 int __ufifo_wait_for_space(
@@ -106,7 +66,7 @@ int __ufifo_wait_for_space(
     int ret = 0;
     size_t len = 0;
 
-    while ((len = __ufifo_recheck_space(handle, size)) < size) {
+    while ((len = __ufifo_refresh_write_space(handle, size)) < size) {
         if (wait_type == UFIFO_WAIT_NONE) {
             ret = -EAGAIN;
             break;
@@ -114,7 +74,7 @@ int __ufifo_wait_for_space(
 
         ufifo_atomic_uint32_t *wait_word = __ufifo_tx_wait_word(handle);
         const uint32_t expected = __ufifo_wait_arm(wait_word);
-        if (__ufifo_unused_len(handle) >= size)
+        if (__ufifo_tx_available_after_arm(handle) >= size)
             continue;
         ret = __ufifo_wait_on_word(handle, wait_word, expected, deadline, result);
         if (ret)
@@ -139,18 +99,14 @@ int __ufifo_wait_for_data(
     size_t len = 0;
     ufifo_atomic_uint32_t *wait_word = __ufifo_rx_wait_word(handle);
 
-    while ((len = __ufifo_peek_data_len(
-                handle, ufifo_atomic_load_relaxed(handle->kfifo.out), ufifo_atomic_load_seq_cst(handle->kfifo.in)))
-           == 0) {
+    while ((len = __ufifo_rx_data_len_for_wait(handle)) == 0) {
         if (wait_type == UFIFO_WAIT_NONE) {
             ret = -EAGAIN;
             break;
         }
 
         const uint32_t expected = __ufifo_wait_arm(wait_word);
-        len = __ufifo_peek_data_len(handle,
-                                    ufifo_atomic_load_relaxed(handle->kfifo.out),
-                                    ufifo_atomic_load_seq_cst(handle->kfifo.in));
+        len = __ufifo_rx_data_len_after_arm(handle);
         if (len > 0)
             continue;
         ret = __ufifo_wait_on_word(handle, wait_word, expected, deadline, result);

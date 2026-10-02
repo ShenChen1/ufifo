@@ -1,4 +1,5 @@
 #include "ufifo_internal.h"
+#include "ufifo_predicate.h"
 #include <errno.h>
 #include <stdbool.h>
 #include <sys/types.h>
@@ -41,64 +42,6 @@ static inline __attribute__((always_inline)) int __ufifo_begin_data_operation(uf
     return ret;
 }
 
-static size_t __ufifo_min_out(ufifo_t *handle)
-{
-    size_t in_val = ufifo_atomic_load_acquire(handle->kfifo.in);
-    ssize_t max_distance = 0;
-    size_t min_out = in_val;
-    size_t i;
-
-    for (i = 0; i < handle->ctrl->max_users; i++) {
-        if (ufifo_atomic_load_acquire(&handle->ctrl->users[i].active)) {
-            size_t u_out = ufifo_atomic_load_acquire(&handle->ctrl->users[i].out);
-            ssize_t distance = (ssize_t)(in_val - u_out);
-            if (distance > max_distance) {
-                max_distance = distance;
-                min_out = u_out;
-            }
-        }
-    }
-
-    return min_out;
-}
-
-bool __ufifo_update_cached_min_out(ufifo_t *handle)
-{
-    size_t min_o = __ufifo_min_out(handle);
-    size_t cur_cached = ufifo_atomic_load_acquire(&handle->ctrl->cached_min_out);
-
-    while ((ssize_t)(min_o - cur_cached) > 0) {
-        if (ufifo_atomic_compare_exchange_acq_rel(&handle->ctrl->cached_min_out, &cur_cached, min_o))
-            return true;
-    }
-    return false;
-}
-
-size_t __ufifo_unused_len(ufifo_t *handle)
-{
-    size_t out;
-    size_t len = 0;
-
-    if (__ufifo_is_shared(handle)) {
-        out = ufifo_atomic_load_seq_cst(&handle->ctrl->cached_min_out);
-    } else {
-        out = ufifo_atomic_load_seq_cst(handle->kfifo.out);
-    }
-
-    len = ufifo_atomic_load_relaxed(handle->kfifo.in) - out;
-    return handle->kfifo.mask + 1 - len;
-}
-
-size_t __ufifo_peek_data_len(ufifo_t *handle, size_t offset, size_t in_val)
-{
-    size_t len = (in_val == offset) ? 0 : 1;
-    if (len && handle->hook.recsize) {
-        offset &= handle->kfifo.mask;
-        len = handle->hook.recsize(handle->shm_mem + offset, handle->kfifo.mask - offset + 1, handle->shm_mem);
-    }
-    return len;
-}
-
 static size_t __ufifo_peek_tag(ufifo_t *handle, size_t offset)
 {
     size_t ret = 0;
@@ -109,6 +52,67 @@ static size_t __ufifo_peek_tag(ufifo_t *handle, size_t offset)
     }
 
     return ret;
+}
+
+static inline int __ufifo_finish_data_operation(ufifo_t *handle, const ufifo_wait_result_t *result, int ret)
+{
+    if (!result->data_lock_held)
+        return ret;
+    const int unlock_ret = __ufifo_data_unlock(handle);
+    if (ret >= 0 && unlock_ret < 0) {
+        errno = -unlock_ret;
+        return unlock_ret;
+    }
+    return ret;
+}
+
+static inline int __ufifo_prepare_write_space(ufifo_t *handle,
+                                              size_t size,
+                                              ufifo_wait_type_e wait_type,
+                                              const struct timespec *deadline,
+                                              ufifo_wait_result_t *result)
+{
+    if (wait_type == UFIFO_WAIT_NONE) {
+        result->length = __ufifo_tx_available_fast(handle);
+        if (result->length >= size)
+            return 0;
+        if (!__ufifo_is_shared(handle)) {
+            result->length = 0;
+            errno = EAGAIN;
+            return -EAGAIN;
+        }
+    }
+    return __ufifo_wait_for_space(handle, size, wait_type, deadline, result);
+}
+
+static inline int __ufifo_publish_data(ufifo_t *handle, void *buf, size_t size, size_t *length)
+{
+    if (unlikely(handle->hook.recput)) {
+        const size_t in = ufifo_atomic_load_relaxed(handle->kfifo.in);
+        const size_t offset = handle->kfifo.mask & in;
+        *length = handle->hook.recput(handle->shm_mem + offset, handle->kfifo.mask - offset + 1, handle->shm_mem, buf);
+        if (size != *length) {
+            errno = EIO;
+            *length = 0;
+            return -EIO;
+        }
+        ufifo_atomic_store_release(handle->kfifo.in, in + *length);
+    } else {
+        *length = kfifo_in(&handle->kfifo, handle->shm_mem, buf, size);
+    }
+    __ufifo_notify_readers(handle);
+    return 0;
+}
+
+static inline int __ufifo_prepare_read_size(ufifo_t *handle, size_t *size, size_t record_length)
+{
+    if (unlikely(handle->hook.recsize && *size < record_length)) {
+        errno = ENOBUFS;
+        return -ENOBUFS;
+    }
+    if (handle->hook.recsize)
+        *size = record_length;
+    return 0;
 }
 
 static inline __attribute__((always_inline)) ssize_t
@@ -128,48 +132,13 @@ __ufifo_put(ufifo_t *handle, void *buf, size_t size, ufifo_wait_type_e wait_type
     ret = __ufifo_begin_data_operation(handle, wait_type, millisec, &deadline_storage, &deadline);
     if (ret < 0)
         return ret;
-    if (wait_type == UFIFO_WAIT_NONE) {
-        len = __ufifo_unused_len(handle);
-        if (len < size && !__ufifo_is_shared(handle)) {
-            errno = EAGAIN;
-            ret = -EAGAIN;
-            len = 0;
-            goto end;
-        }
-    }
-    if (wait_type != UFIFO_WAIT_NONE || len < size) {
-        ret = __ufifo_wait_for_space(handle, size, wait_type, deadline, &wait_result);
-        len = wait_result.length;
-        if (ret < 0)
-            goto end;
-    }
-
-    if (unlikely(handle->hook.recput)) {
-        size_t in = ufifo_atomic_load_relaxed(handle->kfifo.in);
-        len = handle->kfifo.mask & in;
-        len = handle->hook.recput(handle->shm_mem + len, handle->kfifo.mask - len + 1, handle->shm_mem, buf);
-        if (size != len) {
-            errno = EIO;
-            ret = -EIO;
-            len = 0;
-            goto end;
-        }
-        ufifo_atomic_store_release(handle->kfifo.in, in + len);
-    } else {
-        len = kfifo_in(&handle->kfifo, handle->shm_mem, buf, size);
-    }
-
-    __ufifo_notify_readers(handle);
+    ret = __ufifo_prepare_write_space(handle, size, wait_type, deadline, &wait_result);
+    if (ret < 0)
+        goto end;
+    ret = __ufifo_publish_data(handle, buf, size, &len);
 
 end:
-    if (wait_result.data_lock_held) {
-        int unlock_ret = __ufifo_data_unlock(handle);
-        if (ret >= 0 && unlock_ret < 0) {
-            errno = -unlock_ret;
-            ret = unlock_ret;
-        }
-    }
-
+    ret = __ufifo_finish_data_operation(handle, &wait_result, ret);
     return ret < 0 ? ret : (ssize_t)len;
 }
 
@@ -209,9 +178,7 @@ __ufifo_get(ufifo_t *handle, void *buf, size_t size, ufifo_wait_type_e wait_type
     if (ret < 0)
         return ret;
     if (wait_type == UFIFO_WAIT_NONE) {
-        len = __ufifo_peek_data_len(handle,
-                                    ufifo_atomic_load_relaxed(handle->kfifo.out),
-                                    ufifo_atomic_load_acquire(handle->kfifo.in));
+        len = __ufifo_rx_data_len_fast(handle);
         if (len == 0) {
             errno = EAGAIN;
             ret = -EAGAIN;
@@ -224,9 +191,8 @@ __ufifo_get(ufifo_t *handle, void *buf, size_t size, ufifo_wait_type_e wait_type
             goto end;
     }
 
-    if (unlikely(handle->hook.recsize && size < len)) {
-        errno = ENOBUFS;
-        ret = -ENOBUFS;
+    ret = __ufifo_prepare_read_size(handle, &size, len);
+    if (ret < 0) {
         len = 0;
         goto end;
     }
@@ -243,26 +209,13 @@ __ufifo_get(ufifo_t *handle, void *buf, size_t size, ufifo_wait_type_e wait_type
         }
         ufifo_atomic_store_release(handle->kfifo.out, out + len);
     } else {
-        size = handle->hook.recsize ? min(size, len) : size;
         len = kfifo_out(&handle->kfifo, handle->shm_mem, buf, size);
     }
 
-    if (!__ufifo_is_shared(handle)) {
-        __ufifo_notify_writers(handle);
-    } else if (old_out == ufifo_atomic_load_acquire(&handle->ctrl->cached_min_out)
-               && __ufifo_update_cached_min_out(handle)) {
-        __ufifo_notify_writers(handle);
-    }
+    __ufifo_notify_after_consume(handle, old_out);
 
 end:
-    if (wait_result.data_lock_held) {
-        int unlock_ret = __ufifo_data_unlock(handle);
-        if (ret >= 0 && unlock_ret < 0) {
-            errno = -unlock_ret;
-            ret = unlock_ret;
-        }
-    }
-
+    ret = __ufifo_finish_data_operation(handle, &wait_result, ret);
     return ret < 0 ? ret : (ssize_t)len;
 }
 
@@ -302,9 +255,7 @@ __ufifo_peek(ufifo_t *handle, void *buf, size_t size, ufifo_wait_type_e wait_typ
     if (ret < 0)
         return ret;
     if (wait_type == UFIFO_WAIT_NONE) {
-        len = __ufifo_peek_data_len(handle,
-                                    ufifo_atomic_load_relaxed(handle->kfifo.out),
-                                    ufifo_atomic_load_acquire(handle->kfifo.in));
+        len = __ufifo_rx_data_len_fast(handle);
         if (len == 0) {
             errno = EAGAIN;
             ret = -EAGAIN;
@@ -317,9 +268,8 @@ __ufifo_peek(ufifo_t *handle, void *buf, size_t size, ufifo_wait_type_e wait_typ
             goto end;
     }
 
-    if (unlikely(handle->hook.recsize && size < len)) {
-        errno = ENOBUFS;
-        ret = -ENOBUFS;
+    ret = __ufifo_prepare_read_size(handle, &size, len);
+    if (ret < 0) {
         len = 0;
         goto end;
     }
@@ -334,17 +284,10 @@ __ufifo_peek(ufifo_t *handle, void *buf, size_t size, ufifo_wait_type_e wait_typ
             goto end;
         }
     } else {
-        size = handle->hook.recsize ? min(size, len) : size;
         len = kfifo_out_peek(&handle->kfifo, handle->shm_mem, buf, size);
     }
 end:
-    if (wait_result.data_lock_held) {
-        int unlock_ret = __ufifo_data_unlock(handle);
-        if (ret >= 0 && unlock_ret < 0) {
-            errno = -unlock_ret;
-            ret = unlock_ret;
-        }
-    }
+    ret = __ufifo_finish_data_operation(handle, &wait_result, ret);
     return ret < 0 ? ret : (ssize_t)len;
 }
 
@@ -387,7 +330,7 @@ static int __ufifo_seek_tag(ufifo_t *handle, uint32_t tag, bool newest)
     tmp = ufifo_atomic_load_relaxed(handle->kfifo.out);
     size_t in_val = ufifo_atomic_load_acquire(handle->kfifo.in);
     while (tmp != in_val) {
-        len = __ufifo_peek_data_len(handle, tmp, in_val);
+        len = __ufifo_rx_data_len_at(handle, tmp, in_val);
         if (len == 0)
             break;
         if (__ufifo_peek_tag(handle, tmp) == tag) {
@@ -408,12 +351,7 @@ static int __ufifo_seek_tag(ufifo_t *handle, uint32_t tag, bool newest)
 
     size_t old_out = ufifo_atomic_load_relaxed(handle->kfifo.out);
     ufifo_atomic_store_release(handle->kfifo.out, tmp);
-    if (!__ufifo_is_shared(handle)) {
-        __ufifo_notify_writers(handle);
-    } else if (old_out == ufifo_atomic_load_acquire(&handle->ctrl->cached_min_out)
-               && __ufifo_update_cached_min_out(handle)) {
-        __ufifo_notify_writers(handle);
-    }
+    __ufifo_notify_after_consume(handle, old_out);
 
     int unlock_ret = __ufifo_data_unlock(handle);
     if (unlock_ret < 0) {

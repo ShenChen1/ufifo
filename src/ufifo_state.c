@@ -1,4 +1,5 @@
 #include "ufifo_internal.h"
+#include "ufifo_predicate.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -91,19 +92,14 @@ ssize_t ufifo_skip(ufifo_t *handle)
         return ret;
     }
     size_t out = ufifo_atomic_load_relaxed(handle->kfifo.out);
-    size_t len = __ufifo_peek_data_len(handle, out, ufifo_atomic_load_acquire(handle->kfifo.in));
+    size_t len = __ufifo_rx_data_len_at(handle, out, ufifo_atomic_load_acquire(handle->kfifo.in));
     ret = __ufifo_length_result(len, &result);
     if (ret < 0) {
         __ufifo_data_unlock(handle);
         return ret;
     }
     ufifo_atomic_store_release(handle->kfifo.out, out + len);
-    if (!__ufifo_is_shared(handle)) {
-        __ufifo_notify_writers(handle);
-    } else if (out == ufifo_atomic_load_acquire(&handle->ctrl->cached_min_out)
-               && __ufifo_update_cached_min_out(handle)) {
-        __ufifo_notify_writers(handle);
-    }
+    __ufifo_notify_after_consume(handle, out);
     ret = __ufifo_data_unlock(handle);
     if (ret < 0) {
         errno = -ret;
@@ -124,8 +120,7 @@ ssize_t ufifo_peek_len(ufifo_t *handle)
         errno = -ret;
         return ret;
     }
-    size_t out = ufifo_atomic_load_relaxed(handle->kfifo.out);
-    size_t len = __ufifo_peek_data_len(handle, out, ufifo_atomic_load_acquire(handle->kfifo.in));
+    size_t len = __ufifo_rx_data_len_fast(handle);
     ret = __ufifo_length_result(len, &result);
     if (ret == 0)
         ret = __ufifo_data_unlock(handle);
