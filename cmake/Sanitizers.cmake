@@ -21,6 +21,11 @@ if(SANITIZER)
     endif()
     if(NOT _has_tsan EQUAL -1)
         list(APPEND SANITIZER_COMPILE_FLAGS -fsanitize=thread)
+        # Keep GCC's fence-support warning visible without failing -Werror builds.
+        list(APPEND SANITIZER_COMPILE_FLAGS
+            "$<$<AND:$<COMPILE_LANGUAGE:C>,$<C_COMPILER_ID:GNU>>:-Wno-error=tsan>"
+            "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:GNU>>:-Wno-error=tsan>"
+        )
         list(APPEND SANITIZER_LINK_FLAGS -fsanitize=thread)
     endif()
     if(NOT _has_ubsan EQUAL -1)

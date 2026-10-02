@@ -121,6 +121,9 @@ ufifo_target_separate_dbginfo(ufifo_static ${CMAKE_INSTALL_LIBDIR} release dbgsy
 
 # Test target
 enable_testing()
+add_test(NAME UfifoCMakeTest.SanitizerOptions
+    COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_SOURCE_DIR}/test/cmake/sanitizer_options_test.cmake
+)
 foreach(example ${EXAMPLES})
     add_test(NAME ${example} COMMAND ${example})
 endforeach()
