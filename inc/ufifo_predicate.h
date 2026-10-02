@@ -11,8 +11,8 @@ static inline size_t __ufifo_tx_available_from_out(ufifo_t *handle, size_t out)
 
 static inline size_t __ufifo_tx_available_fast(ufifo_t *handle)
 {
-    const size_t out = __ufifo_is_shared(handle) ? ufifo_atomic_load_seq_cst(&handle->ctrl->cached_min_out)
-                                                 : ufifo_atomic_load_seq_cst(handle->kfifo.out);
+    const size_t out = __ufifo_is_shared(handle) ? ufifo_atomic_load_acquire(&handle->ctrl->cached_min_out)
+                                                 : ufifo_atomic_load_acquire(handle->kfifo.out);
     return __ufifo_tx_available_from_out(handle, out);
 }
 

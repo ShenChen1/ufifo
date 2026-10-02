@@ -27,7 +27,7 @@ static inline __attribute__((always_inline)) int kfifo_init(kfifo_t *fifo, size_
 static inline __attribute__((always_inline)) size_t __kfifo_unused(kfifo_t *fifo)
 {
     size_t in = ufifo_atomic_load_relaxed(fifo->in);
-    size_t out = ufifo_atomic_load_seq_cst(fifo->out);
+    size_t out = ufifo_atomic_load_acquire(fifo->out);
     return (fifo->mask + 1) - (in - out);
 }
 
@@ -75,10 +75,11 @@ __kfifo_copy_out(kfifo_t *fifo, void *base, void *dst, size_t len, size_t off)
     memcpy(d + l, b, len - l);
 }
 
-static inline __attribute__((always_inline)) size_t kfifo_out_peek(kfifo_t *fifo, void *base, void *buf, size_t len)
+static inline __attribute__((always_inline)) size_t
+kfifo_out_peek(kfifo_t *fifo, void *base, void *buf, size_t len)
 {
     size_t l;
-    size_t in = ufifo_atomic_load_seq_cst(fifo->in);
+    size_t in = ufifo_atomic_load_acquire(fifo->in);
     size_t out = ufifo_atomic_load_relaxed(fifo->out);
 
     l = in - out;
@@ -89,7 +90,8 @@ static inline __attribute__((always_inline)) size_t kfifo_out_peek(kfifo_t *fifo
     return len;
 }
 
-static inline __attribute__((always_inline)) size_t kfifo_out(kfifo_t *fifo, void *base, void *buf, size_t len)
+static inline __attribute__((always_inline)) size_t
+kfifo_out(kfifo_t *fifo, void *base, void *buf, size_t len)
 {
     len = kfifo_out_peek(fifo, base, buf, len);
     size_t out = ufifo_atomic_load_relaxed(fifo->out);
