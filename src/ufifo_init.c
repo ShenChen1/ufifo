@@ -207,12 +207,6 @@ static int __ufifo_validate_layout(ufifo_t *handle, size_t file_size)
         return -EPROTO;
     return 0;
 }
-static bool __ufifo_shared_atomics_lock_free(ufifo_ctrl_t *ctrl)
-{
-    return ufifo_atomic_is_lock_free(&ctrl->in) && ufifo_atomic_is_lock_free(&ctrl->cached_min_out) &&
-           ufifo_atomic_is_lock_free(&ctrl->rx_wait.value) && ufifo_atomic_is_lock_free(&ctrl->tx_wait.value) &&
-           ufifo_atomic_is_lock_free(&ctrl->users[0].active) && ufifo_atomic_is_lock_free(&ctrl->users[0].out);
-}
 
 static int __ufifo_configure_data(ufifo_t *handle, bool initialize)
 {
@@ -282,10 +276,6 @@ static int __ufifo_init_from_shm(ufifo_t *handle)
     ret = __ufifo_validate_layout(handle, handle->mapping_size);
     if (ret < 0)
         goto error;
-    if (!__ufifo_shared_atomics_lock_free(handle->ctrl)) {
-        ret = -EOPNOTSUPP;
-        goto error;
-    }
 
     handle->shm_size = handle->ctrl->data_size;
     handle->shm_mem = (char *)mapping + handle->ctrl->data_offset;
@@ -330,19 +320,11 @@ static int __ufifo_init_from_user(ufifo_t *handle, const ufifo_alloc_t *alloc)
     handle->ctrl->data_mode = alloc->data_mode;
     handle->ctrl->max_users = alloc->max_users;
     handle->ctrl->num_users = 0;
+    handle->ctrl->in = 0;
+    handle->ctrl->cached_min_out = 0;
+    memset(&handle->ctrl->rx_wait, 0, sizeof(handle->ctrl->rx_wait));
+    memset(&handle->ctrl->tx_wait, 0, sizeof(handle->ctrl->tx_wait));
     memset(handle->ctrl->users, 0, slot_count * sizeof(ufifo_sub_ctrl_t));
-    ufifo_atomic_init(&handle->ctrl->in, 0);
-    ufifo_atomic_init(&handle->ctrl->cached_min_out, 0);
-    ufifo_atomic_init(__ufifo_rx_wait_word(handle), 0);
-    ufifo_atomic_init(__ufifo_tx_wait_word(handle), 0);
-    for (size_t i = 0; i < slot_count; i++) {
-        ufifo_atomic_init(&handle->ctrl->users[i].active, false);
-        ufifo_atomic_init(&handle->ctrl->users[i].out, 0);
-    }
-    if (!__ufifo_shared_atomics_lock_free(handle->ctrl)) {
-        ret = -EOPNOTSUPP;
-        goto error_lock;
-    }
 
     ret = __ufifo_register_handle(handle, true);
     if (ret < 0)

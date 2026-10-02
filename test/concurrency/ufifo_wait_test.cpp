@@ -121,7 +121,7 @@ TEST(UfifoWaitWordTest, NotifyWakesProcessSharedWaiter)
              -1,
              0));
     ASSERT_NE(MAP_FAILED, wait_word);
-    ufifo_atomic_init(wait_word, 0);
+    ufifo_atomic_store_relaxed(wait_word, 0);
 
     TestPipe ready_pipe;
     ASSERT_EQ(0, TestPipe::Create(&ready_pipe));

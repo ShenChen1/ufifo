@@ -20,6 +20,25 @@ TEST(UfifoLayoutTest, WaitEpochsUseSeparateCacheLines)
     EXPECT_EQ(UFIFO_CACHELINE_SIZE, offsetof(ufifo_ctrl_t, tx_wait) - offsetof(ufifo_ctrl_t, rx_wait));
 }
 
+TEST(UfifoLayoutTest, SharedAtomicScalarsAreAlwaysLockFree)
+{
+    EXPECT_TRUE(__atomic_always_lock_free(sizeof(ufifo_atomic_bool_t), nullptr));
+    EXPECT_TRUE(__atomic_always_lock_free(sizeof(ufifo_atomic_size_t), nullptr));
+    EXPECT_TRUE(__atomic_always_lock_free(sizeof(ufifo_atomic_uint32_t), nullptr));
+}
+
+TEST(UfifoLayoutTest, CompareExchangeUpdatesExpectedOnlyOnFailure)
+{
+    ufifo_atomic_uint32_t word = 41;
+    uint32_t expected = 39;
+    EXPECT_FALSE(ufifo_atomic_compare_exchange_acq_rel(&word, &expected, 42));
+    EXPECT_EQ(41U, expected);
+    EXPECT_EQ(41U, ufifo_atomic_load_acquire(&word));
+    EXPECT_TRUE(ufifo_atomic_compare_exchange_acq_rel(&word, &expected, 42));
+    EXPECT_EQ(41U, expected);
+    EXPECT_EQ(42U, ufifo_atomic_load_acquire(&word));
+}
+
 TEST(UfifoLayoutTest, RejectsIncompatibleSharedLayout)
 {
     ufifo_init_t init = {};
