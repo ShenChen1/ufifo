@@ -10,7 +10,7 @@ set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
 set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
-# Tests are grouped by responsibility while keeping one executable for fast linking and discovery.
+# Integration tests share one executable; boundary doubles run in an isolated executable.
 set(UFIFO_CONTRACT_TEST_SOURCES
     test/contract/ufifo_api_test.cpp
     test/contract/ufifo_errno_test.cpp
@@ -21,21 +21,22 @@ set(UFIFO_DATA_TEST_SOURCES
     test/data/ufifo_shared_data_regression_test.cpp
     test/data/ufifo_tag_test.cpp
 )
-set(UFIFO_CONCURRENCY_TEST_SOURCES
-    test/concurrency/ufifo_test_runtime_test.cpp
-    test/concurrency/ufifo_timeout_regression_test.cpp
-    test/concurrency/ufifo_topology_test.cpp
-    test/concurrency/ufifo_wait_regression_test.cpp
-    test/concurrency/ufifo_wait_test.cpp
+set(UFIFO_WAIT_TEST_SOURCES
     test/wait/ufifo_predicate_test.cpp
+    test/wait/ufifo_wait_integration_test.cpp
     test/wait/ufifo_wait_policy_test.cpp
+    test/wait/ufifo_wait_word_test.cpp
+)
+set(UFIFO_CONCURRENCY_TEST_SOURCES
+    test/concurrency/ufifo_topology_test.cpp
 )
 set(UFIFO_LIFECYCLE_TEST_SOURCES
     test/lifecycle/ufifo_fault_test.cpp
-    test/lifecycle/ufifo_handle_regression_test.cpp
     test/lifecycle/ufifo_lifetime_test.cpp
-    test/lifecycle/ufifo_reap_test.cpp
-    test/lifecycle/ufifo_recovery_regression_test.cpp
+    test/lifecycle/ufifo_recovery_test.cpp
+)
+set(UFIFO_SUPPORT_TEST_SOURCES
+    test/support/ufifo_test_runtime_test.cpp
 )
 set(UFIFO_BENCHMARK_TEST_SOURCES
     test/benchmark/ufifo_bench_test.cpp
@@ -44,8 +45,10 @@ set(UFIFO_BENCHMARK_TEST_SOURCES
 add_executable(ufifo_test
     ${UFIFO_CONTRACT_TEST_SOURCES}
     ${UFIFO_DATA_TEST_SOURCES}
+    ${UFIFO_WAIT_TEST_SOURCES}
     ${UFIFO_CONCURRENCY_TEST_SOURCES}
     ${UFIFO_LIFECYCLE_TEST_SOURCES}
+    ${UFIFO_SUPPORT_TEST_SOURCES}
     ${UFIFO_BENCHMARK_TEST_SOURCES}
     test/support/ufifo_test_runtime.cpp
     test/support/ufifo_test_support.cpp
@@ -69,10 +72,9 @@ endif()
 
 include(GoogleTest)
 if(NOT CMAKE_CROSSCOMPILING OR CMAKE_CROSSCOMPILING_EMULATOR)
-    gtest_discover_tests(ufifo_test)
+    gtest_discover_tests(ufifo_test PROPERTIES TIMEOUT 45)
 endif()
 
-# Link-time doubles are isolated from the integration test executable.
 add_executable(ufifo_wait_protocol_test test/wait/ufifo_wait_protocol_test.cpp)
 target_link_libraries(ufifo_wait_protocol_test PRIVATE ufifo_static ${RT_LIBRARY} ${PTHREAD_LIBRARY} GTest::gtest_main)
 target_compile_options(ufifo_wait_protocol_test PRIVATE -g -O0 -Wall -Werror)

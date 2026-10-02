@@ -203,9 +203,6 @@ class SpmcTest : public ParameterizedTestBase {};
 class MpscTest : public ParameterizedTestBase {};
 class MpmcTest : public ParameterizedTestBase {};
 
-// =============================================================================
-// 3. Singleton Tests
-// =============================================================================
 TEST_P(SingletonTest, OpenClose)
 {
     ASSERT_EQ(0, adapter_->Create(512));
@@ -290,9 +287,6 @@ TEST_P(SingletonTest, LargeDataThroughput)
 
 INSTANTIATE_TEST_SUITE_P(UfifoTests, SingletonTest, testing::ValuesIn(ALL_COMBINATIONS), PrintParam);
 
-// =============================================================================
-// 4. SPSC Tests
-// =============================================================================
 TEST_P(SpscTest, Basic)
 {
     RunTopology(1, 1, 1000, 4096);
@@ -310,9 +304,6 @@ TEST_P(SpscTest, Stress)
 
 INSTANTIATE_TEST_SUITE_P(UfifoTests, SpscTest, testing::ValuesIn(ALL_COMBINATIONS), PrintParam);
 
-// =============================================================================
-// 5. SPMC Tests
-// =============================================================================
 TEST_P(SpmcTest, Basic)
 {
     RunTopology(1, 3, 1000, 4096);
@@ -328,9 +319,6 @@ TEST_P(SpmcTest, Stress)
 
 INSTANTIATE_TEST_SUITE_P(UfifoTests, SpmcTest, testing::ValuesIn(ALL_COMBINATIONS), PrintParam);
 
-// =============================================================================
-// 6. MPSC Tests
-// =============================================================================
 TEST_P(MpscTest, Basic)
 {
     RunTopology(3, 1, 1000, 4096);
@@ -346,9 +334,6 @@ TEST_P(MpscTest, Stress)
 
 INSTANTIATE_TEST_SUITE_P(UfifoTests, MpscTest, testing::ValuesIn(ALL_COMBINATIONS), PrintParam);
 
-// =============================================================================
-// 7. MPMC Tests
-// =============================================================================
 TEST_P(MpmcTest, Basic)
 {
     RunTopology(2, 2, 1000, 4096);
@@ -364,6 +349,72 @@ TEST_P(MpmcTest, Stress)
 
 INSTANTIATE_TEST_SUITE_P(UfifoTests, MpmcTest, testing::ValuesIn(ALL_COMBINATIONS), PrintParam);
 
-// =============================================================================
-// 8. Tag Specific Tests
-// =============================================================================
+TEST_F(EdgeCaseTest, LockFreeLostWakeupStress)
+{
+    std::string name = GenerateName("lf_wakeup_stress");
+    ufifo_init_t init = {};
+    init.opt = UFIFO_OPT_ALLOC;
+    init.alloc.size = 1024;
+    init.alloc.max_users = 2;
+    init.alloc.data_mode = UFIFO_DATA_SOLE;
+    init.alloc.lock = UFIFO_LOCK_NONE;
+    init.alloc.force = 1;
+
+    ufifo_t *writer = nullptr;
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &init, &writer));
+
+    ufifo_init_t attach = {};
+    attach.opt = UFIFO_OPT_ATTACH;
+    ufifo_t *reader = nullptr;
+    ASSERT_EQ(0, ufifo_open(name.c_str(), &attach, &reader));
+
+    const int iterations = 50000;
+    std::atomic<int> consumed{ 0 };
+    FirstFailure first_failure;
+    std::atomic<bool> stop{ false };
+    TestDeadline deadline(std::chrono::seconds(10));
+
+    std::thread reader_thread([&]() {
+        char buf[1];
+        for (int i = 0; i < iterations; i++) {
+            ssize_t ret = ufifo_get_timeout(reader, buf, 1, 500);
+            if (ret == 1) {
+                consumed++;
+            } else {
+                first_failure.Record(ret < 0 ? static_cast<int>(ret) : -EIO);
+                stop.store(true);
+                break;
+            }
+        }
+    });
+
+    for (int i = 0; i < iterations; i++) {
+        char data[1] = { 0x42 };
+        for (;;) {
+            ssize_t ret = ufifo_put(writer, data, 1);
+            if (ret == 1)
+                break;
+            if (ret != -EAGAIN) {
+                first_failure.Record(ret < 0 ? static_cast<int>(ret) : -EIO);
+                stop.store(true);
+                break;
+            }
+            if (stop.load() || deadline.Expired()) {
+                first_failure.Record(-ETIMEDOUT);
+                stop.store(true);
+                break;
+            }
+            std::this_thread::yield();
+        }
+        if (stop.load())
+            break;
+    }
+
+    stop.store(true);
+    reader_thread.join();
+    EXPECT_EQ(0, first_failure.Get());
+    EXPECT_EQ(iterations, consumed.load()) << "Lost wakeup occurred during Lock-Free stress test";
+
+    ufifo_close(reader);
+    ufifo_destroy(writer);
+}

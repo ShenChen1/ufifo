@@ -89,3 +89,21 @@ TEST(UfifoTestRuntimeTest, ChildWaitKillsTimedOutProcess)
     EXPECT_EQ(-ETIMEDOUT, child.WaitUntil(deadline, &status));
     EXPECT_FALSE(child.Valid());
 }
+
+TEST(UfifoTestRuntimeTest, WaitWordArmObservesPublishedArm)
+{
+    ufifo_atomic_uint32_t word = 0;
+    std::thread participant([&] { __ufifo_wait_arm(&word); });
+    const bool armed = WaitForWaitWordArm(&word);
+    participant.join();
+
+    EXPECT_TRUE(armed);
+    EXPECT_TRUE(WaitForWaitWordArm(&word, std::chrono::milliseconds(0)));
+}
+
+TEST(UfifoTestRuntimeTest, WaitWordArmHasBoundedTimeout)
+{
+    ufifo_atomic_uint32_t word = 0;
+    EXPECT_FALSE(WaitForWaitWordArm(&word, std::chrono::milliseconds(0)));
+    EXPECT_EQ(0U, ufifo_atomic_load_acquire(&word));
+}
